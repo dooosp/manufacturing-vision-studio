@@ -719,6 +719,43 @@ button:disabled,
   background: #121b23;
 }
 
+.binding-failure {
+  aspect-ratio: 700 / 480;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: #121b23;
+  color: #ff9d97;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.empty-image-state {
+  aspect-ratio: 700 / 480;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 9px;
+  padding: 24px;
+  background:
+    linear-gradient(rgba(114, 128, 138, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(114, 128, 138, 0.05) 1px, transparent 1px),
+    #101820;
+  background-size: 30px 30px;
+  color: #60717b;
+  text-align: center;
+}
+
+.empty-image-state span {
+  font-size: 2.2rem;
+}
+
+.empty-image-state p {
+  margin: 0;
+  font-size: 0.7rem;
+}
+
 .part-preview svg,
 .part-preview img {
   width: 100%;

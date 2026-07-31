@@ -22,7 +22,7 @@ export function DispositionPanel({
   onExport,
 }: DispositionPanelProps) {
   const [decision, setDecision] = useState<Decision>(current?.decision ?? "needs_review");
-  const [reviewer, setReviewer] = useState(current?.reviewer ?? "Local Reviewer");
+  const [reviewer, setReviewer] = useState(current?.reviewer ?? "");
   const [note, setNote] = useState(current?.note ?? "");
 
   useEffect(() => {
@@ -43,7 +43,7 @@ export function DispositionPanel({
     <section className="side-panel disposition-panel" aria-labelledby="disposition-title">
       <div className="panel-title-row">
         <div>
-          <p className="section-kicker">Human-in-the-loop</p>
+          <p className="section-kicker">{copy.humanLoop}</p>
           <h2 id="disposition-title">{copy.disposition}</h2>
         </div>
         <span className="review-icon" aria-hidden="true">⌁</span>
@@ -74,6 +74,7 @@ export function DispositionPanel({
         <input
           value={reviewer}
           disabled={disabled}
+          placeholder={copy.defaultReviewer}
           onChange={(event) => setReviewer(event.target.value)}
           autoComplete="name"
         />
@@ -85,7 +86,7 @@ export function DispositionPanel({
           disabled={disabled}
           onChange={(event) => setNote(event.target.value)}
           rows={3}
-          placeholder="Evidence reviewed; disposition rationale…"
+          placeholder={copy.notePlaceholder}
         />
       </label>
 

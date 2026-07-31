@@ -39,10 +39,10 @@ export function CaseRail({
     <aside className="case-rail" aria-label={copy.cases}>
       <div className="rail-heading">
         <div>
-          <p className="section-kicker">Case registry</p>
+          <p className="section-kicker">{copy.caseRegistry}</p>
           <h2>{copy.cases}</h2>
         </div>
-        <span className="case-count" aria-label={`${cases.length} cases`}>{cases.length}</span>
+        <span className="case-count" aria-label={`${cases.length} ${copy.casesCount}`}>{cases.length}</span>
       </div>
 
       <button
@@ -97,7 +97,7 @@ export function CaseRail({
             >
               <span className="case-card-topline">
                 <span className="case-part">{item.part_id}</span>
-                <StatusPill status={item.status} />
+                <StatusPill status={item.status} copy={copy} />
               </span>
               <span className="case-meta">
                 <span>{item.revision}</span>

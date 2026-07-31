@@ -58,6 +58,9 @@ function normalizeCase(payload: unknown): InspectionCase {
   const analyses = Array.isArray(payload.analyses) ? payload.analyses.filter(isObject) : [];
   const dispositions = Array.isArray(payload.dispositions) ? payload.dispositions.filter(isObject) : [];
   const latestAnalysis = analyses.at(-1);
+  const inputBinding = latestAnalysis && isObject(latestAnalysis.input_binding)
+    ? latestAnalysis.input_binding
+    : {};
   const completed = latestAnalysis && isObject(latestAnalysis.completed_output)
     ? latestAnalysis.completed_output
     : null;
@@ -87,6 +90,7 @@ function normalizeCase(payload: unknown): InspectionCase {
     analysis: latestAnalysis && completed
       ? {
           analysis_id: analysisId,
+          inspection_image_id: asString(inputBinding.inspection_image_id),
           pipeline_version: `${asString(pipeline.pipeline_id, "baseline.diff")}@${asString(pipeline.pipeline_version, "1.0.0")}`,
           model_version: `${asString(model.model_id, "deterministic-difference")}@${asString(model.model_version, "1.0.0")}`,
           configuration_hash: asString(latestAnalysis.configuration_sha256),
@@ -143,6 +147,12 @@ export class ApiError extends Error {
 function errorMessage(payload: unknown, fallback: string): string {
   if (!payload || typeof payload !== "object") return fallback;
   const value = payload as Record<string, unknown>;
+  if (value.error && typeof value.error === "object") {
+    const error = value.error as Record<string, unknown>;
+    const code = typeof error.code === "string" ? error.code : null;
+    const message = typeof error.message === "string" ? error.message : fallback;
+    return code ? `[${code}] ${message}` : message;
+  }
   if (typeof value.message === "string") return value.message;
   if (typeof value.detail === "string") return value.detail;
   if (value.detail && typeof value.detail === "object") {
@@ -182,8 +192,14 @@ function unwrapCases(payload: unknown): InspectionCase[] {
     ? payload
     : isObject(payload) && Array.isArray(payload.items)
       ? payload.items
+      : isObject(payload) && Array.isArray(payload.cases)
+        ? payload.cases
       : [];
   return values.map(normalizeCase);
+}
+
+async function fetchCase(caseId: string): Promise<InspectionCase> {
+  return normalizeCase(await request<unknown>(`/cases/${encodeURIComponent(caseId)}`));
 }
 
 export const api = {
@@ -193,9 +209,7 @@ export const api = {
     return unwrapCases(await request<unknown>("/cases"));
   },
 
-  async getCase(caseId: string) {
-    return normalizeCase(await request<unknown>(`/cases/${encodeURIComponent(caseId)}`));
-  },
+  getCase: fetchCase,
 
   async createCase(partId: string, revision: string) {
     return normalizeCase(await request<unknown>("/cases", {
@@ -215,7 +229,7 @@ export const api = {
       method: "POST",
       body,
       headers: revisionHeaders(caseRevision),
-    }).then(normalizeCase);
+    }).then(() => fetchCase(caseId));
   },
 
   uploadInspection(caseId: string, caseRevision: number, file: File) {
@@ -225,28 +239,38 @@ export const api = {
       method: "POST",
       body,
       headers: revisionHeaders(caseRevision),
-    }).then(normalizeCase);
+    }).then(() => fetchCase(caseId));
   },
 
-  analyze: (caseId: string, caseRevision: number) =>
-    request<unknown>(`/cases/${encodeURIComponent(caseId)}/analyze`, {
+  async analyze(caseId: string, caseRevision: number) {
+    await request<unknown>(`/cases/${encodeURIComponent(caseId)}/analyze`, {
       method: "POST",
       body: "{}",
       headers: revisionHeaders(caseRevision),
-    }).then(normalizeCase),
+    });
+    return fetchCase(caseId);
+  },
 
   disposition: (
     caseId: string,
     caseRevision: number,
+    analysisId: string,
     decision: Decision,
     reviewer: string,
     note: string,
   ) =>
     request<unknown>(`/cases/${encodeURIComponent(caseId)}/disposition`, {
       method: "POST",
-      body: JSON.stringify({ decision, reviewer, note }),
+      body: JSON.stringify({
+        analysis_id: analysisId,
+        decision,
+        reviewer_id: "local-reviewer",
+        reviewer_display_name: reviewer,
+        reason_codes: ["other"],
+        rationale: note,
+      }),
       headers: revisionHeaders(caseRevision),
-    }).then(normalizeCase),
+    }).then(() => fetchCase(caseId)),
 
   exportEvidence: (caseId: string, caseRevision: number) =>
     request<ExportResult>(`/cases/${encodeURIComponent(caseId)}/export`, {
@@ -255,9 +279,17 @@ export const api = {
       headers: revisionHeaders(caseRevision),
     }),
 
-  verifyEvidence: (bundlePath: string) =>
-    request<VerificationResult>("/evidence/verify", {
+  async verifyEvidence(downloadUrl: string) {
+    const response = await fetch(downloadUrl, { headers: { Accept: "application/zip" } });
+    if (!response.ok) throw new ApiError(`Evidence download failed: ${response.status}`, response.status);
+    const body = new FormData();
+    body.append(
+      "file",
+      new File([await response.blob()], "evidence-bundle.zip", { type: "application/zip" }),
+    );
+    return request<VerificationResult>("/evidence/verify", {
       method: "POST",
-      body: JSON.stringify({ bundle_path: bundlePath }),
-    }),
+      body,
+    });
+  },
 };

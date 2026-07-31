@@ -130,6 +130,7 @@ export function App() {
       api.disposition(
         caseIdentity(selectedCase),
         selectedCase.case_revision ?? 1,
+        selectedCase.analysis?.analysis_id ?? "",
         decision,
         reviewer,
         note,
@@ -145,9 +146,9 @@ export function App() {
         caseIdentity(selectedCase),
         selectedCase.case_revision ?? 1,
       );
-      const verification = await api.verifyEvidence(bundle.bundle_path);
+      const verification = await api.verifyEvidence(bundle.download_url);
       if (!verification.valid) {
-        throw new Error(verification.errors.join("; ") || "Bundle verification failed closed");
+        throw new Error(verification.errors?.join("; ") || "Bundle verification failed closed");
       }
       return { bundle, verification };
     });
@@ -186,14 +187,14 @@ export function App() {
             <div className="alert alert-error" role="alert">
               <span aria-hidden="true">!</span>
               <div><strong>{copy.safeFailure}</strong><p>{error}</p></div>
-              <button type="button" aria-label="Dismiss error" onClick={() => setError(null)}>×</button>
+              <button type="button" aria-label={copy.dismissError} onClick={() => setError(null)}>×</button>
             </div>
           ) : null}
           {notice ? (
             <div className="alert alert-success" role="status">
               <span aria-hidden="true">✓</span>
               <p>{notice}</p>
-              <button type="button" aria-label="Dismiss notice" onClick={() => setNotice(null)}>×</button>
+              <button type="button" aria-label={copy.dismissNotice} onClick={() => setNotice(null)}>×</button>
             </div>
           ) : null}
 
@@ -236,9 +237,9 @@ export function App() {
       </div>
 
       <footer className="app-footer">
-        <span>DEMO_READY target · synthetic fixtures</span>
-        <span>Evidence contract v1.0.0</span>
-        <span>Not production validated</span>
+        <span>{copy.footerTarget}</span>
+        <span>{copy.footerContract}</span>
+        <span>{copy.footerBoundary}</span>
       </footer>
     </div>
   );

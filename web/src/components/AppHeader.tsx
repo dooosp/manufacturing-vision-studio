@@ -15,7 +15,7 @@ export function AppHeader({ locale, copy, connected, onLocaleChange }: AppHeader
       <div className="brand-lockup">
         <BrandMark />
         <div>
-          <p className="eyebrow">Industrial evidence workbench</p>
+          <p className="eyebrow">{copy.productKicker}</p>
           <h1>Manufacturing Vision Studio</h1>
         </div>
       </div>
@@ -49,4 +49,3 @@ export function AppHeader({ locale, copy, connected, onLocaleChange }: AppHeader
     </header>
   );
 }
-

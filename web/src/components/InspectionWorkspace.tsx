@@ -56,7 +56,9 @@ export function InspectionWorkspace({
   onUploadInspection,
 }: InspectionWorkspaceProps) {
   const analysis = inspectionCase.analysis;
-  const inspectionImage = inspectionCase.inspection_images[0];
+  const inspectionImage = analysis
+    ? inspectionCase.inspection_images.find((image) => image.id === analysis.inspection_image_id)
+    : inspectionCase.inspection_images[0];
   const mappedFeatures = analysis?.feature_mappings.filter(
     (feature) => feature.feature_id !== "unmapped" && feature.anomaly_score > 0,
   ) ?? [];
@@ -64,6 +66,10 @@ export function InspectionWorkspace({
     (left, right) => right.anomaly_score - left.anomaly_score,
   )[0];
   const emptyFeatureLabel = analysis?.verdict === "normal" ? copy.notApplicable : copy.unmapped;
+  const displayedFeature = topFeature?.label ?? topFeature?.feature_id ?? emptyFeatureLabel;
+  const inspectionAlt = analysis
+    ? `${copy.inspection}: ${inspectionCase.part_id} ${inspectionCase.revision}. ${copy.anomalyScore}: ${formatScore(analysis.anomaly_score)}; ${copy.modelVerdict}: ${analysis.verdict}; ${copy.affectedFeature}: ${displayedFeature}; ${copy.disposition}: ${inspectionCase.disposition?.decision ?? copy.missing}.`
+    : `${copy.inspection}: ${inspectionCase.part_id} ${inspectionCase.revision}`;
 
   return (
     <section className="workspace-card" aria-labelledby="workspace-title">
@@ -73,7 +79,7 @@ export function InspectionWorkspace({
           <div className="identity-line">
             <h2 id="workspace-title">{inspectionCase.part_id}</h2>
             <span className="revision-chip">{inspectionCase.revision}</span>
-            <StatusPill status={inspectionCase.status} />
+            <StatusPill status={inspectionCase.status} copy={copy} />
           </div>
           <p className="case-id">
             CASE · {(inspectionCase.id || inspectionCase.case_id || "").toUpperCase()} · STATE REV {inspectionCase.case_revision ?? 1}
@@ -105,7 +111,7 @@ export function InspectionWorkspace({
       </div>
 
       <div className="comparison-toolbar">
-        <div className="view-legend" aria-label="Image comparison legend">
+        <div className="view-legend" aria-label={copy.imageComparison}>
           <span><span className="legend-dot reference-dot" />{copy.reference}</span>
           <span><span className="legend-dot inspection-dot" />{copy.inspection}</span>
         </div>
@@ -113,7 +119,7 @@ export function InspectionWorkspace({
           <span>{copy.overlay}</span>
           <input
             type="checkbox"
-            checked={showOverlay}
+            checked={Boolean(analysis && showOverlay)}
             disabled={!analysis}
             onChange={(event) => onOverlayChange(event.target.checked)}
           />
@@ -125,31 +131,47 @@ export function InspectionWorkspace({
         <figure>
           <figcaption>
             <span>{copy.reference}</span>
-            <span className="image-filename">{inspectionCase.reference_image?.filename ?? "reference.png"}</span>
+            <span className="image-filename">{inspectionCase.reference_image?.filename ?? "—"}</span>
           </figcaption>
-          <PartPreview
-            variant="reference"
-            showOverlay={false}
-            imageUrl={inspectionCase.reference_image?.url}
-            alt={`${copy.reference}: ${inspectionCase.part_id} ${inspectionCase.revision}`}
-          />
+          {inspectionCase.reference_image ? (
+            <PartPreview
+              variant="reference"
+              showOverlay={false}
+              imageUrl={inspectionCase.reference_image.url}
+              alt={`${copy.reference}: ${inspectionCase.part_id} ${inspectionCase.revision}`}
+            />
+          ) : (
+            <div className="empty-image-state">
+              <span aria-hidden="true">◇</span>
+              <p>{copy.noReferenceEvidence}</p>
+            </div>
+          )}
         </figure>
         <figure>
           <figcaption>
             <span>{copy.inspection}</span>
-            <span className="image-filename">{inspectionImage?.filename ?? "inspection.png"}</span>
+            <span className="image-filename">{inspectionImage?.filename ?? "—"}</span>
           </figcaption>
-          <PartPreview
-            variant="inspection"
-            showOverlay={Boolean(analysis && showOverlay)}
-            imageUrl={inspectionImage?.url}
-            maskUrl={analysis?.mask_url ?? analysis?.mask?.url}
-            alt={`${copy.inspection}: ${inspectionCase.part_id} ${inspectionCase.revision}`}
-          />
+          {inspectionImage ? (
+            <PartPreview
+              variant="inspection"
+              showOverlay={Boolean(analysis && showOverlay)}
+              imageUrl={inspectionImage.url}
+              maskUrl={analysis?.mask_url ?? analysis?.mask?.url}
+              alt={inspectionAlt}
+            />
+          ) : analysis ? (
+            <div className="binding-failure" role="alert">{copy.bindingMissing}</div>
+          ) : (
+            <div className="empty-image-state">
+              <span aria-hidden="true">◇</span>
+              <p>{copy.noInspectionEvidence}</p>
+            </div>
+          )}
         </figure>
       </div>
 
-      <div className="metrics-strip" aria-label="Inspection metrics">
+      <div className="metrics-strip" aria-label={copy.inspectionMetrics}>
         <div className="metric-primary">
           <span>{copy.anomalyScore}</span>
           <strong>{formatScore(analysis?.anomaly_score)}</strong>
@@ -175,8 +197,8 @@ export function InspectionWorkspace({
         </div>
         <div className="metric-cell pipeline-cell">
           <span>{copy.pipeline}</span>
-          <strong>{analysis?.pipeline_version ?? "baseline.diff/1"}</strong>
-          <small>{analysis?.model_version ?? "deterministic"}</small>
+          <strong>{analysis?.pipeline_version ?? "—"}</strong>
+          <small>{analysis?.model_version ?? "—"}</small>
         </div>
       </div>
     </section>

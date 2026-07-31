@@ -30,6 +30,7 @@ export interface FeatureMapping {
 
 export interface AnalysisResult {
   analysis_id: string;
+  inspection_image_id: string;
   pipeline_version: string;
   model_version: string;
   configuration_hash: string;
@@ -66,17 +67,17 @@ export interface InspectionCase {
 }
 
 export interface ExportResult {
-  bundle_path: string;
+  bundle_id: string;
   bundle_sha256: string;
-  file_count: number;
-  download_url?: string;
+  manifest: Record<string, unknown>;
+  download_url: string;
 }
 
 export interface VerificationResult {
   valid: boolean;
   bundle_sha256: string;
-  checked_files: number;
-  errors: string[];
+  artifact_count: number;
+  errors?: string[];
 }
 
 export interface HealthStatus {
