@@ -108,6 +108,7 @@ def evaluate(
     checks: EvaluationChecks,
     gate_contracts: list[dict[str, Any]],
     *,
+    evaluation_split: Split = "test",
     bootstrap_seed: int = 424242,
     bootstrap_replicates: int = 10_000,
 ) -> dict[str, Any]:
@@ -122,7 +123,7 @@ def evaluate(
     test_inference = [
         item
         for item in observations
-        if item.split == "test" and item.group != "trust_boundary"
+        if item.split == evaluation_split and item.group != "trust_boundary"
     ]
     test_positive = [item for item in test_inference if item.expected_outcome == "ANOMALY"]
     test_negative = [item for item in test_inference if item.expected_outcome == "NORMAL"]
@@ -278,6 +279,7 @@ def evaluate(
     }
     gates = _evaluate_gates(metric_projection, gate_contracts)
     return {
+        "evaluation_split": evaluation_split,
         **metric_projection,
         "gates": gates,
         "gate_summary": {

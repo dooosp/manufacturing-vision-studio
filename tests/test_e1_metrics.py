@@ -35,10 +35,11 @@ def observation(
     truth: int = 0,
     predicted: int = 0,
     intersection: int = 0,
+    split: str = "test",
 ) -> EvaluationObservation:
     return EvaluationObservation(
         case_id=case_id,
-        split="test",
+        split=split,  # type: ignore[arg-type]
         group=group,  # type: ignore[arg-type]
         expected_outcome=expected,  # type: ignore[arg-type]
         actual_outcome=actual,  # type: ignore[arg-type]
@@ -210,3 +211,44 @@ def test_average_precision_is_invariant_to_tied_score_input_order() -> None:
 
     assert first["image_level"]["average_precision"]["value"] == 0.5
     assert second["image_level"]["average_precision"]["value"] == 0.5
+
+
+def test_calibration_confirmation_can_be_computed_without_test_observations() -> None:
+    positive = observation(
+        "calibration-positive",
+        expected="ANOMALY",
+        actual="ANOMALY",
+        group="defect",
+        score=0.2,
+        severity="MEDIUM",
+        defect_type="scratch",
+        expected_feature="top_face",
+        predicted_feature="top_face",
+        truth=20,
+        predicted=20,
+        intersection=20,
+        split="calibration",
+    )
+    negative = observation(
+        "calibration-nuisance",
+        expected="NORMAL",
+        actual="NORMAL",
+        group="nuisance",
+        score=0.0,
+        nuisance_types=("translation",),
+        split="calibration",
+    )
+    checks = EvaluationChecks(1, 1, 0, True, True)
+    calibration_gates = contracts()[:4]
+
+    result = evaluate(
+        [positive, negative],
+        checks,
+        calibration_gates,
+        evaluation_split="calibration",
+        bootstrap_replicates=10,
+    )
+
+    assert result["evaluation_split"] == "calibration"
+    assert result["image_level"]["confusion"]["sample_count"] == 2
+    assert result["gate_summary"] == {"passed": 4, "total": 4, "all_passed": True}
