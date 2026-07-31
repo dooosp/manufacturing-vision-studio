@@ -6,9 +6,8 @@ interface EvidencePanelProps {
   copy: Copy;
 }
 
-function shortHash(value?: string): string {
-  if (!value) return "—";
-  return `${value.slice(0, 10)}…${value.slice(-6)}`;
+function displayHash(value?: string): string {
+  return value || "—";
 }
 
 export function EvidencePanel({ inspectionCase, copy }: EvidencePanelProps) {
@@ -21,10 +20,10 @@ export function EvidencePanel({ inspectionCase, copy }: EvidencePanelProps) {
   const evidence = [
     { label: copy.caseIdentity, ready: Boolean(inspectionCase.part_id && inspectionCase.revision), value: `${inspectionCase.part_id} · ${inspectionCase.revision}` },
     { label: copy.caseRevision, ready: Boolean(inspectionCase.case_revision), value: `R${inspectionCase.case_revision ?? 1}` },
-    { label: copy.referenceHash, ready: Boolean(inspectionCase.reference_image?.sha256), value: shortHash(inspectionCase.reference_image?.sha256) },
-    { label: copy.inputHash, ready: Boolean(analyzedInspection?.sha256), value: shortHash(analyzedInspection?.sha256) },
-    { label: copy.configHash, ready: Boolean(analysis?.configuration_hash), value: shortHash(analysis?.configuration_hash) },
-    { label: copy.maskHash, ready: Boolean(analysis?.mask?.sha256), value: shortHash(analysis?.mask?.sha256) },
+    { label: copy.referenceHash, ready: Boolean(inspectionCase.reference_image?.sha256), value: displayHash(inspectionCase.reference_image?.sha256) },
+    { label: copy.inputHash, ready: Boolean(analyzedInspection?.sha256), value: displayHash(analyzedInspection?.sha256) },
+    { label: copy.configHash, ready: Boolean(analysis?.configuration_hash), value: displayHash(analysis?.configuration_hash) },
+    { label: copy.maskHash, ready: Boolean(analysis?.mask?.sha256), value: displayHash(analysis?.mask?.sha256) },
     { label: copy.reviewRecord, ready: Boolean(inspectionCase.disposition), value: inspectionCase.disposition?.decision ?? "—" },
   ];
 

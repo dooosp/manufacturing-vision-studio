@@ -153,20 +153,24 @@ function errorMessage(payload: unknown, fallback: string): string {
       ? error.code
       : null;
     const rawMessage = typeof error.message === "string" ? error.message : fallback;
-    const message = rawMessage.length <= 240
-      && !/[\u0000-\u001f\u007f]/.test(rawMessage)
-      && !/(?:Traceback|[A-Za-z]:\\|\/(?:Users|home|var|tmp)\/)/.test(rawMessage)
-      ? rawMessage
-      : fallback;
+    const message = safeServerMessage(rawMessage, fallback);
     return code ? `[${code}] ${message}` : message;
   }
-  if (typeof value.message === "string") return value.message;
-  if (typeof value.detail === "string") return value.detail;
+  if (typeof value.message === "string") return safeServerMessage(value.message, fallback);
+  if (typeof value.detail === "string") return safeServerMessage(value.detail, fallback);
   if (value.detail && typeof value.detail === "object") {
     const detail = value.detail as Record<string, unknown>;
-    if (typeof detail.message === "string") return detail.message;
+    if (typeof detail.message === "string") return safeServerMessage(detail.message, fallback);
   }
   return fallback;
+}
+
+function safeServerMessage(value: string, fallback: string): string {
+  return value.length <= 240
+    && !/[\u0000-\u001f\u007f]/.test(value)
+    && !/(?:Traceback|[A-Za-z]:\\|\/(?:Users|home|var|tmp)\/)/.test(value)
+    ? value
+    : fallback;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
