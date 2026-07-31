@@ -86,7 +86,7 @@ export function InspectionWorkspace({
             <StatusPill status={inspectionCase.status} copy={copy} />
           </div>
           <p className="case-id">
-            CASE · {(inspectionCase.id || inspectionCase.case_id || "").toUpperCase()} · STATE REV {inspectionCase.case_revision ?? 1}
+            {copy.caseLabel} · {(inspectionCase.id || inspectionCase.case_id || "").toUpperCase()} · {copy.stateRevision} {inspectionCase.case_revision ?? 1}
           </p>
         </div>
         <div className="workspace-actions">

@@ -17,6 +17,7 @@ web/dist/
 test-results/
 playwright-report/
 .playwright/
+.playwright-cli/
 data/
 output/playwright/
 tmp/

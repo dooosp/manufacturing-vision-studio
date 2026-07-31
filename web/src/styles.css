@@ -593,7 +593,7 @@ button:disabled,
 }
 
 .upload-button:focus-within {
-  outline: 3px solid var(--accent);
+  outline: 3px solid var(--cyan);
   outline-offset: 3px;
 }
 

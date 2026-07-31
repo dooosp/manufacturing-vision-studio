@@ -57,6 +57,7 @@ def main() -> int:
 
     environment = os.environ.copy()
     environment["MVS_DATA_DIR"] = str((repository / args.data_dir).resolve())
+    environment["MVS_API_PROXY_TARGET"] = f"http://{args.host}:{args.api_port}"
     api_command = [
         sys.executable,
         "-m",

@@ -149,8 +149,15 @@ function errorMessage(payload: unknown, fallback: string): string {
   const value = payload as Record<string, unknown>;
   if (value.error && typeof value.error === "object") {
     const error = value.error as Record<string, unknown>;
-    const code = typeof error.code === "string" ? error.code : null;
-    const message = typeof error.message === "string" ? error.message : fallback;
+    const code = typeof error.code === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(error.code)
+      ? error.code
+      : null;
+    const rawMessage = typeof error.message === "string" ? error.message : fallback;
+    const message = rawMessage.length <= 240
+      && !/[\u0000-\u001f\u007f]/.test(rawMessage)
+      && !/(?:Traceback|[A-Za-z]:\\|\/(?:Users|home|var|tmp)\/)/.test(rawMessage)
+      ? rawMessage
+      : fallback;
     return code ? `[${code}] ${message}` : message;
   }
   if (typeof value.message === "string") return value.message;
