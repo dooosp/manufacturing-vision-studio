@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -19,10 +20,25 @@ from manufacturing_vision_studio import __version__
 from manufacturing_vision_studio.adapters import FreeCADExportAdapter
 from manufacturing_vision_studio.config import Settings
 from manufacturing_vision_studio.demo import seed_demo
-from manufacturing_vision_studio.errors import MVSError, UnsafeInputError
+from manufacturing_vision_studio.e1.artifacts import (
+    ArtifactRecord,
+    E1ArtifactError,
+    E1ArtifactStore,
+)
+from manufacturing_vision_studio.e1.runner import verify_e1_results
+from manufacturing_vision_studio.errors import MVSError, NotFoundError, UnsafeInputError
 from manufacturing_vision_studio.evidence import EvidenceService
 from manufacturing_vision_studio.images import ImageIngestor
 from manufacturing_vision_studio.registry import LIMITATION, CaseRegistry
+
+_E1_GALLERY_ASSET_FIELDS = (
+    "reference_image_url",
+    "inspection_image_url",
+    "authoritative_mask_url",
+    "predicted_mask_url",
+    "overlay_url",
+)
+_MISSING_ARTIFACT_MESSAGES = frozenset({"Artifact is missing", "Artifact parent is missing"})
 
 
 class StrictModel(BaseModel):
@@ -159,6 +175,62 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "mode": "local_demo",
             "limitations": [LIMITATION],
         }
+
+    @app.get("/api/v1/e1/evaluation/latest")
+    def get_latest_e1_evaluation(
+        profile: Annotated[Literal["mini", "full"], Query()],
+    ) -> dict[str, Any]:
+        return _load_e1_evaluation_result(active_settings, profile)
+
+    @app.get("/api/v1/e1/evaluation/assets/{profile}/{case_id}/{filename}")
+    def get_e1_evaluation_asset(
+        profile: Literal["mini", "full"],
+        case_id: str,
+        filename: str,
+    ) -> Response:
+        validated_case_id = _validate_e1_public_segment(case_id)
+        validated_filename = _validate_e1_public_segment(filename)
+        result = _load_e1_evaluation_result(active_settings, profile)
+        expected_url = (
+            f"/api/v1/e1/evaluation/assets/{profile}/{validated_case_id}/{validated_filename}"
+        )
+        declared, source_sha256 = _declared_e1_asset(result, expected_url)
+        if not declared:
+            raise NotFoundError("E1 evaluation asset was not found")
+        store = _e1_artifact_store(
+            active_settings,
+            profile,
+            missing_message="E1 evaluation asset was not found",
+        )
+        inventory = _load_e1_inventory(
+            store,
+            missing_message="E1 evaluation asset was not found",
+        )
+        relative_path = f"assets/{validated_case_id}/{validated_filename}"
+        record = inventory.get(relative_path)
+        if record is None:
+            raise NotFoundError("E1 evaluation asset was not found")
+        if record.media_type != "image/png" or Path(record.path).suffix.lower() != ".png":
+            raise UnsafeInputError(
+                "Only PNG E1 evaluation assets may be served.",
+                code="SCHEMA_INVALID",
+            )
+        if source_sha256 is not None and record.sha256 != source_sha256:
+            raise E1ArtifactError(
+                "E1 evaluation asset does not match its declared source hash",
+                code="HASH_MISMATCH",
+            )
+        try:
+            data = store.read_bytes(relative_path, expected_sha256=record.sha256)
+        except E1ArtifactError as exc:
+            _raise_e1_not_found(exc, "E1 evaluation asset was not found")
+            raise
+        ingestor.ingest_bytes(
+            data,
+            filename=validated_filename,
+            declared_media_type="image/png",
+        )
+        return Response(data, media_type="image/png", headers={"Cache-Control": "no-store"})
 
     @app.get("/api/cases")
     @app.get("/api/v1/cases", include_in_schema=False)
@@ -423,3 +495,112 @@ def _mount_web_if_present(app: FastAPI) -> None:
 
 
 app = create_app()
+
+
+def _load_e1_evaluation_result(
+    settings: Settings, profile: Literal["mini", "full"]
+) -> dict[str, Any]:
+    store = _e1_artifact_store(
+        settings,
+        profile,
+        missing_message="E1 evaluation result was not found",
+    )
+    try:
+        result = verify_e1_results(store.root)
+    except E1ArtifactError as exc:
+        _raise_e1_not_found(exc, "E1 evaluation result was not found")
+        raise
+    if result.get("profile") != profile:
+        raise E1ArtifactError(
+            "E1 artifact profile does not match the request",
+            code="SCHEMA_INVALID",
+        )
+    result.pop("local_absolute_paths", None)
+    return result
+
+
+def _e1_artifact_store(
+    settings: Settings,
+    profile: Literal["mini", "full"],
+    *,
+    missing_message: str,
+) -> E1ArtifactStore:
+    data_root = _existing_directory(
+        settings.data_dir,
+        missing_message=missing_message,
+    )
+    profile_root = _existing_directory(
+        data_root / "e1-evaluation" / profile,
+        missing_message=missing_message,
+    )
+    return E1ArtifactStore(profile_root, allowed_root=data_root)
+
+
+def _existing_directory(path: Path, *, missing_message: str) -> Path:
+    expanded = path.expanduser()
+    absolute = expanded if expanded.is_absolute() else (Path.cwd() / expanded)
+    absolute = absolute.absolute()
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current /= part
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError as exc:
+            raise NotFoundError(missing_message) from exc
+        if stat.S_ISLNK(metadata.st_mode):
+            raise E1ArtifactError("Artifact path contains a symlink", code="SYMLINK_INPUT")
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise E1ArtifactError("Artifact path is not a directory", code="NON_REGULAR_INPUT")
+    return absolute.resolve(strict=True)
+
+
+def _load_e1_inventory(
+    store: E1ArtifactStore, *, missing_message: str
+) -> dict[str, ArtifactRecord]:
+    try:
+        return {record.path: record for record in store.verify_inventory("inventory.json")}
+    except E1ArtifactError as exc:
+        _raise_e1_not_found(exc, missing_message)
+        raise
+
+
+def _declared_e1_asset(result: dict[str, Any], expected_url: str) -> tuple[bool, str | None]:
+    source_hash_fields = {
+        "reference_image_url": "reference_sha256",
+        "inspection_image_url": "inspection_sha256",
+        "authoritative_mask_url": "authoritative_mask_sha256",
+        "predicted_mask_url": "predicted_mask_sha256",
+        "overlay_url": None,
+    }
+    for item in result.get("error_gallery", []):
+        if not isinstance(item, dict):
+            continue
+        assets = item.get("assets")
+        hashes = item.get("source_hashes")
+        if not isinstance(assets, dict) or not isinstance(hashes, dict):
+            continue
+        for field_name in _E1_GALLERY_ASSET_FIELDS:
+            if assets.get(field_name) != expected_url:
+                continue
+            hash_field = source_hash_fields[field_name]
+            source_sha256 = hashes.get(hash_field) if hash_field is not None else None
+            return True, source_sha256 if isinstance(source_sha256, str) else None
+    return False, None
+
+
+def _validate_e1_public_segment(value: str) -> str:
+    if (
+        not value
+        or value in {".", ".."}
+        or Path(value).name != value
+        or "/" in value
+        or "\\" in value
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise UnsafeInputError("E1 artifact path is unsafe", code="UNSAFE_PATH")
+    return value
+
+
+def _raise_e1_not_found(exc: E1ArtifactError, missing_message: str) -> None:
+    if exc.code == "EVIDENCE_INCOMPLETE" and exc.message in _MISSING_ARTIFACT_MESSAGES:
+        raise NotFoundError(missing_message) from exc

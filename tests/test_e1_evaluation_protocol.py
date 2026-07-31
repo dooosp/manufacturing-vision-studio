@@ -84,32 +84,43 @@ def test_frozen_config_validates_and_rejects_contract_drift() -> None:
 def test_pretest_amendment_and_evaluation_pipeline_are_hash_bound() -> None:
     config = load_json(CONFIG_PATH)
 
-    assert config["protocol_version"] == "1.1.0"
+    assert config["protocol_version"] == "1.3.0"
     assert config["protocol_history"] == [
         {
             "protocol_version": "1.0.0",
-            "protocol_sha256": (
-                "ddb17d07100bddf81b7a239220eac3a711976120c35d1f6ddd426be4dd3ce787"
-            ),
+            "protocol_sha256": ("ddb17d07100bddf81b7a239220eac3a711976120c35d1f6ddd426be4dd3ce787"),
             "outcome": "CALIBRATION_HOLD_WITHOUT_TEST_EXECUTION",
             "retention": "preserved_in_git_history",
         },
         {
             "protocol_version": "1.1.0",
-            "change_reason": (
-                "development-derived_geometry_normalization_and_localized_scoring"
-            ),
+            "protocol_sha256": ("586cd2cb71a621c9794b5a7f9bc09a3602b80b704cede64f5a46b2296ddb96fd"),
+            "outcome": "DEVELOPMENT_HOLD_WITHOUT_CALIBRATION_OR_TEST_EXECUTION",
+            "retention": "preserved_in_git_history",
+        },
+        {
+            "protocol_version": "1.2.0",
+            "protocol_sha256": ("be0fc24071a9060e145c6ef0a49f60cff62da953926611937e12850a4cd236b8"),
+            "outcome": "DEVELOPMENT_HOLD_WITHOUT_CALIBRATION_OR_TEST_EXECUTION",
+            "retention": "preserved_in_archived_development_result",
+        },
+        {
+            "protocol_version": "1.3.0",
+            "change_reason": "development-derived_signed_residue_disambiguation",
             "threshold_changed": False,
+            "calibration_cases_observed_before_freeze": False,
             "test_cases_observed_before_freeze": False,
         },
     ]
     pipeline = config["evaluation_pipeline"]
     assert pipeline["pipeline_id"] == "e1-normalized-local-difference"
+    assert pipeline["pipeline_version"] == "1.1.0"
+    assert pipeline["model_version"] == "1.1.0"
     assert pipeline["model_artifact_sha256"] == (
-        "51f25d98c22a812996e8f2ce6207151a17ea393acf7cc30af11092477cb4557d"
+        "15d557ed44541d4e3b7f382b9b6ff6a9e510a1924b7b9d86a07c7ba52bcbbc03"
     )
     assert pipeline["configuration_sha256"] == (
-        "7ad7ad03e827973e2ece5c5a7c36c540c1327a60a8e253a1f55677ae4ddb058c"
+        "70400090ee420f42470e1b8c539f1145e5a71620ceb57d32b7cf6823ffd8ade0"
     )
     normalization = pipeline["configuration"]["normalization"]
     assert normalization["prediction_dependency"] == "forbidden"
@@ -119,6 +130,24 @@ def test_pretest_amendment_and_evaluation_pipeline_are_hash_bound() -> None:
         "local_window_size_px": 64,
         "minimum_connected_component_pixels": 32,
         "connectivity": 8,
+    }
+    assert pipeline["configuration"]["mask_postprocessing"]["truth_dependency"] == ("forbidden")
+    assert pipeline["configuration"]["mask_postprocessing"] == {
+        "algorithm": "structural_residue_filter_v2",
+        "long_thin_min_major_px": 81,
+        "long_thin_max_minor_px": 12,
+        "long_thin_requires_normalization_applied": True,
+        "affine_neutral_min_pixels": 32,
+        "affine_neutral_max_abs_luminance_delta": 4,
+        "boundary_horizontal_min_width_px": 46,
+        "boundary_horizontal_max_height_px": 16,
+        "top_boundary_max_y_px": 80,
+        "bottom_boundary_min_y_px": 304,
+        "dark_fixture_max_luminance_delta": -60,
+        "normalization_metadata_dependency": "allowed",
+        "truth_dependency": "forbidden",
+        "expected_feature_dependency": "forbidden",
+        "nuisance_parameter_dependency": "forbidden",
     }
 
 
@@ -360,4 +389,5 @@ def test_implementation_sensitive_contracts_are_frozen() -> None:
             "sha256": "1d492d942aa061e16399f715255760b0a37a8b91eba85cb7b729626ff9e435e7",
         }
     ]
+    assert config["data_policy"]["generated_output_root"] == "data/e1-evaluation"
     assert config["data_policy"]["error_gallery_max_cases"] == 12

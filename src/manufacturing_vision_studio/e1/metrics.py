@@ -231,9 +231,7 @@ def evaluate(
         "recall_by_severity": _recall_slices(test_positive, "severity"),
         "recall_by_defect_type": _recall_slices(test_positive, "defect_type"),
         "nuisance_false_positive_rate": _nuisance_slices(test_nuisance),
-        "classification_accuracy_by_revision": _accuracy_slices(
-            test_inference, "cad_revision"
-        ),
+        "classification_accuracy_by_revision": _accuracy_slices(test_inference, "cad_revision"),
         "classification_accuracy_by_view": _accuracy_slices(test_inference, "view_id"),
         "trust_boundary_scenario": _trust_slices(trust),
     }
@@ -299,9 +297,7 @@ def _pixel_record(item: EvaluationObservation) -> dict[str, Any]:
         "defect_type": item.defect_type,
         "severity": item.severity,
         "iou": item.intersection_pixels / union if union else 1.0,
-        "dice": 2 * item.intersection_pixels / dice_denominator
-        if dice_denominator
-        else 1.0,
+        "dice": 2 * item.intersection_pixels / dice_denominator if dice_denominator else 1.0,
         "truth_positive_pixels": item.truth_positive_pixels,
         "predicted_positive_pixels": item.predicted_positive_pixels,
         "intersection_pixels": item.intersection_pixels,
@@ -359,8 +355,10 @@ def _ranking_metric(labels: np.ndarray, scores: np.ndarray, metric: str) -> dict
             "positive_count": positives,
             "negative_count": negatives,
         }
-    value = _average_precision(labels, scores) if metric == "average_precision" else _auroc(
-        labels, scores
+    value = (
+        _average_precision(labels, scores)
+        if metric == "average_precision"
+        else _auroc(labels, scores)
     )
     return {
         "value": value,
@@ -388,9 +386,7 @@ def _average_precision(labels: np.ndarray, scores: np.ndarray) -> float:
         positives_at_threshold = int(np.count_nonzero(ordered_labels[start:end] == 1))
         true_positives += positives_at_threshold
         observed += end - start
-        average_precision += (positives_at_threshold / positive_count) * (
-            true_positives / observed
-        )
+        average_precision += (positives_at_threshold / positive_count) * (true_positives / observed)
         start = end
     return average_precision
 
@@ -442,8 +438,7 @@ def _stratified_median_bootstrap_interval(
 ) -> list[float]:
     rng = np.random.default_rng(seed)
     arrays = [
-        np.asarray(values, dtype=np.float64)
-        for _, values in sorted(values_by_stratum.items())
+        np.asarray(values, dtype=np.float64) for _, values in sorted(values_by_stratum.items())
     ]
     medians = np.empty(replicates, dtype=np.float64)
     for index in range(replicates):
@@ -534,9 +529,9 @@ def _evaluate_gates(
         "nuisance_only_false_positive_rate": projection["image_level"][
             "nuisance_only_false_positive_rate"
         ]["value"],
-        "positive_case_median_dice": projection["pixel_level"][
-            "positive_case_median_dice"
-        ]["value"],
+        "positive_case_median_dice": projection["pixel_level"]["positive_case_median_dice"][
+            "value"
+        ],
         "affected_feature_mapping_accuracy": projection["engineering_level"][
             "affected_feature_mapping_accuracy"
         ]["value"],
@@ -546,12 +541,10 @@ def _evaluate_gates(
         "corrupted_evidence_publication_count": projection["trust_boundary"][
             "corrupted_evidence_publication_count"
         ],
-        "bundle_verify_reimport_rate": projection["trust_boundary"][
-            "bundle_verify_reimport_rate"
-        ]["value"],
-        "dataset_split_hash_overlap": projection["trust_boundary"][
-            "dataset_split_hash_overlap"
+        "bundle_verify_reimport_rate": projection["trust_boundary"]["bundle_verify_reimport_rate"][
+            "value"
         ],
+        "dataset_split_hash_overlap": projection["trust_boundary"]["dataset_split_hash_overlap"],
         "same_seed_manifest_equivalence": projection["trust_boundary"][
             "same_seed_manifest_equivalence"
         ],

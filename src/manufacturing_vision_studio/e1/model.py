@@ -40,6 +40,24 @@ class GeometryNormalization:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class MaskPostprocessing:
+    """Deterministic removal of declared long-thin normalization residue."""
+
+    mask_bytes: bytes
+    mask_sha256: str
+    removed_component_count: int
+    removed_pixel_count: int
+
+    def as_record(self) -> dict[str, object]:
+        return {
+            "algorithm": "structural_residue_filter_v2",
+            "removed_component_count": self.removed_component_count,
+            "removed_pixel_count": self.removed_pixel_count,
+            "filtered_mask_sha256": self.mask_sha256,
+        }
+
+
 def normalize_supported_geometry(
     reference_bytes: bytes,
     inspection_bytes: bytes,
@@ -72,9 +90,7 @@ def normalize_supported_geometry(
         shift_x,
         shift_y,
     )
-    reference_angle, reference_major, reference_minor = _foreground_moments(
-        reference_foreground
-    )
+    reference_angle, reference_major, reference_minor = _foreground_moments(reference_foreground)
     inspection_angle, inspection_major, inspection_minor = _foreground_moments(
         inspection_foreground
     )
@@ -82,9 +98,7 @@ def normalize_supported_geometry(
         -rotation_limit_degrees,
         min(rotation_limit_degrees, inspection_angle - reference_angle),
     )
-    estimated_scale = (
-        reference_major / inspection_major + reference_minor / inspection_minor
-    ) / 2
+    estimated_scale = (reference_major / inspection_major + reference_minor / inspection_minor) / 2
     best_scale = max(1 - scale_delta_limit, min(1 + scale_delta_limit, estimated_scale))
     rotated = inspection.rotate(
         best_rotation,
@@ -183,10 +197,98 @@ def localized_anomaly_score(
     return round(max(global_density, local_density), 8)
 
 
+def filter_structural_residue(
+    mask_bytes: bytes,
+    *,
+    reference_bytes: bytes,
+    inspection_bytes: bytes,
+    normalization_applied: bool = False,
+    long_thin_min_major_px: int = 81,
+    long_thin_max_minor_px: int = 12,
+    affine_neutral_min_pixels: int = 32,
+    affine_neutral_max_abs_luminance_delta: float = 4,
+    boundary_horizontal_min_width_px: int = 46,
+    boundary_horizontal_max_height_px: int = 16,
+    top_boundary_max_y_px: int = 80,
+    bottom_boundary_min_y_px: int = 304,
+    dark_fixture_max_luminance_delta: float = -60,
+) -> MaskPostprocessing:
+    """Remove development-characterized affine/fixture residual shapes.
+
+    The filter consumes only the predicted binary mask, normalized source
+    pixels, the image-derived normalization-applied flag, and fixed image-space
+    bounds. It never receives labels, truth masks, expected features, or case
+    nuisance metadata.
+    """
+
+    mask = _decode_mask(mask_bytes)
+    reference = np.asarray(_decode_rgb(reference_bytes), dtype=np.int16)
+    inspection = np.asarray(_decode_rgb(inspection_bytes), dtype=np.int16)
+    if reference.shape != inspection.shape or reference.shape[:2] != mask.shape:
+        raise UnsafeInputError("Postprocessing image dimensions do not match", code="HASH_MISMATCH")
+    filtered = mask.copy()
+    removed_components = 0
+    removed_pixels = 0
+    for component in _connected_components(mask):
+        y_values = [point[0] for point in component]
+        x_values = [point[1] for point in component]
+        width = max(x_values) - min(x_values) + 1
+        height = max(y_values) - min(y_values) + 1
+        major = max(width, height)
+        minor = min(width, height)
+        long_thin_affine_residue = (
+            normalization_applied
+            and major >= long_thin_min_major_px
+            and minor <= long_thin_max_minor_px
+        )
+        boundary_horizontal = (
+            width >= boundary_horizontal_min_width_px
+            and height <= boundary_horizontal_max_height_px
+            and (
+                min(y_values) <= top_boundary_max_y_px or max(y_values) >= bottom_boundary_min_y_px
+            )
+        )
+        component_y = np.asarray(y_values, dtype=np.intp)
+        component_x = np.asarray(x_values, dtype=np.intp)
+        luminance_delta = float(
+            np.mean(inspection[component_y, component_x])
+            - np.mean(reference[component_y, component_x])
+        )
+        dark_boundary_fixture = (
+            boundary_horizontal and luminance_delta <= dark_fixture_max_luminance_delta
+        )
+        affine_neutral_residue = (
+            normalization_applied
+            and len(component) >= affine_neutral_min_pixels
+            and abs(luminance_delta) <= affine_neutral_max_abs_luminance_delta
+        )
+        if long_thin_affine_residue or affine_neutral_residue or dark_boundary_fixture:
+            removed_components += 1
+            removed_pixels += len(component)
+            for y, x in component:
+                filtered[y, x] = False
+    payload = encode_png(Image.fromarray(np.where(filtered, 255, 0).astype(np.uint8)), mode="L")
+    return MaskPostprocessing(
+        mask_bytes=payload,
+        mask_sha256=sha256_bytes(payload),
+        removed_component_count=removed_components,
+        removed_pixel_count=removed_pixels,
+    )
+
+
 def _components_at_least(mask: np.ndarray, minimum_pixels: int) -> np.ndarray:
+    retained = np.zeros(mask.shape, dtype=bool)
+    for component in _connected_components(mask):
+        if len(component) >= minimum_pixels:
+            for component_y, component_x in component:
+                retained[component_y, component_x] = True
+    return retained
+
+
+def _connected_components(mask: np.ndarray) -> list[list[tuple[int, int]]]:
     height, width = mask.shape
     visited = np.zeros(mask.shape, dtype=bool)
-    retained = np.zeros(mask.shape, dtype=bool)
+    components: list[list[tuple[int, int]]] = []
     for raw_y, raw_x in np.argwhere(mask):
         y, x = int(raw_y), int(raw_x)
         if visited[y, x]:
@@ -209,10 +311,20 @@ def _components_at_least(mask: np.ndarray, minimum_pixels: int) -> np.ndarray:
                         visited[candidate_y, candidate_x] = True
                         component.append((candidate_y, candidate_x))
                         stack.append((candidate_y, candidate_x))
-        if len(component) >= minimum_pixels:
-            for component_y, component_x in component:
-                retained[component_y, component_x] = True
-    return retained
+        components.append(component)
+    return components
+
+
+def _decode_mask(mask_bytes: bytes) -> np.ndarray:
+    try:
+        with Image.open(io.BytesIO(mask_bytes)) as image:
+            if image.format != "PNG" or image.mode != "L":
+                raise UnsafeInputError("Predicted mask is invalid", code="MASK_CORRUPT")
+            return (np.asarray(image, dtype=np.uint8) > 0).copy()
+    except UnsafeInputError:
+        raise
+    except (OSError, SyntaxError, ValueError) as exc:
+        raise UnsafeInputError("Predicted mask is invalid", code="MASK_CORRUPT") from exc
 
 
 def _decode_rgb(payload: bytes) -> Image.Image:

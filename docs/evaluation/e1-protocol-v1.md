@@ -4,7 +4,7 @@ Status: `frozen_before_test`
 
 Normative identity:
 
-- Protocol: `mvs-e1` version `1.1.0`
+- Protocol: `mvs-e1` version `1.3.0`
 - Suite: `e1-authoritative-synthetic` version `1.0.0`
 - Target: v0.2.0 `DEMO_READY_E1_SYNTHETIC_ONLY`
 - Schema: [`schemas/e1-evaluation-protocol.v1.json`](../../schemas/e1-evaluation-protocol.v1.json)
@@ -42,7 +42,7 @@ self-hash cycle; manifests and results bind the canonical protocol digest.
 Protocol `1.0.0` produced a calibration `HOLD` before any test case was
 executed. Its canonical SHA-256 was
 `ddb17d07100bddf81b7a239220eac3a711976120c35d1f6ddd426be4dd3ce787`, and
-the config remains recoverable from Git history. Protocol `1.1.0` keeps the
+the config remains recoverable from Git history. Protocol `1.1.0` kept the
 single threshold candidate at `0.0025` and does not change any case, seed,
 oracle, metric, or gate. It freezes two development-derived pipeline rules:
 
@@ -54,11 +54,40 @@ oracle, metric, or gate. It freezes two development-derived pipeline rules:
   density for 8-connected components of at least 32 pixels. Smaller incoherent
   registration residue is not amplified beyond its global density.
 
-The evaluated pipeline is `e1-normalized-local-difference` `1.0.0`, model
+The complete development split then exposed only long-thin affine residue and
+dark fixture bars. Protocol `1.1.0` therefore ended in development `HOLD`
+without executing calibration or test; its canonical SHA-256 is
+`586cd2cb71a621c9794b5a7f9bc09a3602b80b704cede64f5a46b2296ddb96fd`.
+Protocol `1.2.0` adds a prediction-only structural residue filter: components
+at least 81 px long and at most 12 px wide are removed, while horizontal
+boundary components are removed only when inspection luminance is at least
+8 levels darker than reference. This preserves light missing-material edge
+chips. It also raises the coherent-component minimum from 32 to 64 pixels. The
+filter cannot read truth, expected feature, or nuisance parameters.
+
+The complete development run for `1.2.0` failed the frozen medium/high recall
+gate at `0.825` while the other three primary gates passed. No calibration or
+test case was executed. The exact development result is retained in
+[`e1-development-v1.2.0-hold.json`](history/e1-development-v1.2.0-hold.json).
+
+Protocol `1.3.0` keeps the image threshold and all cases, seeds, truth, metrics,
+and gates unchanged. It restores the coherent-component minimum to 32 pixels,
+requires an applied image-derived normalization before removing long-thin
+affine residue, removes neutral affine residue only when its absolute signed
+luminance delta is at most 4 levels, and tightens the dark-fixture cutoff to
+−60. These distinctions came only from the development split. They cannot read
+truth, expected feature, nuisance parameters, calibration data, or test data.
+The complete development split passed all four primary gates under canonical
+protocol SHA-256
+`140887fb9e9980c8f7854d2d9f8b0a927aee4994fb74ee2535aa109f19fa7d99`;
+the exact development-only result is retained in
+[`e1-development-v1.3.0-pass.json`](history/e1-development-v1.3.0-pass.json).
+
+The evaluated pipeline is `e1-normalized-local-difference` `1.1.0`, model
 artifact SHA-256
-`51f25d98c22a812996e8f2ce6207151a17ea393acf7cc30af11092477cb4557d`, and
+`15d557ed44541d4e3b7f382b9b6ff6a9e510a1924b7b9d86a07c7ba52bcbbc03`, and
 configuration SHA-256
-`7ad7ad03e827973e2ece5c5a7c36c540c1327a60a8e253a1f55677ae4ddb058c`.
+`70400090ee420f42470e1b8c539f1145e5a71620ceb57d32b7cf6823ffd8ade0`.
 The immutable v0.1 pipeline above remains a separate regression and bundle
 gate; it is not mislabeled as the E1 pipeline.
 
@@ -308,10 +337,14 @@ of the 24 portable cases.
 
 ## 11. Repeatability and evidence
 
-Generate full twice in clean output roots. Canonical dataset/case projections,
-source and mask hashes, metrics, and deterministic result projection must match.
-Run IDs, timestamps, duration, and absolute paths are excluded only through the
-declared projection and must never leak into tracked artifacts.
+Generate the full 480-case manifest twice independently. Canonical dataset/case
+projections and every reference, inspection, and authoritative-mask hash must
+match. The release gate does not claim that inference was executed twice. Run
+IDs, timestamps, duration, and absolute paths are excluded only through the
+declared public projection and must never leak into tracked artifacts.
+Generated runtime evidence is written beneath the ignored
+`data/e1-evaluation/<profile>/` root; the CLI, Make targets, and read-only API
+use this same path contract.
 
 Each final run records Git SHA and dirty state, canonical protocol digest,
 generator version/configuration digest, dataset manifest digest, pipeline/model

@@ -46,7 +46,7 @@ def test_protocol_projection_and_plan_are_repeatable_and_defensively_loaded() ->
     second_protocol = load_e1_protocol()
 
     assert first_protocol.configuration_sha256 == (
-        "586cd2cb71a621c9794b5a7f9bc09a3602b80b704cede64f5a46b2296ddb96fd"
+        "140887fb9e9980c8f7854d2d9f8b0a927aee4994fb74ee2535aa109f19fa7d99"
     )
     assert first_protocol.generator_configuration_sha256 == (
         "7e05399f8f93769b83196b255724b6be6548c27ad54c2e242c9dc388c2415f09"

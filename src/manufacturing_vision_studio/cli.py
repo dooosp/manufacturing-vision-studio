@@ -12,6 +12,7 @@ import uvicorn
 from manufacturing_vision_studio.adapters import FreeCADExportAdapter, MVTecADAdapter
 from manufacturing_vision_studio.config import Settings
 from manufacturing_vision_studio.demo import seed_demo
+from manufacturing_vision_studio.e1.runner import run_e1_evaluation, verify_e1_results
 from manufacturing_vision_studio.evidence import EvidenceService
 from manufacturing_vision_studio.registry import CaseRegistry
 
@@ -129,4 +130,30 @@ def freecad() -> None:
             expected_case_revision=args.expected_revision,
             manifest_relative_path=args.manifest,
         )
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+
+
+def e1() -> None:
+    """Run or verify the frozen E1 synthetic evaluation artifacts."""
+
+    parser = argparse.ArgumentParser(
+        description="Run or verify E1 authoritative synthetic evaluation evidence"
+    )
+    parser.add_argument("--output-root", type=Path, default=Path("data/e1-evaluation"))
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    evaluate_parser = subparsers.add_parser("evaluate")
+    evaluate_parser.add_argument("--profile", choices=("mini", "full"), required=True)
+    evaluate_parser.add_argument("--bootstrap-replicates", type=int, default=10_000)
+    verify_parser = subparsers.add_parser("verify")
+    verify_parser.add_argument("--profile", choices=("mini", "full"), required=True)
+    args = parser.parse_args()
+
+    if args.command == "evaluate":
+        output = run_e1_evaluation(
+            args.profile,
+            args.output_root,
+            bootstrap_replicates=args.bootstrap_replicates,
+        )
+    else:
+        output = verify_e1_results(args.output_root / args.profile)
     print(json.dumps(output, ensure_ascii=False, indent=2))

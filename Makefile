@@ -1,4 +1,7 @@
-.PHONY: setup lint typecheck test web-check e2e validate demo format
+.PHONY: setup lint typecheck test web-check e2e validate demo format \
+	evaluate-e1-mini evaluate-e1-full verify-e1-mini verify-e1-full verify-e1-results
+
+E1_OUTPUT_ROOT ?= data/e1-evaluation
 
 setup:
 	uv sync --all-groups
@@ -29,6 +32,20 @@ validate:
 
 demo:
 	uv run python scripts/run_local.py
+
+evaluate-e1-mini:
+	uv run mvs-e1 --output-root $(E1_OUTPUT_ROOT) evaluate --profile mini
+
+evaluate-e1-full:
+	uv run mvs-e1 --output-root $(E1_OUTPUT_ROOT) evaluate --profile full
+
+verify-e1-mini:
+	uv run mvs-e1 --output-root $(E1_OUTPUT_ROOT) verify --profile mini
+
+verify-e1-full:
+	uv run mvs-e1 --output-root $(E1_OUTPUT_ROOT) verify --profile full
+
+verify-e1-results: verify-e1-mini verify-e1-full
 
 format:
 	uv run ruff format .

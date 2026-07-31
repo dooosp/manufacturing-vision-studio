@@ -13,6 +13,7 @@ from manufacturing_vision_studio.canonical import canonical_json_hash, sha256_by
 from manufacturing_vision_studio.e1.domain import E1GeneratedCase
 from manufacturing_vision_studio.e1.metrics import EvaluationObservation, pixel_counts
 from manufacturing_vision_studio.e1.model import (
+    filter_structural_residue,
     localized_anomaly_score,
     normalize_supported_geometry,
 )
@@ -47,6 +48,7 @@ class E1CaseResult:
     predicted_feature_id: str | None
     registration: dict[str, int | float] | None
     normalization: dict[str, object] | None
+    mask_postprocessing: dict[str, object] | None
     source_hashes: dict[str, str]
 
     def as_record(self) -> dict[str, Any]:
@@ -72,6 +74,7 @@ class E1CaseResult:
             },
             "registration": self.registration,
             "normalization": self.normalization,
+            "mask_postprocessing": self.mask_postprocessing,
             "source_hashes": dict(sorted(self.source_hashes.items())),
         }
 
@@ -142,9 +145,7 @@ class E1InferencePolicy:
                 generated.reference_bytes,
                 generated.inspection_bytes,
                 rotation_limit_degrees=float(
-                    self.evaluation_configuration["normalization"][
-                        "rotation_limit_degrees"
-                    ]
+                    self.evaluation_configuration["normalization"]["rotation_limit_degrees"]
                 ),
                 scale_delta_limit=float(
                     self.evaluation_configuration["normalization"]["scale_delta_limit"]
@@ -170,8 +171,32 @@ class E1InferencePolicy:
                 inspection,
                 feature_regions=self.protocol.feature_regions_for_view(plan.view_id),
             )
+            postprocessing_contract = self.evaluation_configuration["mask_postprocessing"]
+            postprocessing = filter_structural_residue(
+                result.mask_bytes,
+                reference_bytes=generated.reference_bytes,
+                inspection_bytes=normalization.inspection_bytes,
+                normalization_applied=normalization.applied,
+                long_thin_min_major_px=int(postprocessing_contract["long_thin_min_major_px"]),
+                long_thin_max_minor_px=int(postprocessing_contract["long_thin_max_minor_px"]),
+                affine_neutral_min_pixels=int(postprocessing_contract["affine_neutral_min_pixels"]),
+                affine_neutral_max_abs_luminance_delta=float(
+                    postprocessing_contract["affine_neutral_max_abs_luminance_delta"]
+                ),
+                boundary_horizontal_min_width_px=int(
+                    postprocessing_contract["boundary_horizontal_min_width_px"]
+                ),
+                boundary_horizontal_max_height_px=int(
+                    postprocessing_contract["boundary_horizontal_max_height_px"]
+                ),
+                top_boundary_max_y_px=int(postprocessing_contract["top_boundary_max_y_px"]),
+                bottom_boundary_min_y_px=int(postprocessing_contract["bottom_boundary_min_y_px"]),
+                dark_fixture_max_luminance_delta=float(
+                    postprocessing_contract["dark_fixture_max_luminance_delta"]
+                ),
+            )
             truth = _mask_array(generated.authoritative_mask_bytes)
-            predicted = _mask_array(result.mask_bytes)
+            predicted = _mask_array(postprocessing.mask_bytes)
             truth_count, predicted_count, intersection, total = pixel_counts(truth, predicted)
             if truth_count != truth_validation.positive_pixel_count:
                 raise UnsafeInputError(
@@ -180,7 +205,7 @@ class E1InferencePolicy:
                 )
             scoring = self.evaluation_configuration["scoring"]
             anomaly_score = localized_anomaly_score(
-                result.mask_bytes,
+                postprocessing.mask_bytes,
                 window_size_px=int(scoring["local_window_size_px"]),
                 minimum_component_pixels=int(scoring["minimum_connected_component_pixels"]),
             )
@@ -201,8 +226,8 @@ class E1InferencePolicy:
                 anomaly_score=anomaly_score,
                 global_anomaly_score=result.anomaly_score,
                 abstention_reason=None,
-                predicted_mask_bytes=result.mask_bytes,
-                predicted_mask_sha256=result.mask_sha256,
+                predicted_mask_bytes=postprocessing.mask_bytes,
+                predicted_mask_sha256=postprocessing.mask_sha256,
                 truth_positive_pixels=truth_count,
                 predicted_positive_pixels=predicted_count,
                 intersection_pixels=intersection,
@@ -215,6 +240,7 @@ class E1InferencePolicy:
                     "mean_absolute_error": result.registration.mean_absolute_error,
                 },
                 normalization=normalization.as_record(),
+                mask_postprocessing=postprocessing.as_record(),
                 source_hashes={
                     "reference_sha256": generated.reference_sha256,
                     "inspection_sha256": generated.inspection_sha256,
@@ -245,6 +271,7 @@ class E1InferencePolicy:
                 predicted_feature_id=None,
                 registration=None,
                 normalization=None,
+                mask_postprocessing=None,
                 source_hashes={
                     "reference_sha256": generated.reference_sha256,
                     "inspection_sha256": generated.inspection_sha256,
@@ -280,10 +307,16 @@ class E1InferencePolicy:
             canonical_json_hash(self.evaluation_configuration)
             == self.evaluation_pipeline["configuration_sha256"]
         )
-        dependency_contract = self.evaluation_configuration["normalization"]
+        normalization_contract = self.evaluation_configuration["normalization"]
+        postprocessing_contract = self.evaluation_configuration["mask_postprocessing"]
         dependencies_forbidden = (
-            dependency_contract["prediction_dependency"] == "forbidden"
-            and dependency_contract["nuisance_parameter_dependency"] == "forbidden"
+            normalization_contract["prediction_dependency"] == "forbidden"
+            and normalization_contract["nuisance_parameter_dependency"] == "forbidden"
+            and postprocessing_contract["normalization_metadata_dependency"] == "allowed"
+            and postprocessing_contract["long_thin_requires_normalization_applied"] is True
+            and postprocessing_contract["truth_dependency"] == "forbidden"
+            and postprocessing_contract["expected_feature_dependency"] == "forbidden"
+            and postprocessing_contract["nuisance_parameter_dependency"] == "forbidden"
         )
         if not base_matches or not evaluation_hash_matches or not dependencies_forbidden:
             raise UnsafeInputError(

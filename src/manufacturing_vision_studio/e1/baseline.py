@@ -113,8 +113,7 @@ def evaluate_v0_1_baseline(protocol: E1Protocol) -> BaselineGateResult:
             and metrics["true_negative"] == 1
             and metrics["false_positive"] == 0
             and metrics["false_negative"] == 0
-            and result_document["configuration_sha256"]
-            == baseline["configuration_sha256"]
+            and result_document["configuration_sha256"] == baseline["configuration_sha256"]
         )
         checks.append(
             {
