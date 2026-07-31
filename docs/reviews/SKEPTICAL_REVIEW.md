@@ -16,7 +16,8 @@ validation, regulatory approval, or `FIELD_READY` status.
 - Web: `npm --prefix web run check` -> **pass**.
 - Browser: `npm --prefix web run test:e2e` -> **4 passed** in real Chromium.
 - Browser artifact:
-  `output/playwright/test-results/core-flow-engineer-reviews-4a50d-d-exports-a-verified-bundle-chromium/verified-evidence-workbench.png`.
+  `docs/screenshots/e2e-verified-evidence.png` (SHA-256
+  `6a57a5ee58e698285857c23472590de3550ddbdecc6547dff6f77bb980264e3c`).
 
 The commands above must be rerun after any source, schema, dependency, or
 evidence-contract change.

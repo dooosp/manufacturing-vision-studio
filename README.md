@@ -21,6 +21,8 @@ The checked-in journey uses deterministic synthetic fixtures and runs entirely
 on the local machine. No account, credential, private dataset, or cloud service
 is required.
 
+![Manufacturing Vision Studio inspection workbench](docs/screenshots/workbench-en.png)
+
 ## Bounded v0.1 journey
 
 1. Create or open an inspection case for a declared part and CAD revision.
@@ -43,11 +45,10 @@ Prerequisites:
 - [uv](https://docs.astral.sh/uv/)
 - Node.js 20 or newer with npm
 
-Install locked Python and web dependencies:
+Install locked Python and web dependencies plus the Chromium test runtime:
 
 ```bash
-uv sync --all-groups
-npm --prefix web ci
+make setup
 ```
 
 Start both local services with one command:
@@ -90,6 +91,25 @@ make validate
 The browser suite starts isolated API and web servers and stores its temporary
 registry beneath `tmp/`. Release evidence is generated from the same bounded
 synthetic journey; optional public datasets are never a test prerequisite.
+
+### Measured v0.1 synthetic result
+
+The checked-in golden evaluation contains exactly two synthetic inspection
+images: one declared nominal and one declared defective. Both preregistered
+classifications passed (`TP=1`, `TN=1`, `FP=0`, `FN=0`), and two executions
+produced the same deterministic result hash at zero tolerance. This is a **2/2
+synthetic regression result**, not a production accuracy claim. Pixel-level IoU
+and Dice were not evaluated in this release.
+
+The reviewed case exports 15 payload artifacts plus its manifest and checksum.
+The checked-in evidence bundle has SHA-256
+`1d492d942aa061e16399f715255760b0a37a8b91eba85cb7b729626ff9e435e7`.
+
+- [Schema-valid synthetic evaluation](docs/evaluation/results/v0.1.0-synthetic.json)
+- [Verified evidence bundle](docs/releases/v0.1.0/evidence-bundle.zip)
+- [Bundle manifest](docs/releases/v0.1.0/bundle-manifest.json)
+- [Korean export/verification browser evidence](docs/screenshots/evidence-verified-ko.png)
+- [Automated Chromium verification evidence](docs/screenshots/e2e-verified-evidence.png)
 
 ## Architecture
 
@@ -154,6 +174,7 @@ generic “production ready” claim.
 - [Architecture index](docs/architecture/README.md)
 - [Security and accessibility review](docs/reviews/SECURITY_ACCESSIBILITY_CHECKLIST.md)
 - [Skeptical review](docs/reviews/SKEPTICAL_REVIEW.md)
+- [v0.1.0 DEMO_READY release packet](docs/releases/v0.1.0/DEMO_READY.md)
 
 ## License
 

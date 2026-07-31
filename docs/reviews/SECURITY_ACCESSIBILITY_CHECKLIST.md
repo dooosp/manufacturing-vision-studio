@@ -15,8 +15,8 @@ conformance claim.
   parity, keyboard file chooser/focus, multi-image evidence binding, safe
   upload failure, export, and verification.
 - Passing browser screenshot:
-  `output/playwright/test-results/core-flow-engineer-reviews-4a50d-d-exports-a-verified-bundle-chromium/verified-evidence-workbench.png`.
-  SHA-256: `6ccde689f93cd14554fd1c7a0b7e771edb48d777c41bfe5d9d2126293d8698fa`.
+  `docs/screenshots/e2e-verified-evidence.png`.
+  SHA-256: `6a57a5ee58e698285857c23472590de3550ddbdecc6547dff6f77bb980264e3c`.
 - Adversarial corpus hashes are locked by
   `tests/test_adversarial_fixtures.py`; the corpus is local and network-free.
 
