@@ -17,8 +17,6 @@ web/dist/
 test-results/
 playwright-report/
 .playwright/
-data/cases/
-data/exports/
-data/uploads/
+data/
+output/playwright/
 tmp/
-
