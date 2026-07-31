@@ -45,6 +45,7 @@ const copy = {
     limitations: "Demo boundary",
     limitationText: "Synthetic evidence only. Not validated for production, safety, or shop-floor release.",
     caseIdentity: "Part + revision identity",
+    caseRevision: "Case state revision",
     referenceHash: "Reference image hash",
     inputHash: "Inspection image hash",
     configHash: "Configuration hash",
@@ -57,6 +58,7 @@ const copy = {
     selectCase: "Select or create a case to begin.",
     captured: "Evidence bundle verified",
     normalizedDifference: "Normalized pixel difference",
+    unmapped: "Unmapped",
   },
   ko: {
     demoMode: "합성 데이터 데모",
@@ -102,6 +104,7 @@ const copy = {
     limitations: "데모 적용 범위",
     limitationText: "합성 증거 전용입니다. 생산, 안전, 작업장 출하 검증을 주장하지 않습니다.",
     caseIdentity: "부품 + 리비전 식별",
+    caseRevision: "케이스 상태 리비전",
     referenceHash: "기준 이미지 해시",
     inputHash: "검사 이미지 해시",
     configHash: "설정 해시",
@@ -114,6 +117,7 @@ const copy = {
     selectCase: "케이스를 선택하거나 새로 만드세요.",
     captured: "증거 번들 검증 완료",
     normalizedDifference: "정규화 픽셀 차이",
+    unmapped: "매핑되지 않음",
   },
 } as const;
 
@@ -122,4 +126,3 @@ export type Copy = (typeof copy)["en"];
 export function getCopy(locale: Locale): Copy {
   return copy[locale] as Copy;
 }
-

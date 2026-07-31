@@ -743,6 +743,21 @@ button:disabled,
   box-shadow: 0 0 40px rgba(255, 74, 74, 0.38);
 }
 
+.mask-image-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 78, 69, 0.72);
+  mix-blend-mode: screen;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  mask-mode: luminance;
+  pointer-events: none;
+}
+
 .metrics-strip {
   display: grid;
   grid-template-columns: 1.25fr repeat(2, 0.72fr) 1fr 0.95fr;

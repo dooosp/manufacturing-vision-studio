@@ -83,7 +83,7 @@ export function CaseRail({
         </form>
       ) : null}
 
-      <div className="case-list" role="list">
+      <div className="case-list">
         {cases.map((item) => {
           const id = item.id || item.case_id || "";
           const selected = id === selectedId;
@@ -91,7 +91,6 @@ export function CaseRail({
             <button
               className={`case-card ${selected ? "is-selected" : ""}`}
               type="button"
-              role="listitem"
               aria-current={selected ? "true" : undefined}
               key={id}
               onClick={() => onSelect(id)}
@@ -129,4 +128,3 @@ export function CaseRail({
     </aside>
   );
 }
-

@@ -99,19 +99,25 @@ export function App() {
 
   async function uploadReference(file: File) {
     if (!selectedCase) return;
-    const updated = await perform("upload", () => api.uploadReference(caseIdentity(selectedCase), file));
+    const updated = await perform("upload", () =>
+      api.uploadReference(caseIdentity(selectedCase), selectedCase.case_revision ?? 1, file),
+    );
     if (updated) replaceCase(updated);
   }
 
   async function uploadInspection(file: File) {
     if (!selectedCase) return;
-    const updated = await perform("upload", () => api.uploadInspection(caseIdentity(selectedCase), file));
+    const updated = await perform("upload", () =>
+      api.uploadInspection(caseIdentity(selectedCase), selectedCase.case_revision ?? 1, file),
+    );
     if (updated) replaceCase(updated);
   }
 
   async function analyze() {
     if (!selectedCase) return;
-    const updated = await perform("analyze", () => api.analyze(caseIdentity(selectedCase)));
+    const updated = await perform("analyze", () =>
+      api.analyze(caseIdentity(selectedCase), selectedCase.case_revision ?? 1),
+    );
     if (updated) {
       replaceCase(updated);
       setShowOverlay(true);
@@ -121,7 +127,13 @@ export function App() {
   async function recordDisposition(decision: Decision, reviewer: string, note: string) {
     if (!selectedCase) return;
     const updated = await perform("disposition", () =>
-      api.disposition(caseIdentity(selectedCase), decision, reviewer, note),
+      api.disposition(
+        caseIdentity(selectedCase),
+        selectedCase.case_revision ?? 1,
+        decision,
+        reviewer,
+        note,
+      ),
     );
     if (updated) replaceCase(updated);
   }
@@ -129,7 +141,10 @@ export function App() {
   async function exportAndVerify() {
     if (!selectedCase) return;
     const exported = await perform("export", async () => {
-      const bundle = await api.exportEvidence(caseIdentity(selectedCase));
+      const bundle = await api.exportEvidence(
+        caseIdentity(selectedCase),
+        selectedCase.case_revision ?? 1,
+      );
       const verification = await api.verifyEvidence(bundle.bundle_path);
       if (!verification.valid) {
         throw new Error(verification.errors.join("; ") || "Bundle verification failed closed");

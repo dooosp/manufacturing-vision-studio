@@ -57,9 +57,12 @@ export function InspectionWorkspace({
 }: InspectionWorkspaceProps) {
   const analysis = inspectionCase.analysis;
   const inspectionImage = inspectionCase.inspection_images[0];
-  const topFeature = analysis ? [...analysis.feature_mappings].sort(
+  const mappedFeatures = analysis?.feature_mappings.filter(
+    (feature) => feature.feature_id !== "unmapped" && feature.anomaly_score > 0,
+  ) ?? [];
+  const topFeature = [...mappedFeatures].sort(
     (left, right) => right.anomaly_score - left.anomaly_score,
-  )[0] : undefined;
+  )[0];
 
   return (
     <section className="workspace-card" aria-labelledby="workspace-title">
@@ -71,7 +74,9 @@ export function InspectionWorkspace({
             <span className="revision-chip">{inspectionCase.revision}</span>
             <StatusPill status={inspectionCase.status} />
           </div>
-          <p className="case-id">CASE · {(inspectionCase.id || inspectionCase.case_id || "").toUpperCase()}</p>
+          <p className="case-id">
+            CASE · {(inspectionCase.id || inspectionCase.case_id || "").toUpperCase()} · STATE REV {inspectionCase.case_revision ?? 1}
+          </p>
         </div>
         <div className="workspace-actions">
           <ImageUpload
@@ -137,6 +142,7 @@ export function InspectionWorkspace({
             variant="inspection"
             showOverlay={Boolean(analysis && showOverlay)}
             imageUrl={inspectionImage?.url}
+            maskUrl={analysis?.mask_url ?? analysis?.mask?.url}
             alt={`${copy.inspection}: ${inspectionCase.part_id} ${inspectionCase.revision}`}
           />
         </figure>
@@ -163,8 +169,8 @@ export function InspectionWorkspace({
         </div>
         <div className="metric-cell feature-cell">
           <span>{copy.affectedFeature}</span>
-          <strong>{topFeature?.label ?? topFeature?.feature_id ?? "—"}</strong>
-          <small>{topFeature ? `${formatScore(topFeature.anomaly_score)} ${copy.normalizedDifference}` : copy.noAnalysis}</small>
+          <strong>{topFeature?.label ?? topFeature?.feature_id ?? (analysis ? copy.unmapped : "—")}</strong>
+          <small>{topFeature ? `${formatScore(topFeature.anomaly_score)} ${copy.normalizedDifference}` : analysis ? copy.unmapped : copy.noAnalysis}</small>
         </div>
         <div className="metric-cell pipeline-cell">
           <span>{copy.pipeline}</span>

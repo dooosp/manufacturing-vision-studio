@@ -52,6 +52,7 @@ export interface HumanDisposition {
 export interface InspectionCase {
   id: string;
   case_id?: string;
+  case_revision?: number;
   part_id: string;
   revision: string;
   status: CaseStatus;

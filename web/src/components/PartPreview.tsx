@@ -2,15 +2,24 @@ interface PartPreviewProps {
   variant: "reference" | "inspection";
   showOverlay: boolean;
   imageUrl?: string;
+  maskUrl?: string;
   alt: string;
 }
 
-export function PartPreview({ variant, showOverlay, imageUrl, alt }: PartPreviewProps) {
+export function PartPreview({ variant, showOverlay, imageUrl, maskUrl, alt }: PartPreviewProps) {
   if (imageUrl) {
     return (
       <div className="part-preview image-preview">
         <img alt={alt} src={imageUrl} />
-        {variant === "inspection" && showOverlay ? <div className="mask-overlay" aria-hidden="true" /> : null}
+        {variant === "inspection" && showOverlay ? (
+          maskUrl ? (
+            <div
+              className="mask-image-overlay"
+              style={{ WebkitMaskImage: `url(${maskUrl})`, maskImage: `url(${maskUrl})` }}
+              aria-hidden="true"
+            />
+          ) : <div className="mask-overlay" aria-hidden="true" />
+        ) : null}
       </div>
     );
   }
@@ -98,4 +107,3 @@ export function PartPreview({ variant, showOverlay, imageUrl, alt }: PartPreview
     </div>
   );
 }
-

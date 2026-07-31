@@ -15,6 +15,7 @@ export function EvidencePanel({ inspectionCase, copy }: EvidencePanelProps) {
   const analysis = inspectionCase.analysis;
   const evidence = [
     { label: copy.caseIdentity, ready: Boolean(inspectionCase.part_id && inspectionCase.revision), value: `${inspectionCase.part_id} · ${inspectionCase.revision}` },
+    { label: copy.caseRevision, ready: Boolean(inspectionCase.case_revision), value: `R${inspectionCase.case_revision ?? 1}` },
     { label: copy.referenceHash, ready: Boolean(inspectionCase.reference_image?.sha256), value: shortHash(inspectionCase.reference_image?.sha256) },
     { label: copy.inputHash, ready: Boolean(inspectionCase.inspection_images[0]?.sha256), value: shortHash(inspectionCase.inspection_images[0]?.sha256) },
     { label: copy.configHash, ready: Boolean(analysis?.configuration_hash), value: shortHash(analysis?.configuration_hash) },
@@ -61,4 +62,3 @@ export function EvidencePanel({ inspectionCase, copy }: EvidencePanelProps) {
     </section>
   );
 }
-
