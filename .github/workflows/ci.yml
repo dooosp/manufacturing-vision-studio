@@ -202,6 +202,10 @@ jobs:
         run: make evaluate-e1-mini
       - name: Verify E1 mini artifacts and immutable bindings
         run: make verify-e1-mini
+      - name: Enforce E1 mini PASS verdict
+        run: >-
+          uv run mvs-e1 --output-root data/e1-evaluation verify
+          --profile mini --require-pass
       - name: Confirm generated evaluation data stayed ignored
         run: test -z "$(git status --porcelain)"
 
@@ -227,6 +231,10 @@ jobs:
         run: make evaluate-e1-full
       - name: Verify E1 full artifacts and immutable bindings
         run: make verify-e1-full
+      - name: Enforce E1 full PASS verdict
+        run: >-
+          uv run mvs-e1 --output-root data/e1-evaluation verify
+          --profile full --require-pass
       - name: Confirm generated evaluation data stayed ignored
         run: test -z "$(git status --porcelain)"
 

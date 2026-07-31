@@ -1,0 +1,118 @@
+{
+  "schema_version": "1.0.0",
+  "evidence_type": "e1_public_hold_summary",
+  "profile": "mini",
+  "verdict": "HOLD",
+  "evaluation_status": "COMPLETED",
+  "protocol": {
+    "protocol_id": "mvs-e1",
+    "protocol_version": "1.3.0",
+    "protocol_sha256": "140887fb9e9980c8f7854d2d9f8b0a927aee4994fb74ee2535aa109f19fa7d99"
+  },
+  "code": {
+    "evaluation_commit_sha": "2f87b885b29c12468effea927279d27424eaa340",
+    "dirty_worktree": false
+  },
+  "dataset": {
+    "case_count": 48,
+    "inference_case_count": 44,
+    "trust_case_count": 4,
+    "manifest_sha256": "00e6ac243217a90f04776855354c2d30de387245b9306c46c22ef992fa0159e3"
+  },
+  "threshold": {
+    "source_split": "calibration",
+    "candidate": 0.0025,
+    "lock_status": "LOCKED",
+    "threshold_lock_sha256": "58b7449fb77fcd93bd4c38b0c120115f0fca31b00851da61b22adb3cc544d985"
+  },
+  "calibration": {
+    "confusion": {"tp": 6, "tn": 5, "fp": 0, "fn": 0},
+    "gates_passed": 4,
+    "gates_total": 4,
+    "medium_high_defect_recall": 1.0,
+    "nuisance_only_false_positive_rate": 0.0,
+    "positive_case_median_dice": 0.9285714285714286,
+    "affected_feature_mapping_accuracy": 1.0
+  },
+  "test": {
+    "executed": true,
+    "confusion": {"tp": 10, "tn": 9, "fp": 1, "fn": 2},
+    "gates_passed": 8,
+    "gates_total": 10,
+    "failed_gates": [
+      {
+        "gate_id": "nuisance_only_false_positive_rate",
+        "observed": 0.16666666666666666,
+        "numerator": 1,
+        "denominator": 6,
+        "operator": "lte",
+        "threshold": 0.05
+      },
+      {
+        "gate_id": "affected_feature_mapping_accuracy",
+        "observed": 0.9166666666666666,
+        "numerator": 11,
+        "denominator": 12,
+        "operator": "gte",
+        "threshold": 0.95
+      }
+    ],
+    "image_metrics": {
+      "precision": 0.9090909090909091,
+      "recall": 0.8333333333333334,
+      "specificity": 0.9,
+      "f1": 0.8695652173913043,
+      "average_precision": 0.9333916083916083,
+      "auroc": 0.9166666666666666
+    },
+    "pixel_metrics": {
+      "positive_case_median_dice": 1.0,
+      "positive_case_median_iou": 1.0,
+      "mask_precision": 1.0,
+      "mask_recall": 0.6451326873139528,
+      "empty_mask_accuracy": 0.8
+    },
+    "engineering_metrics": {
+      "affected_feature_mapping_accuracy": 0.9166666666666666,
+      "part_binding_accuracy": 1.0,
+      "revision_binding_accuracy": 1.0,
+      "abstention_correctness": 1.0
+    },
+    "weakest_slices": {
+      "severity_low_recall": {"numerator": 2, "denominator": 4, "value": 0.5},
+      "burr_recall": {"numerator": 1, "denominator": 2, "value": 0.5},
+      "stain_recall": {"numerator": 1, "denominator": 2, "value": 0.5},
+      "scale_nuisance_false_positive_rate": {
+        "numerator": 1,
+        "denominator": 1,
+        "value": 1.0
+      },
+      "front_view_classification_accuracy": {
+        "numerator": 3,
+        "denominator": 6,
+        "value": 0.5
+      }
+    }
+  },
+  "trust": {
+    "revision_mismatch_publication_count": 0,
+    "corrupted_evidence_publication_count": 0,
+    "bundle_verify_reimport_rate": 1.0,
+    "dataset_split_hash_overlap": 0,
+    "same_seed_manifest_equivalence": true,
+    "v0_1_regression": true
+  },
+  "artifacts": {
+    "result_sha256": "a66d791a5ba53bd53007ace5520ddb9b7e583ef910ff38f566538a1558a1d756",
+    "deterministic_projection_sha256": "815fa35af5330fa6feaf73a51ff17efb6a6743135dae319df46fe073c0460c06",
+    "inventory_file_sha256": "c221dc18e2f53268ea019fc5636208969121b5fcab2d64e70a3783914fdf41dc",
+    "inventory_payload_sha256": "67f5fd38622fb69ee3c29f2f8792af68af3ebb677a57a7f9455b7447d6b9240e",
+    "inventory_artifact_count": 35,
+    "bounded_gallery_case_count": 7
+  },
+  "limitations": [
+    "This is deterministic synthetic evidence, not shop-floor accuracy.",
+    "The source runtime artifacts remain ignored and contain local-only volatile fields.",
+    "This summary is not a substitute for verifying the runtime inventory."
+  ]
+}

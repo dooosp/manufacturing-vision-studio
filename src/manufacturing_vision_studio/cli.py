@@ -146,6 +146,11 @@ def e1() -> None:
     evaluate_parser.add_argument("--bootstrap-replicates", type=int, default=10_000)
     verify_parser = subparsers.add_parser("verify")
     verify_parser.add_argument("--profile", choices=("mini", "full"), required=True)
+    verify_parser.add_argument(
+        "--require-pass",
+        action="store_true",
+        help="exit non-zero after verification unless the frozen verdict is PASS",
+    )
     args = parser.parse_args()
 
     if args.command == "evaluate":
@@ -157,3 +162,12 @@ def e1() -> None:
     else:
         output = verify_e1_results(args.output_root / args.profile)
     print(json.dumps(output, ensure_ascii=False, indent=2))
+    if args.command == "verify" and args.require_pass:
+        _require_e1_pass(output)
+
+
+def _require_e1_pass(result: dict[str, object]) -> None:
+    """Turn an authentic HOLD result into a CI gate failure without hiding it."""
+
+    if result.get("verdict") != "PASS":
+        raise SystemExit(1)
