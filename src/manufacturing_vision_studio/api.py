@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, Form, Header, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -11,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from starlette.middleware.base import RequestResponseEndpoint
 from starlette.types import Scope
 
 from manufacturing_vision_studio import __version__
@@ -91,6 +93,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_methods=["GET", "POST"],
         allow_headers=["Content-Type", "If-Match"],
     )
+
+    @app.middleware("http")
+    async def reject_external_mutation_origins(
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            origin = request.headers.get("origin")
+            if origin is not None and not _is_loopback_origin(origin):
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "error": {
+                            "code": "SCHEMA_INVALID",
+                            "message": "Cross-origin mutation is not allowed.",
+                            "details": {},
+                        }
+                    },
+                )
+        return await call_next(request)
 
     @app.exception_handler(MVSError)
     async def handle_mvs_error(_request: Request, exc: MVSError) -> JSONResponse:
@@ -358,6 +380,26 @@ def _parse_if_match(value: str | None) -> int:
     if parsed < 1:
         raise UnsafeInputError("Case revision is invalid.", code="SCHEMA_INVALID")
     return parsed
+
+
+def _is_loopback_origin(origin: str) -> bool:
+    if not origin.isascii() or any(character.isspace() for character in origin):
+        return False
+    try:
+        parsed = urlsplit(origin)
+        port = parsed.port
+    except ValueError:
+        return False
+    del port
+    return (
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path == ""
+        and parsed.query == ""
+        and parsed.fragment == ""
+    )
 
 
 def re_fullmatch_bundle(filename: str) -> bool:
