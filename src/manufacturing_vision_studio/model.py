@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 from dataclasses import asdict, dataclass
 from typing import ClassVar, Protocol
 
@@ -10,6 +9,7 @@ import numpy as np
 from PIL import Image
 
 from manufacturing_vision_studio.canonical import canonical_json_hash, sha256_bytes
+from manufacturing_vision_studio.canonical_png import encode_png
 from manufacturing_vision_studio.errors import UnsafeInputError
 from manufacturing_vision_studio.images import IngestedImage
 
@@ -305,11 +305,4 @@ def _map_features(mask: np.ndarray, regions: FeatureRegions) -> tuple[FeatureSco
 
 
 def _encode_png(array: np.ndarray, *, mode: str) -> bytes:
-    output = io.BytesIO()
-    Image.fromarray(array, mode=mode).save(
-        output,
-        format="PNG",
-        optimize=False,
-        compress_level=9,
-    )
-    return output.getvalue()
+    return encode_png(Image.fromarray(array, mode=mode), mode=mode)
