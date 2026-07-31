@@ -11,8 +11,10 @@
     "protocol_id",
     "protocol_version",
     "status",
+    "protocol_history",
     "suite",
     "baseline",
+    "evaluation_pipeline",
     "generator",
     "media",
     "universe",
@@ -40,10 +42,26 @@
       "const": "mvs-e1"
     },
     "protocol_version": {
-      "const": "1.0.0"
+      "const": "1.1.0"
     },
     "status": {
       "const": "frozen_before_test"
+    },
+    "protocol_history": {
+      "const": [
+        {
+          "protocol_version": "1.0.0",
+          "protocol_sha256": "ddb17d07100bddf81b7a239220eac3a711976120c35d1f6ddd426be4dd3ce787",
+          "outcome": "CALIBRATION_HOLD_WITHOUT_TEST_EXECUTION",
+          "retention": "preserved_in_git_history"
+        },
+        {
+          "protocol_version": "1.1.0",
+          "change_reason": "development-derived_geometry_normalization_and_localized_scoring",
+          "threshold_changed": false,
+          "test_cases_observed_before_freeze": false
+        }
+      ]
     },
     "suite": {
       "type": "object",
@@ -106,6 +124,39 @@
         },
         "threshold_covered_by_configuration_sha256": {
           "const": false
+        }
+      }
+    },
+    "evaluation_pipeline": {
+      "const": {
+        "pipeline_id": "e1-normalized-local-difference",
+        "pipeline_version": "1.0.0",
+        "model_id": "e1-normalized-local-difference",
+        "model_version": "1.0.0",
+        "model_artifact_sha256": "51f25d98c22a812996e8f2ce6207151a17ea393acf7cc30af11092477cb4557d",
+        "configuration_sha256": "7ad7ad03e827973e2ece5c5a7c36c540c1327a60a8e253a1f55677ae4ddb058c",
+        "configuration": {
+          "base_configuration_sha256": "0a6d7cdf32feeed5aa54b16018af5519adb4a2fa9188f86c259969b88b5129b8",
+          "normalization": {
+            "algorithm": "foreground_moment_affine_v1",
+            "rotation_limit_degrees": 1.5,
+            "scale_delta_limit": 0.02,
+            "foreground_rgb_chebyshev_threshold": 18,
+            "translation_comparison_limit_px": 12,
+            "minimum_foreground_fit_improvement_ratio": 0.05,
+            "prediction_dependency": "forbidden",
+            "nuisance_parameter_dependency": "forbidden"
+          },
+          "scoring": {
+            "algorithm": "max_global_and_coherent_local_density_v1",
+            "local_window_size_px": 64,
+            "minimum_connected_component_pixels": 32,
+            "connectivity": 8
+          },
+          "feature_mapping": {
+            "algorithm": "highest_anomaly_fraction_then_pixels_then_feature_id_v1",
+            "minimum_mask_pixels": 1
+          }
         }
       }
     },

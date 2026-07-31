@@ -265,7 +265,11 @@ def validate_e1_case_manifest(
         raise UnsafeInputError("E1 generator configuration does not match", code="HASH_MISMATCH")
 
     pipeline = _input_required_mapping(manifest, "pipeline", "case manifest")
-    expected_pipeline = protocol.section("baseline")["pipeline"]
+    evaluation_pipeline = protocol.section("evaluation_pipeline")
+    expected_pipeline = {
+        "pipeline_id": evaluation_pipeline["pipeline_id"],
+        "pipeline_version": evaluation_pipeline["pipeline_version"],
+    }
     if pipeline != expected_pipeline:
         raise UnsafeInputError("E1 pipeline version is unknown", code="UNKNOWN_PIPELINE_VERSION")
 
@@ -440,7 +444,12 @@ def _base_manifest(protocol: E1Protocol, *, split: str = "development") -> dict[
             "generator_version": protocol.generator_version,
             "generator_configuration_sha256": protocol.generator_configuration_sha256,
         },
-        "pipeline": protocol.section("baseline")["pipeline"],
+        "pipeline": {
+            "pipeline_id": protocol.section("evaluation_pipeline")["pipeline_id"],
+            "pipeline_version": protocol.section("evaluation_pipeline")[
+                "pipeline_version"
+            ],
+        },
         "source_hashes": source_hashes,
     }
     _refresh_case_binding(manifest, protocol)

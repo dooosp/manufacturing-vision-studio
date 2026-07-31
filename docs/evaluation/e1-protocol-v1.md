@@ -4,7 +4,7 @@ Status: `frozen_before_test`
 
 Normative identity:
 
-- Protocol: `mvs-e1` version `1.0.0`
+- Protocol: `mvs-e1` version `1.1.0`
 - Suite: `e1-authoritative-synthetic` version `1.0.0`
 - Target: v0.2.0 `DEMO_READY_E1_SYNTHETIC_ONLY`
 - Schema: [`schemas/e1-evaluation-protocol.v1.json`](../../schemas/e1-evaluation-protocol.v1.json)
@@ -36,6 +36,31 @@ hardcoded image threshold. The downstream E1 protocol/configuration digest must
 bind the complete E1 configuration, including `0.0025` and the feature-mapping
 rule. The protocol document does not contain its own digest, avoiding a
 self-hash cycle; manifests and results bind the canonical protocol digest.
+
+### Pre-test amendment history
+
+Protocol `1.0.0` produced a calibration `HOLD` before any test case was
+executed. Its canonical SHA-256 was
+`ddb17d07100bddf81b7a239220eac3a711976120c35d1f6ddd426be4dd3ce787`, and
+the config remains recoverable from Git history. Protocol `1.1.0` keeps the
+single threshold candidate at `0.0025` and does not change any case, seed,
+oracle, metric, or gate. It freezes two development-derived pipeline rules:
+
+- supported small rotation/scale is inferred from reference/inspection
+  foreground moments without reading nuisance parameters, predictions, masks,
+  defect truth, or expected features; a correction is used only when binary
+  foreground fit improves by at least 5%; and
+- the image score is the maximum of global mask density and 64×64 local
+  density for 8-connected components of at least 32 pixels. Smaller incoherent
+  registration residue is not amplified beyond its global density.
+
+The evaluated pipeline is `e1-normalized-local-difference` `1.0.0`, model
+artifact SHA-256
+`51f25d98c22a812996e8f2ce6207151a17ea393acf7cc30af11092477cb4557d`, and
+configuration SHA-256
+`7ad7ad03e827973e2ece5c5a7c36c540c1327a60a8e253a1f55677ae4ddb058c`.
+The immutable v0.1 pipeline above remains a separate regression and bundle
+gate; it is not mislabeled as the E1 pipeline.
 
 ## 2. Dataset composition
 
@@ -88,9 +113,10 @@ case-binding projection remain split-disjoint.
 Mini/full overlap is required because mini is a subset; it is not split
 leakage. Test results may not drive threshold or case-manifest changes. A failed
 implementation is repaired using the development set, recorded under a new code
-SHA, and rerun without changing the locked test contract. Any protocol,
-threshold, generator, split, metric, or gate change requires version 2 and
-preservation of v1 configuration and results.
+SHA, and rerun without changing the locked test contract. After formal test
+execution, any protocol, threshold, generator, split, metric, or gate change
+requires a new protocol version and preservation of the prior configuration and
+result.
 
 ## 3. Deterministic generator and universe
 

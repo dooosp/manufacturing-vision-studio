@@ -9,15 +9,18 @@ from typing import Any, Literal
 import numpy as np
 from PIL import Image
 
-from manufacturing_vision_studio.canonical import sha256_bytes
+from manufacturing_vision_studio.canonical import canonical_json_hash, sha256_bytes
 from manufacturing_vision_studio.e1.domain import E1GeneratedCase
 from manufacturing_vision_studio.e1.metrics import EvaluationObservation, pixel_counts
+from manufacturing_vision_studio.e1.model import (
+    localized_anomaly_score,
+    normalize_supported_geometry,
+)
 from manufacturing_vision_studio.e1.oracle import validate_generated_case
 from manufacturing_vision_studio.e1.protocol import E1Protocol
 from manufacturing_vision_studio.errors import MVSError, UnsafeInputError
 from manufacturing_vision_studio.images import ImageIngestor
 from manufacturing_vision_studio.model import DeterministicDifferenceModel, ModelConfig
-from manufacturing_vision_studio.registry import MODEL_ARTIFACT_SHA256
 
 ActualOutcome = Literal["NORMAL", "ANOMALY", "ABSTAIN"]
 
@@ -32,6 +35,7 @@ class E1CaseResult:
     expected_outcome: str
     actual_outcome: ActualOutcome
     anomaly_score: float | None
+    global_anomaly_score: float | None
     abstention_reason: str | None
     predicted_mask_bytes: bytes | None
     predicted_mask_sha256: str | None
@@ -42,6 +46,7 @@ class E1CaseResult:
     expected_feature_id: str | None
     predicted_feature_id: str | None
     registration: dict[str, int | float] | None
+    normalization: dict[str, object] | None
     source_hashes: dict[str, str]
 
     def as_record(self) -> dict[str, Any]:
@@ -52,6 +57,7 @@ class E1CaseResult:
             "expected_outcome": self.expected_outcome,
             "actual_outcome": self.actual_outcome,
             "anomaly_score": self.anomaly_score,
+            "global_anomaly_score": self.global_anomaly_score,
             "abstention_reason": self.abstention_reason,
             "predicted_mask_sha256": self.predicted_mask_sha256,
             "pixel_counts": {
@@ -65,6 +71,7 @@ class E1CaseResult:
                 "predicted_feature_id": self.predicted_feature_id,
             },
             "registration": self.registration,
+            "normalization": self.normalization,
             "source_hashes": dict(sorted(self.source_hashes.items())),
         }
 
@@ -108,6 +115,8 @@ class E1InferencePolicy:
         threshold = protocol.section("threshold_selection")
         self.protocol = protocol
         self.image_threshold = float(threshold["locked_image_threshold"])
+        self.evaluation_pipeline = protocol.section("evaluation_pipeline")
+        self.evaluation_configuration = self.evaluation_pipeline["configuration"]
         self.model = model or DeterministicDifferenceModel(
             ModelConfig(
                 registration_max_shift=int(threshold["registration_max_shift_px"]),
@@ -129,13 +138,30 @@ class E1InferencePolicy:
             )
         try:
             truth_validation = validate_generated_case(generated, self.protocol)
+            normalization = normalize_supported_geometry(
+                generated.reference_bytes,
+                generated.inspection_bytes,
+                rotation_limit_degrees=float(
+                    self.evaluation_configuration["normalization"][
+                        "rotation_limit_degrees"
+                    ]
+                ),
+                scale_delta_limit=float(
+                    self.evaluation_configuration["normalization"]["scale_delta_limit"]
+                ),
+                apply_improvement_ratio=float(
+                    self.evaluation_configuration["normalization"][
+                        "minimum_foreground_fit_improvement_ratio"
+                    ]
+                ),
+            )
             reference = self.ingestor.ingest_bytes(
                 generated.reference_bytes,
                 filename=f"{plan.case_id}-reference.png",
                 declared_media_type="image/png",
             )
             inspection = self.ingestor.ingest_bytes(
-                generated.inspection_bytes,
+                normalization.inspection_bytes,
                 filename=f"{plan.case_id}-inspection.png",
                 declared_media_type="image/png",
             )
@@ -152,17 +178,19 @@ class E1InferencePolicy:
                     "Validated truth count changed before scoring",
                     code="HASH_MISMATCH",
                 )
-            actual = classify_score(result.anomaly_score, self.image_threshold)
+            scoring = self.evaluation_configuration["scoring"]
+            anomaly_score = localized_anomaly_score(
+                result.mask_bytes,
+                window_size_px=int(scoring["local_window_size_px"]),
+                minimum_component_pixels=int(scoring["minimum_connected_component_pixels"]),
+            )
+            actual = classify_score(anomaly_score, self.image_threshold)
             expected_feature = None if plan.defect is None else plan.defect.target_feature_id
             minimum_feature_pixels = int(
-                self.protocol.section("threshold_selection")[
-                    "feature_mapping_min_mask_pixels"
-                ]
+                self.protocol.section("threshold_selection")["feature_mapping_min_mask_pixels"]
             )
             predicted_feature = (
-                result.dominant_feature
-                if predicted_count >= minimum_feature_pixels
-                else None
+                result.dominant_feature if predicted_count >= minimum_feature_pixels else None
             )
             return E1CaseResult(
                 case_id=plan.case_id,
@@ -170,7 +198,8 @@ class E1InferencePolicy:
                 group=plan.group.value,
                 expected_outcome=plan.expected_outcome.value,
                 actual_outcome=actual,
-                anomaly_score=result.anomaly_score,
+                anomaly_score=anomaly_score,
+                global_anomaly_score=result.anomaly_score,
                 abstention_reason=None,
                 predicted_mask_bytes=result.mask_bytes,
                 predicted_mask_sha256=result.mask_sha256,
@@ -185,13 +214,12 @@ class E1InferencePolicy:
                     "dy": result.registration.dy,
                     "mean_absolute_error": result.registration.mean_absolute_error,
                 },
+                normalization=normalization.as_record(),
                 source_hashes={
                     "reference_sha256": generated.reference_sha256,
                     "inspection_sha256": generated.inspection_sha256,
                     "authoritative_mask_sha256": generated.authoritative_mask_sha256,
-                    "generator_configuration_sha256": (
-                        generated.generator_configuration_sha256
-                    ),
+                    "generator_configuration_sha256": (generated.generator_configuration_sha256),
                 },
             )
         except MVSError as exc:
@@ -203,6 +231,7 @@ class E1InferencePolicy:
                 expected_outcome=plan.expected_outcome.value,
                 actual_outcome="ABSTAIN",
                 anomaly_score=None,
+                global_anomaly_score=None,
                 abstention_reason=exc.code,
                 predicted_mask_bytes=None,
                 predicted_mask_sha256=None,
@@ -215,24 +244,23 @@ class E1InferencePolicy:
                 ),
                 predicted_feature_id=None,
                 registration=None,
+                normalization=None,
                 source_hashes={
                     "reference_sha256": generated.reference_sha256,
                     "inspection_sha256": generated.inspection_sha256,
                     "authoritative_mask_sha256": generated.authoritative_mask_sha256,
-                    "generator_configuration_sha256": (
-                        generated.generator_configuration_sha256
-                    ),
+                    "generator_configuration_sha256": (generated.generator_configuration_sha256),
                 },
             )
 
     def model_record(self) -> dict[str, Any]:
         return {
-            "pipeline_id": self.model.pipeline_id,
-            "pipeline_version": self.model.pipeline_version,
-            "model_id": self.model.model_name,
-            "model_version": self.model.model_version,
-            "model_artifact_sha256": MODEL_ARTIFACT_SHA256,
-            "configuration_sha256": self.model.config.config_hash,
+            "pipeline_id": self.evaluation_pipeline["pipeline_id"],
+            "pipeline_version": self.evaluation_pipeline["pipeline_version"],
+            "model_id": self.evaluation_pipeline["model_id"],
+            "model_version": self.evaluation_pipeline["model_version"],
+            "model_artifact_sha256": self.evaluation_pipeline["model_artifact_sha256"],
+            "configuration_sha256": self.evaluation_pipeline["configuration_sha256"],
             "locked_image_threshold": self.image_threshold,
             "threshold_source_split": "calibration",
         }
@@ -241,22 +269,31 @@ class E1InferencePolicy:
         baseline = self.protocol.section("baseline")
         pipeline = baseline["pipeline"]
         model = baseline["model"]
-        observed = self.model_record()
-        expected = {
-            "pipeline_id": pipeline["pipeline_id"],
-            "pipeline_version": pipeline["pipeline_version"],
-            "model_id": model["model_id"],
-            "model_version": model["model_version"],
-            "model_artifact_sha256": model["model_artifact_sha256"],
-            "configuration_sha256": baseline["configuration_sha256"],
-            "locked_image_threshold": baseline["locked_image_threshold"],
-            "threshold_source_split": "calibration",
-        }
-        if observed != expected:
+        base_matches = (
+            self.model.pipeline_id == pipeline["pipeline_id"]
+            and self.model.pipeline_version == pipeline["pipeline_version"]
+            and self.model.model_name == model["model_id"]
+            and self.model.model_version == model["model_version"]
+            and self.model.config.config_hash == baseline["configuration_sha256"]
+        )
+        evaluation_hash_matches = (
+            canonical_json_hash(self.evaluation_configuration)
+            == self.evaluation_pipeline["configuration_sha256"]
+        )
+        dependency_contract = self.evaluation_configuration["normalization"]
+        dependencies_forbidden = (
+            dependency_contract["prediction_dependency"] == "forbidden"
+            and dependency_contract["nuisance_parameter_dependency"] == "forbidden"
+        )
+        if not base_matches or not evaluation_hash_matches or not dependencies_forbidden:
             raise UnsafeInputError(
                 "Runtime model does not match the frozen E1 baseline",
                 code="UNKNOWN_PIPELINE_VERSION",
-                details={"expected": expected, "observed": observed},
+                details={
+                    "base_matches": base_matches,
+                    "evaluation_hash_matches": evaluation_hash_matches,
+                    "dependencies_forbidden": dependencies_forbidden,
+                },
             )
 
 

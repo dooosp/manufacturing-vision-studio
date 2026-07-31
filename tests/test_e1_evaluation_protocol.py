@@ -81,6 +81,47 @@ def test_frozen_config_validates_and_rejects_contract_drift() -> None:
     assert all(not contract.is_valid(mutated) for mutated in mutations)
 
 
+def test_pretest_amendment_and_evaluation_pipeline_are_hash_bound() -> None:
+    config = load_json(CONFIG_PATH)
+
+    assert config["protocol_version"] == "1.1.0"
+    assert config["protocol_history"] == [
+        {
+            "protocol_version": "1.0.0",
+            "protocol_sha256": (
+                "ddb17d07100bddf81b7a239220eac3a711976120c35d1f6ddd426be4dd3ce787"
+            ),
+            "outcome": "CALIBRATION_HOLD_WITHOUT_TEST_EXECUTION",
+            "retention": "preserved_in_git_history",
+        },
+        {
+            "protocol_version": "1.1.0",
+            "change_reason": (
+                "development-derived_geometry_normalization_and_localized_scoring"
+            ),
+            "threshold_changed": False,
+            "test_cases_observed_before_freeze": False,
+        },
+    ]
+    pipeline = config["evaluation_pipeline"]
+    assert pipeline["pipeline_id"] == "e1-normalized-local-difference"
+    assert pipeline["model_artifact_sha256"] == (
+        "51f25d98c22a812996e8f2ce6207151a17ea393acf7cc30af11092477cb4557d"
+    )
+    assert pipeline["configuration_sha256"] == (
+        "7ad7ad03e827973e2ece5c5a7c36c540c1327a60a8e253a1f55677ae4ddb058c"
+    )
+    normalization = pipeline["configuration"]["normalization"]
+    assert normalization["prediction_dependency"] == "forbidden"
+    assert normalization["nuisance_parameter_dependency"] == "forbidden"
+    assert pipeline["configuration"]["scoring"] == {
+        "algorithm": "max_global_and_coherent_local_density_v1",
+        "local_window_size_px": 64,
+        "minimum_connected_component_pixels": 32,
+        "connectivity": 8,
+    }
+
+
 def test_exact_full_and_mini_composition_is_frozen() -> None:
     profiles = load_json(CONFIG_PATH)["dataset_profiles"]
 
