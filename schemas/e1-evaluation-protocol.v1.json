@@ -1,0 +1,1734 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.manufacturing-vision-studio.local/e1-evaluation-protocol.v1.json",
+  "title": "Manufacturing Vision Studio E1 evaluation protocol v1",
+  "description": "Frozen preregistration contract for the deterministic E1 authoritative synthetic evaluation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schema_version",
+    "protocol_id",
+    "protocol_version",
+    "status",
+    "suite",
+    "baseline",
+    "generator",
+    "media",
+    "universe",
+    "dataset_profiles",
+    "taxonomies",
+    "split_rules",
+    "threshold_selection",
+    "oracle_contract",
+    "metrics",
+    "acceptance_gates",
+    "repeatability_contract",
+    "resource_limits",
+    "data_policy",
+    "exclusions",
+    "limitations"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "../../schemas/e1-evaluation-protocol.v1.json"
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "protocol_id": {
+      "const": "mvs-e1"
+    },
+    "protocol_version": {
+      "const": "1.0.0"
+    },
+    "status": {
+      "const": "frozen_before_test"
+    },
+    "suite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "suite_id",
+        "suite_version",
+        "target_release",
+        "readiness_claim"
+      ],
+      "properties": {
+        "suite_id": {
+          "const": "e1-authoritative-synthetic"
+        },
+        "suite_version": {
+          "const": "1.0.0"
+        },
+        "target_release": {
+          "const": "0.2.0"
+        },
+        "readiness_claim": {
+          "const": "DEMO_READY_E1_SYNTHETIC_ONLY"
+        }
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "git_commit",
+        "tag",
+        "bundle_sha256",
+        "pipeline",
+        "model",
+        "configuration_sha256",
+        "locked_image_threshold",
+        "threshold_covered_by_configuration_sha256"
+      ],
+      "properties": {
+        "git_commit": {
+          "$ref": "#/$defs/git_sha1"
+        },
+        "tag": {
+          "const": "v0.1.0"
+        },
+        "bundle_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "pipeline": {
+          "$ref": "#/$defs/pipeline"
+        },
+        "model": {
+          "$ref": "#/$defs/model"
+        },
+        "configuration_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "locked_image_threshold": {
+          "$ref": "#/$defs/unit_interval"
+        },
+        "threshold_covered_by_configuration_sha256": {
+          "const": false
+        }
+      }
+    },
+    "generator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generator_id",
+        "generator_version",
+        "recipe_version",
+        "seed_derivation",
+        "seed_blocks",
+        "case_id_format",
+        "generator_configuration_sha256_required"
+      ],
+      "properties": {
+        "generator_id": {
+          "const": "mvs-e1-generator"
+        },
+        "generator_version": {
+          "const": "1.0.0"
+        },
+        "recipe_version": {
+          "const": "1.0.0"
+        },
+        "seed_derivation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "algorithm",
+            "seed_type",
+            "ordinal_start",
+            "rule"
+          ],
+          "properties": {
+            "algorithm": {
+              "const": "contiguous_uint32_blocks_v1"
+            },
+            "seed_type": {
+              "const": "uint32"
+            },
+            "ordinal_start": {
+              "const": 0
+            },
+            "rule": {
+              "const": "seed_block.start + zero_based_group_ordinal"
+            }
+          }
+        },
+        "seed_blocks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "development",
+            "calibration",
+            "test"
+          ],
+          "properties": {
+            "development": {
+              "$ref": "#/$defs/seed_block_group"
+            },
+            "calibration": {
+              "$ref": "#/$defs/seed_block_group"
+            },
+            "test": {
+              "$ref": "#/$defs/seed_block_group"
+            }
+          }
+        },
+        "case_id_format": {
+          "const": "e1-{split}-{group}-{ordinal:03d}"
+        },
+        "generator_configuration_sha256_required": {
+          "const": true
+        }
+      }
+    },
+    "media": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "width_px",
+        "height_px",
+        "source_media_types",
+        "canonical_image",
+        "authoritative_mask"
+      ],
+      "properties": {
+        "width_px": {
+          "const": 512
+        },
+        "height_px": {
+          "const": 384
+        },
+        "source_media_types": {
+          "const": [
+            "image/png",
+            "image/jpeg"
+          ]
+        },
+        "canonical_image": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "media_type",
+            "color_mode",
+            "bit_depth"
+          ],
+          "properties": {
+            "media_type": {
+              "const": "image/png"
+            },
+            "color_mode": {
+              "const": "RGB8"
+            },
+            "bit_depth": {
+              "const": 8
+            }
+          }
+        },
+        "authoritative_mask": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "media_type",
+            "color_mode",
+            "bit_depth",
+            "allowed_values",
+            "must_match_image_dimensions"
+          ],
+          "properties": {
+            "media_type": {
+              "const": "image/png"
+            },
+            "color_mode": {
+              "const": "L"
+            },
+            "bit_depth": {
+              "const": 8
+            },
+            "allowed_values": {
+              "const": [
+                0,
+                255
+              ]
+            },
+            "must_match_image_dimensions": {
+              "const": true
+            }
+          }
+        }
+      }
+    },
+    "universe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parts",
+        "views",
+        "feature_ids"
+      ],
+      "properties": {
+        "parts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/part"
+          }
+        },
+        "views": {
+          "const": [
+            "front",
+            "oblique_left",
+            "oblique_right"
+          ]
+        },
+        "feature_ids": {
+          "const": [
+            "top_face",
+            "hole_left",
+            "hole_right",
+            "top_edge",
+            "bottom_edge"
+          ]
+        }
+      }
+    },
+    "dataset_profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mini",
+        "full",
+        "split_composition",
+        "mini_selection"
+      ],
+      "properties": {
+        "mini": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile",
+            "case_count",
+            "inference_case_count",
+            "trust_case_count",
+            "group_counts",
+            "subset_of"
+          ],
+          "properties": {
+            "profile": {
+              "const": "mini"
+            },
+            "case_count": {
+              "const": 48
+            },
+            "inference_case_count": {
+              "const": 44
+            },
+            "trust_case_count": {
+              "const": 4
+            },
+            "group_counts": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "clean",
+                "nuisance",
+                "defect",
+                "trust_boundary"
+              ],
+              "properties": {
+                "clean": {
+                  "const": 8
+                },
+                "nuisance": {
+                  "const": 12
+                },
+                "defect": {
+                  "const": 24
+                },
+                "trust_boundary": {
+                  "const": 4
+                }
+              }
+            },
+            "subset_of": {
+              "const": "full"
+            }
+          }
+        },
+        "full": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile",
+            "case_count",
+            "inference_case_count",
+            "trust_case_count",
+            "group_counts"
+          ],
+          "properties": {
+            "profile": {
+              "const": "full"
+            },
+            "case_count": {
+              "const": 480
+            },
+            "inference_case_count": {
+              "const": 456
+            },
+            "trust_case_count": {
+              "const": 24
+            },
+            "group_counts": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "clean",
+                "nuisance",
+                "defect",
+                "trust_boundary"
+              ],
+              "properties": {
+                "clean": {
+                  "const": 96
+                },
+                "nuisance": {
+                  "const": 120
+                },
+                "defect": {
+                  "const": 240
+                },
+                "trust_boundary": {
+                  "const": 24
+                }
+              }
+            }
+          }
+        },
+        "split_composition": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "development",
+            "calibration",
+            "test"
+          ],
+          "properties": {
+            "development": {
+              "$ref": "#/$defs/development_split"
+            },
+            "calibration": {
+              "$ref": "#/$defs/calibration_split"
+            },
+            "test": {
+              "$ref": "#/$defs/test_split"
+            }
+          }
+        },
+        "mini_selection": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "rule",
+            "rank_key",
+            "split_counts",
+            "required_coverage"
+          ],
+          "properties": {
+            "rule": {
+              "const": "stratified_lowest_sha256_case_id_v1"
+            },
+            "rank_key": {
+              "const": "sha256(utf8(case_id))"
+            },
+            "split_counts": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "development",
+                "calibration",
+                "test"
+              ],
+              "properties": {
+                "development": {
+                  "$ref": "#/$defs/mini_development_split"
+                },
+                "calibration": {
+                  "$ref": "#/$defs/mini_calibration_split"
+                },
+                "test": {
+                  "$ref": "#/$defs/mini_test_split"
+                }
+              }
+            },
+            "required_coverage": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "all_revisions",
+                "all_views",
+                "all_defect_types",
+                "all_severities",
+                "all_nuisance_types",
+                "defect_type_severity_pairs"
+              ],
+              "properties": {
+                "all_revisions": {
+                  "const": true
+                },
+                "all_views": {
+                  "const": true
+                },
+                "all_defect_types": {
+                  "const": true
+                },
+                "all_severities": {
+                  "const": true
+                },
+                "all_nuisance_types": {
+                  "const": true
+                },
+                "defect_type_severity_pairs": {
+                  "const": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "taxonomies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expected_outcomes",
+        "support_boundaries",
+        "severities",
+        "defects",
+        "nuisances",
+        "abstention_reasons",
+        "trust_boundary_cases"
+      ],
+      "properties": {
+        "expected_outcomes": {
+          "const": [
+            "NORMAL",
+            "ANOMALY",
+            "ABSTAIN"
+          ]
+        },
+        "support_boundaries": {
+          "const": [
+            "SUPPORTED_NORMAL_RANGE",
+            "UNSUPPORTED_OR_ABSTAIN_RANGE"
+          ]
+        },
+        "severities": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "$ref": "#/$defs/severity"
+          }
+        },
+        "defects": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "items": {
+            "$ref": "#/$defs/defect"
+          }
+        },
+        "nuisances": {
+          "type": "array",
+          "minItems": 9,
+          "maxItems": 9,
+          "items": {
+            "$ref": "#/$defs/nuisance"
+          }
+        },
+        "abstention_reasons": {
+          "const": [
+            "UNSUPPORTED_VIEW",
+            "NUISANCE_OUT_OF_RANGE",
+            "REGISTRATION_OUT_OF_RANGE",
+            "INSUFFICIENT_REFERENCE_COVERAGE",
+            "INVALID_OR_UNTRUSTED_EVIDENCE"
+          ]
+        },
+        "trust_boundary_cases": {
+          "type": "array",
+          "minItems": 24,
+          "maxItems": 24,
+          "items": {
+            "$ref": "#/$defs/trust_case"
+          }
+        }
+      }
+    },
+    "split_rules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "split_order",
+        "assignment_unit",
+        "leak_keys",
+        "overlap_pairs",
+        "overlap_allowed_profiles",
+        "development_use",
+        "calibration_use",
+        "test_use",
+        "protocol_change_rule"
+      ],
+      "properties": {
+        "split_order": {
+          "const": [
+            "development",
+            "calibration",
+            "test"
+          ]
+        },
+        "assignment_unit": {
+          "const": "recipe_seed_family"
+        },
+        "leak_keys": {
+          "const": [
+            "recipe_id",
+            "seed_family",
+            "reference_sha256",
+            "inspection_sha256",
+            "authoritative_mask_sha256"
+          ]
+        },
+        "overlap_pairs": {
+          "const": [
+            "development:calibration",
+            "development:test",
+            "calibration:test"
+          ]
+        },
+        "overlap_allowed_profiles": {
+          "const": "mini_is_an_intentional_strict_subset_of_full"
+        },
+        "development_use": {
+          "const": "algorithm_changes_and_debugging_allowed"
+        },
+        "calibration_use": {
+          "const": "threshold_lock_only_no_algorithm_fitting"
+        },
+        "test_use": {
+          "const": "immutable_cases_and_threshold_no_test_driven_tuning"
+        },
+        "protocol_change_rule": {
+          "const": "new_protocol_version_preserve_prior_config_and_results"
+        }
+      }
+    },
+    "threshold_selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "locked_image_threshold",
+        "threshold_source_split",
+        "selection_method",
+        "selection_candidates",
+        "pixel_difference_threshold",
+        "registration_max_shift_px",
+        "registration_sample_stride",
+        "feature_mapping_min_mask_pixels",
+        "lock_before_test",
+        "failure_rule"
+      ],
+      "properties": {
+        "locked_image_threshold": {
+          "const": 0.0025
+        },
+        "threshold_source_split": {
+          "const": "calibration"
+        },
+        "selection_method": {
+          "const": "single_pre_registered_candidate_confirmed_on_calibration"
+        },
+        "selection_candidates": {
+          "const": [
+            0.0025
+          ]
+        },
+        "pixel_difference_threshold": {
+          "const": 32
+        },
+        "registration_max_shift_px": {
+          "const": 12
+        },
+        "registration_sample_stride": {
+          "const": 4
+        },
+        "feature_mapping_min_mask_pixels": {
+          "const": 1
+        },
+        "lock_before_test": {
+          "const": true
+        },
+        "failure_rule": {
+          "const": "calibration_failure_is_hold_not_post_hoc_threshold_search"
+        }
+      }
+    },
+    "oracle_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner",
+        "derivation",
+        "prediction_dependency",
+        "required_case_hash_fields",
+        "positive_mask_policy",
+        "negative_mask_policy",
+        "integrity_failures",
+        "publication_on_failure"
+      ],
+      "properties": {
+        "owner": {
+          "const": "generator"
+        },
+        "derivation": {
+          "const": "directly_from_defect_generation_operation"
+        },
+        "prediction_dependency": {
+          "const": "forbidden"
+        },
+        "required_case_hash_fields": {
+          "const": [
+            "reference_sha256",
+            "inspection_sha256",
+            "authoritative_mask_sha256",
+            "generator_configuration_sha256"
+          ]
+        },
+        "positive_mask_policy": {
+          "const": "non_empty_binary_dimension_bound_and_defect_feature_bound"
+        },
+        "negative_mask_policy": {
+          "const": "empty_binary_mask_required_for_clean_and_supported_nuisance"
+        },
+        "integrity_failures": {
+          "const": [
+            "unexpected_empty_mask",
+            "non_binary_mask",
+            "shape_mismatch",
+            "corrupted_bytes",
+            "hash_mismatch",
+            "missing_defect_or_feature_binding"
+          ]
+        },
+        "publication_on_failure": {
+          "const": false
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "image_level",
+        "pixel_level",
+        "engineering_level",
+        "trust_boundary",
+        "reporting_slices",
+        "uncertainty",
+        "undefined_metric_policy",
+        "trust_cases_in_binary_confusion_matrix"
+      ],
+      "properties": {
+        "image_level": {
+          "const": [
+            "true_positive",
+            "true_negative",
+            "false_positive",
+            "false_negative",
+            "precision",
+            "recall",
+            "specificity",
+            "f1",
+            "average_precision",
+            "auroc",
+            "nuisance_only_false_positive_rate",
+            "recall_by_severity",
+            "recall_by_defect_type"
+          ]
+        },
+        "pixel_level": {
+          "const": [
+            "iou",
+            "dice",
+            "mask_precision",
+            "mask_recall",
+            "empty_mask_accuracy"
+          ]
+        },
+        "engineering_level": {
+          "const": [
+            "affected_feature_mapping_accuracy",
+            "part_binding_accuracy",
+            "revision_binding_accuracy",
+            "abstention_correctness",
+            "human_disposition_evidence_binding_accuracy"
+          ]
+        },
+        "trust_boundary": {
+          "const": [
+            "revision_mismatch_publication_count",
+            "corrupted_evidence_publication_count",
+            "bundle_verify_reimport_rate",
+            "dataset_split_hash_overlap",
+            "same_seed_manifest_equivalence"
+          ]
+        },
+        "reporting_slices": {
+          "const": [
+            "defect_type",
+            "severity",
+            "nuisance_type",
+            "cad_revision",
+            "view_id",
+            "abstention_reason",
+            "trust_boundary_scenario"
+          ]
+        },
+        "uncertainty": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "confidence_level",
+            "proportion_interval",
+            "ranking_and_median_interval",
+            "bootstrap_seed",
+            "bootstrap_replicates"
+          ],
+          "properties": {
+            "confidence_level": {
+              "const": 0.95
+            },
+            "proportion_interval": {
+              "const": "wilson_score"
+            },
+            "ranking_and_median_interval": {
+              "const": "stratified_percentile_bootstrap"
+            },
+            "bootstrap_seed": {
+              "const": 424242
+            },
+            "bootstrap_replicates": {
+              "const": 10000
+            }
+          }
+        },
+        "undefined_metric_policy": {
+          "const": "null_with_machine_readable_reason_and_raw_counts"
+        },
+        "trust_cases_in_binary_confusion_matrix": {
+          "const": false
+        }
+      }
+    },
+    "acceptance_gates": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": {
+        "$ref": "#/$defs/gate"
+      }
+    },
+    "repeatability_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repeat_count",
+        "canonicalization",
+        "required_equal_artifacts",
+        "volatile_fields_excluded_from_projection",
+        "manifest_equivalence",
+        "split_overlap_count"
+      ],
+      "properties": {
+        "repeat_count": {
+          "const": 2
+        },
+        "canonicalization": {
+          "const": "mvs-canonical-json/v1"
+        },
+        "required_equal_artifacts": {
+          "const": [
+            "dataset_manifest_projection",
+            "case_manifest_projection",
+            "reference_sha256",
+            "inspection_sha256",
+            "authoritative_mask_sha256",
+            "metric_projection",
+            "deterministic_result_projection"
+          ]
+        },
+        "volatile_fields_excluded_from_projection": {
+          "const": [
+            "evaluation_run_id",
+            "generated_at",
+            "duration_ms",
+            "local_absolute_paths"
+          ]
+        },
+        "manifest_equivalence": {
+          "const": "exact_canonical_projection_sha256_equality"
+        },
+        "split_overlap_count": {
+          "const": 0
+        }
+      }
+    },
+    "resource_limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "image_bytes_max",
+        "image_edge_px_max",
+        "image_pixels_max",
+        "inspection_images_per_case_max",
+        "bundle_compressed_bytes_max",
+        "bundle_payload_count_max",
+        "bundle_member_bytes_max",
+        "bundle_uncompressed_bytes_max",
+        "bundle_compression_ratio_max"
+      ],
+      "properties": {
+        "image_bytes_max": {
+          "const": 26214400
+        },
+        "image_edge_px_max": {
+          "const": 8192
+        },
+        "image_pixels_max": {
+          "const": 40000000
+        },
+        "inspection_images_per_case_max": {
+          "const": 64
+        },
+        "bundle_compressed_bytes_max": {
+          "const": 67108864
+        },
+        "bundle_payload_count_max": {
+          "const": 100
+        },
+        "bundle_member_bytes_max": {
+          "const": 26214400
+        },
+        "bundle_uncompressed_bytes_max": {
+          "const": 134217728
+        },
+        "bundle_compression_ratio_max": {
+          "const": 100
+        }
+      }
+    },
+    "data_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "primary_data",
+        "full_corpus_tracked",
+        "tracked_artifacts",
+        "generated_output_root",
+        "mvtec_role",
+        "real_or_private_data_allowed"
+      ],
+      "properties": {
+        "primary_data": {
+          "const": "deterministic_project_generated_synthetic"
+        },
+        "full_corpus_tracked": {
+          "const": false
+        },
+        "tracked_artifacts": {
+          "const": [
+            "generator_source",
+            "protocol",
+            "schema",
+            "seed_configuration",
+            "representative_small_fixtures",
+            "canonical_manifests",
+            "result_json",
+            "bounded_error_gallery_samples",
+            "reproduction_commands"
+          ]
+        },
+        "generated_output_root": {
+          "const": "output/evaluation/e1"
+        },
+        "mvtec_role": {
+          "const": "optional_separate_noncommercial_benchmark_not_e1"
+        },
+        "real_or_private_data_allowed": {
+          "const": false
+        }
+      }
+    },
+    "exclusions": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/bounded_text"
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/bounded_text"
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "semantic_version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "git_sha1": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40}$"
+    },
+    "unit_interval": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "bounded_text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "pipeline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pipeline_id",
+        "pipeline_version"
+      ],
+      "properties": {
+        "pipeline_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "pipeline_version": {
+          "$ref": "#/$defs/semantic_version"
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model_id",
+        "model_version",
+        "model_artifact_sha256"
+      ],
+      "properties": {
+        "model_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "model_version": {
+          "$ref": "#/$defs/semantic_version"
+        },
+        "model_artifact_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "seed_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seed_family",
+        "start",
+        "count"
+      ],
+      "properties": {
+        "seed_family": {
+          "$ref": "#/$defs/identifier"
+        },
+        "start": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 480
+        }
+      }
+    },
+    "seed_block_group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clean",
+        "nuisance",
+        "defect",
+        "trust_boundary"
+      ],
+      "properties": {
+        "clean": {
+          "$ref": "#/$defs/seed_block"
+        },
+        "nuisance": {
+          "$ref": "#/$defs/seed_block"
+        },
+        "defect": {
+          "$ref": "#/$defs/seed_block"
+        },
+        "trust_boundary": {
+          "$ref": "#/$defs/seed_block"
+        }
+      }
+    },
+    "part": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "part_id",
+        "revisions"
+      ],
+      "properties": {
+        "part_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "revisions": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "cad_revision",
+              "geometry_variant"
+            ],
+            "properties": {
+              "cad_revision": {
+                "$ref": "#/$defs/identifier"
+              },
+              "geometry_variant": {
+                "$ref": "#/$defs/identifier"
+              }
+            }
+          }
+        }
+      }
+    },
+    "group_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clean",
+        "nuisance",
+        "defect",
+        "trust_boundary"
+      ],
+      "properties": {
+        "clean": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 96
+        },
+        "nuisance": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120
+        },
+        "defect": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 240
+        },
+        "trust_boundary": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 24
+        }
+      }
+    },
+    "development_split": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_count",
+        "group_counts"
+      ],
+      "properties": {
+        "case_count": {
+          "const": 120
+        },
+        "group_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "clean",
+            "nuisance",
+            "defect",
+            "trust_boundary"
+          ],
+          "properties": {
+            "clean": {
+              "const": 24
+            },
+            "nuisance": {
+              "const": 30
+            },
+            "defect": {
+              "const": 60
+            },
+            "trust_boundary": {
+              "const": 6
+            }
+          }
+        }
+      }
+    },
+    "calibration_split": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_count",
+        "group_counts"
+      ],
+      "properties": {
+        "case_count": {
+          "const": 120
+        },
+        "group_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "clean",
+            "nuisance",
+            "defect",
+            "trust_boundary"
+          ],
+          "properties": {
+            "clean": {
+              "const": 24
+            },
+            "nuisance": {
+              "const": 30
+            },
+            "defect": {
+              "const": 60
+            },
+            "trust_boundary": {
+              "const": 6
+            }
+          }
+        }
+      }
+    },
+    "test_split": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_count",
+        "group_counts"
+      ],
+      "properties": {
+        "case_count": {
+          "const": 240
+        },
+        "group_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "clean",
+            "nuisance",
+            "defect",
+            "trust_boundary"
+          ],
+          "properties": {
+            "clean": {
+              "const": 48
+            },
+            "nuisance": {
+              "const": 60
+            },
+            "defect": {
+              "const": 120
+            },
+            "trust_boundary": {
+              "const": 12
+            }
+          }
+        }
+      }
+    },
+    "mini_development_split": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_count",
+        "group_counts"
+      ],
+      "properties": {
+        "case_count": {
+          "const": 12
+        },
+        "group_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "clean",
+            "nuisance",
+            "defect",
+            "trust_boundary"
+          ],
+          "properties": {
+            "clean": {
+              "const": 2
+            },
+            "nuisance": {
+              "const": 3
+            },
+            "defect": {
+              "const": 6
+            },
+            "trust_boundary": {
+              "const": 1
+            }
+          }
+        }
+      }
+    },
+    "mini_calibration_split": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_count",
+        "group_counts"
+      ],
+      "properties": {
+        "case_count": {
+          "const": 12
+        },
+        "group_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "clean",
+            "nuisance",
+            "defect",
+            "trust_boundary"
+          ],
+          "properties": {
+            "clean": {
+              "const": 2
+            },
+            "nuisance": {
+              "const": 3
+            },
+            "defect": {
+              "const": 6
+            },
+            "trust_boundary": {
+              "const": 1
+            }
+          }
+        }
+      }
+    },
+    "mini_test_split": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_count",
+        "group_counts"
+      ],
+      "properties": {
+        "case_count": {
+          "const": 24
+        },
+        "group_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "clean",
+            "nuisance",
+            "defect",
+            "trust_boundary"
+          ],
+          "properties": {
+            "clean": {
+              "const": 4
+            },
+            "nuisance": {
+              "const": 6
+            },
+            "defect": {
+              "const": 12
+            },
+            "trust_boundary": {
+              "const": 2
+            }
+          }
+        }
+      }
+    },
+    "severity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "severity",
+        "full_case_count",
+        "mini_case_count",
+        "primary_release_gate"
+      ],
+      "properties": {
+        "severity": {
+          "enum": [
+            "LOW",
+            "MEDIUM",
+            "HIGH"
+          ]
+        },
+        "full_case_count": {
+          "const": 80
+        },
+        "mini_case_count": {
+          "const": 8
+        },
+        "primary_release_gate": {
+          "type": "boolean"
+        }
+      }
+    },
+    "split_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "development",
+        "calibration",
+        "test"
+      ],
+      "properties": {
+        "development": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120
+        },
+        "calibration": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120
+        },
+        "test": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 240
+        }
+      }
+    },
+    "defect_parameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "unit",
+        "LOW",
+        "MEDIUM",
+        "HIGH"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/identifier"
+        },
+        "unit": {
+          "$ref": "#/$defs/identifier"
+        },
+        "LOW": {
+          "type": "number"
+        },
+        "MEDIUM": {
+          "type": "number"
+        },
+        "HIGH": {
+          "type": "number"
+        }
+      }
+    },
+    "defect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "roadmap_label",
+        "family",
+        "full_case_count",
+        "mini_case_count",
+        "split_counts",
+        "eligible_feature_ids",
+        "severity_parameters"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "scratch",
+            "stain",
+            "edge_chip",
+            "burr",
+            "blocked_hole",
+            "hole_geometry_deviation"
+          ]
+        },
+        "roadmap_label": {
+          "$ref": "#/$defs/bounded_text"
+        },
+        "family": {
+          "enum": [
+            "appearance",
+            "geometry"
+          ]
+        },
+        "full_case_count": {
+          "const": 40
+        },
+        "mini_case_count": {
+          "const": 4
+        },
+        "split_counts": {
+          "$ref": "#/$defs/split_counts"
+        },
+        "eligible_feature_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 5,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "top_face",
+              "hole_left",
+              "hole_right",
+              "top_edge",
+              "bottom_edge"
+            ]
+          }
+        },
+        "severity_parameters": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {
+            "$ref": "#/$defs/defect_parameter"
+          }
+        }
+      }
+    },
+    "numeric_range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minimum",
+        "maximum"
+      ],
+      "properties": {
+        "minimum": {
+          "type": "number"
+        },
+        "maximum": {
+          "type": "number"
+        }
+      }
+    },
+    "nuisance_parameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "unit",
+        "supported_normal_range",
+        "unsupported_or_abstain_range",
+        "excluded_transition_range"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/identifier"
+        },
+        "unit": {
+          "$ref": "#/$defs/identifier"
+        },
+        "supported_normal_range": {
+          "$ref": "#/$defs/numeric_range"
+        },
+        "unsupported_or_abstain_range": {
+          "$ref": "#/$defs/numeric_range"
+        },
+        "excluded_transition_range": {
+          "$ref": "#/$defs/numeric_range"
+        }
+      }
+    },
+    "nuisance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "full_case_count",
+        "mini_case_count",
+        "split_counts",
+        "parameters"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "translation",
+            "rotation",
+            "scale",
+            "exposure",
+            "directional_shading",
+            "gaussian_blur",
+            "sensor_noise",
+            "jpeg_compression",
+            "background_fixture"
+          ]
+        },
+        "full_case_count": {
+          "type": "integer",
+          "minimum": 13,
+          "maximum": 14
+        },
+        "mini_case_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2
+        },
+        "split_counts": {
+          "$ref": "#/$defs/split_counts"
+        },
+        "parameters": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": {
+            "$ref": "#/$defs/nuisance_parameter"
+          }
+        }
+      }
+    },
+    "trust_case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scenario_id",
+        "split",
+        "expected_outcome",
+        "support_boundary",
+        "expected_error_code",
+        "publication_allowed",
+        "included_in_mini"
+      ],
+      "properties": {
+        "scenario_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "split": {
+          "enum": [
+            "development",
+            "calibration",
+            "test"
+          ]
+        },
+        "expected_outcome": {
+          "const": "ABSTAIN"
+        },
+        "support_boundary": {
+          "const": "UNSUPPORTED_OR_ABSTAIN_RANGE"
+        },
+        "expected_error_code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{0,63}$"
+        },
+        "publication_allowed": {
+          "const": false
+        },
+        "included_in_mini": {
+          "type": "boolean"
+        }
+      }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gate_id",
+        "scope",
+        "operator",
+        "threshold"
+      ],
+      "properties": {
+        "gate_id": {
+          "enum": [
+            "medium_high_defect_recall",
+            "nuisance_only_false_positive_rate",
+            "positive_case_median_dice",
+            "affected_feature_mapping_accuracy",
+            "revision_mismatch_publication_count",
+            "corrupted_evidence_publication_count",
+            "bundle_verify_reimport_rate",
+            "dataset_split_hash_overlap",
+            "same_seed_manifest_equivalence",
+            "v0_1_regression"
+          ]
+        },
+        "scope": {
+          "enum": [
+            "test_defect_medium_high",
+            "test_nuisance_only",
+            "test_positive_all_severities",
+            "test_positive_with_known_feature",
+            "all_trust_boundary_cases",
+            "all_bundle_eligible_cases",
+            "development_calibration_test",
+            "full_profile_two_runs",
+            "v0_1_0_suite"
+          ]
+        },
+        "operator": {
+          "enum": [
+            "gte",
+            "lte",
+            "eq",
+            "is_true"
+          ]
+        },
+        "threshold": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

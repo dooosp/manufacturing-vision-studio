@@ -1,0 +1,1208 @@
+{
+  "$schema": "../../schemas/e1-evaluation-protocol.v1.json",
+  "schema_version": "1.0.0",
+  "protocol_id": "mvs-e1",
+  "protocol_version": "1.0.0",
+  "status": "frozen_before_test",
+  "suite": {
+    "suite_id": "e1-authoritative-synthetic",
+    "suite_version": "1.0.0",
+    "target_release": "0.2.0",
+    "readiness_claim": "DEMO_READY_E1_SYNTHETIC_ONLY"
+  },
+  "baseline": {
+    "git_commit": "cf7b9ac37d0533f656068199d3275410cf8cc2f8",
+    "tag": "v0.1.0",
+    "bundle_sha256": "1d492d942aa061e16399f715255760b0a37a8b91eba85cb7b729626ff9e435e7",
+    "pipeline": {
+      "pipeline_id": "registered-difference",
+      "pipeline_version": "1.0.0"
+    },
+    "model": {
+      "model_id": "registered-absolute-difference",
+      "model_version": "1.0.0",
+      "model_artifact_sha256": "fb11440ef8cf47e64e17f5f41d50993bab1a386d9ed465f5ac5d49eae26925f8"
+    },
+    "configuration_sha256": "0a6d7cdf32feeed5aa54b16018af5519adb4a2fa9188f86c259969b88b5129b8",
+    "locked_image_threshold": 0.0025,
+    "threshold_covered_by_configuration_sha256": false
+  },
+  "generator": {
+    "generator_id": "mvs-e1-generator",
+    "generator_version": "1.0.0",
+    "recipe_version": "1.0.0",
+    "seed_derivation": {
+      "algorithm": "contiguous_uint32_blocks_v1",
+      "seed_type": "uint32",
+      "ordinal_start": 0,
+      "rule": "seed_block.start + zero_based_group_ordinal"
+    },
+    "seed_blocks": {
+      "development": {
+        "clean": {
+          "seed_family": "e1-dev-clean-v1",
+          "start": 100000,
+          "count": 24
+        },
+        "nuisance": {
+          "seed_family": "e1-dev-nuisance-v1",
+          "start": 110000,
+          "count": 30
+        },
+        "defect": {
+          "seed_family": "e1-dev-defect-v1",
+          "start": 120000,
+          "count": 60
+        },
+        "trust_boundary": {
+          "seed_family": "e1-dev-trust-v1",
+          "start": 130000,
+          "count": 6
+        }
+      },
+      "calibration": {
+        "clean": {
+          "seed_family": "e1-cal-clean-v1",
+          "start": 200000,
+          "count": 24
+        },
+        "nuisance": {
+          "seed_family": "e1-cal-nuisance-v1",
+          "start": 210000,
+          "count": 30
+        },
+        "defect": {
+          "seed_family": "e1-cal-defect-v1",
+          "start": 220000,
+          "count": 60
+        },
+        "trust_boundary": {
+          "seed_family": "e1-cal-trust-v1",
+          "start": 230000,
+          "count": 6
+        }
+      },
+      "test": {
+        "clean": {
+          "seed_family": "e1-test-clean-v1",
+          "start": 300000,
+          "count": 48
+        },
+        "nuisance": {
+          "seed_family": "e1-test-nuisance-v1",
+          "start": 310000,
+          "count": 60
+        },
+        "defect": {
+          "seed_family": "e1-test-defect-v1",
+          "start": 320000,
+          "count": 120
+        },
+        "trust_boundary": {
+          "seed_family": "e1-test-trust-v1",
+          "start": 330000,
+          "count": 12
+        }
+      }
+    },
+    "case_id_format": "e1-{split}-{group}-{ordinal:03d}",
+    "generator_configuration_sha256_required": true
+  },
+  "media": {
+    "width_px": 512,
+    "height_px": 384,
+    "source_media_types": [
+      "image/png",
+      "image/jpeg"
+    ],
+    "canonical_image": {
+      "media_type": "image/png",
+      "color_mode": "RGB8",
+      "bit_depth": 8
+    },
+    "authoritative_mask": {
+      "media_type": "image/png",
+      "color_mode": "L",
+      "bit_depth": 8,
+      "allowed_values": [
+        0,
+        255
+      ],
+      "must_match_image_dimensions": true
+    }
+  },
+  "universe": {
+    "parts": [
+      {
+        "part_id": "MVS-E1-PLATE-001",
+        "revisions": [
+          {
+            "cad_revision": "rev-A",
+            "geometry_variant": "two-hole-slot-baseline"
+          },
+          {
+            "cad_revision": "rev-B",
+            "geometry_variant": "right-hole-offset-plus-4px"
+          }
+        ]
+      }
+    ],
+    "views": [
+      "front",
+      "oblique_left",
+      "oblique_right"
+    ],
+    "feature_ids": [
+      "top_face",
+      "hole_left",
+      "hole_right",
+      "top_edge",
+      "bottom_edge"
+    ]
+  },
+  "dataset_profiles": {
+    "mini": {
+      "profile": "mini",
+      "case_count": 48,
+      "inference_case_count": 44,
+      "trust_case_count": 4,
+      "group_counts": {
+        "clean": 8,
+        "nuisance": 12,
+        "defect": 24,
+        "trust_boundary": 4
+      },
+      "subset_of": "full"
+    },
+    "full": {
+      "profile": "full",
+      "case_count": 480,
+      "inference_case_count": 456,
+      "trust_case_count": 24,
+      "group_counts": {
+        "clean": 96,
+        "nuisance": 120,
+        "defect": 240,
+        "trust_boundary": 24
+      }
+    },
+    "split_composition": {
+      "development": {
+        "case_count": 120,
+        "group_counts": {
+          "clean": 24,
+          "nuisance": 30,
+          "defect": 60,
+          "trust_boundary": 6
+        }
+      },
+      "calibration": {
+        "case_count": 120,
+        "group_counts": {
+          "clean": 24,
+          "nuisance": 30,
+          "defect": 60,
+          "trust_boundary": 6
+        }
+      },
+      "test": {
+        "case_count": 240,
+        "group_counts": {
+          "clean": 48,
+          "nuisance": 60,
+          "defect": 120,
+          "trust_boundary": 12
+        }
+      }
+    },
+    "mini_selection": {
+      "rule": "stratified_lowest_sha256_case_id_v1",
+      "rank_key": "sha256(utf8(case_id))",
+      "split_counts": {
+        "development": {
+          "case_count": 12,
+          "group_counts": {
+            "clean": 2,
+            "nuisance": 3,
+            "defect": 6,
+            "trust_boundary": 1
+          }
+        },
+        "calibration": {
+          "case_count": 12,
+          "group_counts": {
+            "clean": 2,
+            "nuisance": 3,
+            "defect": 6,
+            "trust_boundary": 1
+          }
+        },
+        "test": {
+          "case_count": 24,
+          "group_counts": {
+            "clean": 4,
+            "nuisance": 6,
+            "defect": 12,
+            "trust_boundary": 2
+          }
+        }
+      },
+      "required_coverage": {
+        "all_revisions": true,
+        "all_views": true,
+        "all_defect_types": true,
+        "all_severities": true,
+        "all_nuisance_types": true,
+        "defect_type_severity_pairs": true
+      }
+    }
+  },
+  "taxonomies": {
+    "expected_outcomes": [
+      "NORMAL",
+      "ANOMALY",
+      "ABSTAIN"
+    ],
+    "support_boundaries": [
+      "SUPPORTED_NORMAL_RANGE",
+      "UNSUPPORTED_OR_ABSTAIN_RANGE"
+    ],
+    "severities": [
+      {
+        "severity": "LOW",
+        "full_case_count": 80,
+        "mini_case_count": 8,
+        "primary_release_gate": false
+      },
+      {
+        "severity": "MEDIUM",
+        "full_case_count": 80,
+        "mini_case_count": 8,
+        "primary_release_gate": true
+      },
+      {
+        "severity": "HIGH",
+        "full_case_count": 80,
+        "mini_case_count": 8,
+        "primary_release_gate": true
+      }
+    ],
+    "defects": [
+      {
+        "type": "scratch",
+        "roadmap_label": "scratch",
+        "family": "appearance",
+        "full_case_count": 40,
+        "mini_case_count": 4,
+        "split_counts": {
+          "development": 10,
+          "calibration": 10,
+          "test": 20
+        },
+        "eligible_feature_ids": [
+          "top_face"
+        ],
+        "severity_parameters": [
+          {
+            "name": "length",
+            "unit": "px",
+            "LOW": 20,
+            "MEDIUM": 48,
+            "HIGH": 96
+          },
+          {
+            "name": "width",
+            "unit": "px",
+            "LOW": 2,
+            "MEDIUM": 4,
+            "HIGH": 8
+          }
+        ]
+      },
+      {
+        "type": "stain",
+        "roadmap_label": "stain or discoloration",
+        "family": "appearance",
+        "full_case_count": 40,
+        "mini_case_count": 4,
+        "split_counts": {
+          "development": 10,
+          "calibration": 10,
+          "test": 20
+        },
+        "eligible_feature_ids": [
+          "top_face"
+        ],
+        "severity_parameters": [
+          {
+            "name": "radius",
+            "unit": "px",
+            "LOW": 8,
+            "MEDIUM": 16,
+            "HIGH": 28
+          },
+          {
+            "name": "rgb_delta",
+            "unit": "level",
+            "LOW": 16,
+            "MEDIUM": 32,
+            "HIGH": 64
+          }
+        ]
+      },
+      {
+        "type": "edge_chip",
+        "roadmap_label": "edge chip or missing material",
+        "family": "geometry",
+        "full_case_count": 40,
+        "mini_case_count": 4,
+        "split_counts": {
+          "development": 10,
+          "calibration": 10,
+          "test": 20
+        },
+        "eligible_feature_ids": [
+          "top_edge",
+          "bottom_edge"
+        ],
+        "severity_parameters": [
+          {
+            "name": "depth",
+            "unit": "px",
+            "LOW": 2,
+            "MEDIUM": 6,
+            "HIGH": 12
+          },
+          {
+            "name": "length",
+            "unit": "px",
+            "LOW": 12,
+            "MEDIUM": 28,
+            "HIGH": 56
+          }
+        ]
+      },
+      {
+        "type": "burr",
+        "roadmap_label": "burr or extra material",
+        "family": "geometry",
+        "full_case_count": 40,
+        "mini_case_count": 4,
+        "split_counts": {
+          "development": 10,
+          "calibration": 10,
+          "test": 20
+        },
+        "eligible_feature_ids": [
+          "top_edge",
+          "bottom_edge"
+        ],
+        "severity_parameters": [
+          {
+            "name": "height",
+            "unit": "px",
+            "LOW": 2,
+            "MEDIUM": 6,
+            "HIGH": 12
+          },
+          {
+            "name": "length",
+            "unit": "px",
+            "LOW": 12,
+            "MEDIUM": 28,
+            "HIGH": 56
+          }
+        ]
+      },
+      {
+        "type": "blocked_hole",
+        "roadmap_label": "blocked or missing hole",
+        "family": "geometry",
+        "full_case_count": 40,
+        "mini_case_count": 4,
+        "split_counts": {
+          "development": 10,
+          "calibration": 10,
+          "test": 20
+        },
+        "eligible_feature_ids": [
+          "hole_left",
+          "hole_right"
+        ],
+        "severity_parameters": [
+          {
+            "name": "occlusion_fraction",
+            "unit": "ratio",
+            "LOW": 0.1,
+            "MEDIUM": 0.35,
+            "HIGH": 0.7
+          }
+        ]
+      },
+      {
+        "type": "hole_geometry_deviation",
+        "roadmap_label": "hole position or diameter deviation",
+        "family": "geometry",
+        "full_case_count": 40,
+        "mini_case_count": 4,
+        "split_counts": {
+          "development": 10,
+          "calibration": 10,
+          "test": 20
+        },
+        "eligible_feature_ids": [
+          "hole_left",
+          "hole_right"
+        ],
+        "severity_parameters": [
+          {
+            "name": "center_offset",
+            "unit": "px",
+            "LOW": 1,
+            "MEDIUM": 4,
+            "HIGH": 8
+          },
+          {
+            "name": "diameter_delta",
+            "unit": "px",
+            "LOW": 1,
+            "MEDIUM": 4,
+            "HIGH": 8
+          }
+        ]
+      }
+    ],
+    "nuisances": [
+      {
+        "type": "translation",
+        "full_case_count": 14,
+        "mini_case_count": 2,
+        "split_counts": {
+          "development": 3,
+          "calibration": 4,
+          "test": 7
+        },
+        "parameters": [
+          {
+            "name": "max_abs_shift",
+            "unit": "px",
+            "supported_normal_range": {
+              "minimum": 0,
+              "maximum": 12
+            },
+            "unsupported_or_abstain_range": {
+              "minimum": 24,
+              "maximum": 48
+            },
+            "excluded_transition_range": {
+              "minimum": 12.000001,
+              "maximum": 23.999999
+            }
+          }
+        ]
+      },
+      {
+        "type": "rotation",
+        "full_case_count": 14,
+        "mini_case_count": 2,
+        "split_counts": {
+          "development": 4,
+          "calibration": 3,
+          "test": 7
+        },
+        "parameters": [
+          {
+            "name": "max_abs_rotation",
+            "unit": "degrees",
+            "supported_normal_range": {
+              "minimum": 0,
+              "maximum": 1.5
+            },
+            "unsupported_or_abstain_range": {
+              "minimum": 5,
+              "maximum": 15
+            },
+            "excluded_transition_range": {
+              "minimum": 1.500001,
+              "maximum": 4.999999
+            }
+          }
+        ]
+      },
+      {
+        "type": "scale",
+        "full_case_count": 14,
+        "mini_case_count": 2,
+        "split_counts": {
+          "development": 3,
+          "calibration": 4,
+          "test": 7
+        },
+        "parameters": [
+          {
+            "name": "max_abs_scale_delta",
+            "unit": "ratio",
+            "supported_normal_range": {
+              "minimum": 0,
+              "maximum": 0.02
+            },
+            "unsupported_or_abstain_range": {
+              "minimum": 0.08,
+              "maximum": 0.2
+            },
+            "excluded_transition_range": {
+              "minimum": 0.020001,
+              "maximum": 0.079999
+            }
+          }
+        ]
+      },
+      {
+        "type": "exposure",
+        "full_case_count": 13,
+        "mini_case_count": 1,
+        "split_counts": {
+          "development": 3,
+          "calibration": 3,
+          "test": 7
+        },
+        "parameters": [
+          {
+            "name": "max_abs_rgb_gain_delta",
+            "unit": "ratio",
+            "supported_normal_range": {
+              "minimum": 0,
+              "maximum": 0.05
+            },
+            "unsupported_or_abstain_range": {
+              "minimum": 0.2,
+              "maximum": 0.4
+            },
+            "excluded_transition_range": {
+              "minimum": 0.050001,
+              "maximum": 0.199999
+            }
+          }
+        ]
+      },
+      {
+        "type": "directional_shading",
+        "full_case_count": 13,
+        "mini_case_count": 1,
+        "split_counts": {
+          "development": 3,
+          "calibration": 3,
+          "test": 7
+        },
+        "parameters": [
+          {
+            "name": "gradient_amplitude",
+            "unit": "ratio",
+            "supported_normal_range": {
+              "minimum": 0,
+              "maximum": 0.08
+            },
+            "unsupported_or_abstain_range": {
+              "minimum": 0.25,
+              "maximum": 0.5
+            },
+            "excluded_transition_range": {
+              "minimum": 0.080001,
+              "maximum": 0.249999
+            }
+          }
+        ]
+      },
+      {
+        "type": "gaussian_blur",
+        "full_case_count": 13,
+        "mini_case_count": 1,
+        "split_counts": {
+          "development": 3,
+          "calibration": 3,
+          "test": 7
+        },
+        "parameters": [
+          {
+            "name": "sigma",
+            "unit": "px",
+            "supported_normal_range": {
+              "minimum": 0,
+              "maximum": 0.6
+            },
+            "unsupported_or_abstain_range": {
+              "minimum": 2,
+              "maximum": 4
+            },
+            "excluded_transition_range": {
+              "minimum": 0.600001,
+              "maximum": 1.999999
+            }
+          }
+        ]
+      },
+      {
+        "type": "sensor_noise",
+        "full_case_count": 13,
+        "mini_case_count": 1,
+        "split_counts": {
+          "development": 3,
+          "calibration": 4,
+          "test": 6
+        },
+        "parameters": [
+          {
+            "name": "rgb_standard_deviation",
+            "unit": "level",
+            "supported_normal_range": {
+              "minimum": 0,
+              "maximum": 3
+            },
+            "unsupported_or_abstain_range": {
+              "minimum": 12,
+              "maximum": 24
+            },
+            "excluded_transition_range": {
+              "minimum": 3.000001,
+              "maximum": 11.999999
+            }
+          }
+        ]
+      },
+      {
+        "type": "jpeg_compression",
+        "full_case_count": 13,
+        "mini_case_count": 1,
+        "split_counts": {
+          "development": 4,
+          "calibration": 3,
+          "test": 6
+        },
+        "parameters": [
+          {
+            "name": "quality_loss_from_100",
+            "unit": "level",
+            "supported_normal_range": {
+              "minimum": 0,
+              "maximum": 15
+            },
+            "unsupported_or_abstain_range": {
+              "minimum": 51,
+              "maximum": 80
+            },
+            "excluded_transition_range": {
+              "minimum": 15.000001,
+              "maximum": 50.999999
+            }
+          }
+        ]
+      },
+      {
+        "type": "background_fixture",
+        "full_case_count": 13,
+        "mini_case_count": 1,
+        "split_counts": {
+          "development": 4,
+          "calibration": 3,
+          "test": 6
+        },
+        "parameters": [
+          {
+            "name": "part_occlusion_fraction",
+            "unit": "ratio",
+            "supported_normal_range": {
+              "minimum": 0,
+              "maximum": 0.01
+            },
+            "unsupported_or_abstain_range": {
+              "minimum": 0.15,
+              "maximum": 0.35
+            },
+            "excluded_transition_range": {
+              "minimum": 0.010001,
+              "maximum": 0.149999
+            }
+          }
+        ]
+      }
+    ],
+    "abstention_reasons": [
+      "UNSUPPORTED_VIEW",
+      "NUISANCE_OUT_OF_RANGE",
+      "REGISTRATION_OUT_OF_RANGE",
+      "INSUFFICIENT_REFERENCE_COVERAGE",
+      "INVALID_OR_UNTRUSTED_EVIDENCE"
+    ],
+    "trust_boundary_cases": [
+      {
+        "scenario_id": "revision_mismatch",
+        "split": "development",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "REVISION_MISMATCH",
+        "publication_allowed": false,
+        "included_in_mini": true
+      },
+      {
+        "scenario_id": "unknown_feature",
+        "split": "development",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "SCHEMA_INVALID",
+        "publication_allowed": false,
+        "included_in_mini": false
+      },
+      {
+        "scenario_id": "duplicate_case_id",
+        "split": "development",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "SCHEMA_INVALID",
+        "publication_allowed": false,
+        "included_in_mini": false
+      },
+      {
+        "scenario_id": "missing_reference",
+        "split": "development",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "MISSING_REFERENCE",
+        "publication_allowed": false,
+        "included_in_mini": false
+      },
+      {
+        "scenario_id": "malformed_image",
+        "split": "development",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "IMAGE_DECODE_FAILED",
+        "publication_allowed": false,
+        "included_in_mini": false
+      },
+      {
+        "scenario_id": "path_traversal",
+        "split": "development",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "UNSAFE_PATH",
+        "publication_allowed": false,
+        "included_in_mini": false
+      },
+      {
+        "scenario_id": "part_identity_mismatch",
+        "split": "calibration",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "PART_ID_MISMATCH",
+        "publication_allowed": false,
+        "included_in_mini": false
+      },
+      {
+        "scenario_id": "authoritative_mask_dimension_mismatch",
+        "split": "calibration",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "MASK_CORRUPT",
+        "publication_allowed": false,
+        "included_in_mini": false
+      },
+      {
+        "scenario_id": "unknown_pipeline_version",
+        "split": "calibration",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "UNKNOWN_PIPELINE_VERSION",
+        "publication_allowed": false,
+        "included_in_mini": false
+      },
+      {
+        "scenario_id": "split_hash_overlap",
+        "split": "calibration",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "SCHEMA_INVALID",
+        "publication_allowed": false,
+        "included_in_mini": true
+      },
+      {
+        "scenario_id": "missing_disposition",
+        "split": "calibration",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "EVIDENCE_INCOMPLETE",
+        "publication_allowed": false,
+        "included_in_mini": false
+      },
+      {
+        "scenario_id": "symlink_input",
+        "split": "calibration",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "SYMLINK_INPUT",
+        "publication_allowed": false,
+        "included_in_mini": false
+      },
+      {
+        "scenario_id": "authoritative_mask_corrupt_bytes",
+        "split": "test",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "MASK_CORRUPT",
+        "publication_allowed": false,
+        "included_in_mini": false
+      },
+      {
+        "scenario_id": "authoritative_mask_non_binary",
+        "split": "test",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "MASK_CORRUPT",
+        "publication_allowed": false,
+        "included_in_mini": false
+      },
+      {
+        "scenario_id": "authoritative_mask_unexpected_empty",
+        "split": "test",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "MASK_CORRUPT",
+        "publication_allowed": false,
+        "included_in_mini": false
+      },
+      {
+        "scenario_id": "hash_mismatch",
+        "split": "test",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "HASH_MISMATCH",
+        "publication_allowed": false,
+        "included_in_mini": false
+      },
+      {
+        "scenario_id": "oversized_image",
+        "split": "test",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "INPUT_TOO_LARGE",
+        "publication_allowed": false,
+        "included_in_mini": false
+      },
+      {
+        "scenario_id": "non_regular_input",
+        "split": "test",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "NON_REGULAR_INPUT",
+        "publication_allowed": false,
+        "included_in_mini": false
+      },
+      {
+        "scenario_id": "incomplete_evidence_bundle",
+        "split": "test",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "EVIDENCE_INCOMPLETE",
+        "publication_allowed": false,
+        "included_in_mini": true
+      },
+      {
+        "scenario_id": "modified_bundle_reimport",
+        "split": "test",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "HASH_MISMATCH",
+        "publication_allowed": false,
+        "included_in_mini": false
+      },
+      {
+        "scenario_id": "invalid_utf8_json",
+        "split": "test",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "SCHEMA_INVALID",
+        "publication_allowed": false,
+        "included_in_mini": false
+      },
+      {
+        "scenario_id": "duplicate_json_keys",
+        "split": "test",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "SCHEMA_INVALID",
+        "publication_allowed": false,
+        "included_in_mini": false
+      },
+      {
+        "scenario_id": "wrong_schema_version",
+        "split": "test",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "UNSUPPORTED_SCHEMA_VERSION",
+        "publication_allowed": false,
+        "included_in_mini": false
+      },
+      {
+        "scenario_id": "unsupported_view_or_extreme_nuisance",
+        "split": "test",
+        "expected_outcome": "ABSTAIN",
+        "support_boundary": "UNSUPPORTED_OR_ABSTAIN_RANGE",
+        "expected_error_code": "NORMALIZATION_NOT_APPROVED",
+        "publication_allowed": false,
+        "included_in_mini": true
+      }
+    ]
+  },
+  "split_rules": {
+    "split_order": [
+      "development",
+      "calibration",
+      "test"
+    ],
+    "assignment_unit": "recipe_seed_family",
+    "leak_keys": [
+      "recipe_id",
+      "seed_family",
+      "reference_sha256",
+      "inspection_sha256",
+      "authoritative_mask_sha256"
+    ],
+    "overlap_pairs": [
+      "development:calibration",
+      "development:test",
+      "calibration:test"
+    ],
+    "overlap_allowed_profiles": "mini_is_an_intentional_strict_subset_of_full",
+    "development_use": "algorithm_changes_and_debugging_allowed",
+    "calibration_use": "threshold_lock_only_no_algorithm_fitting",
+    "test_use": "immutable_cases_and_threshold_no_test_driven_tuning",
+    "protocol_change_rule": "new_protocol_version_preserve_prior_config_and_results"
+  },
+  "threshold_selection": {
+    "locked_image_threshold": 0.0025,
+    "threshold_source_split": "calibration",
+    "selection_method": "single_pre_registered_candidate_confirmed_on_calibration",
+    "selection_candidates": [
+      0.0025
+    ],
+    "pixel_difference_threshold": 32,
+    "registration_max_shift_px": 12,
+    "registration_sample_stride": 4,
+    "feature_mapping_min_mask_pixels": 1,
+    "lock_before_test": true,
+    "failure_rule": "calibration_failure_is_hold_not_post_hoc_threshold_search"
+  },
+  "oracle_contract": {
+    "owner": "generator",
+    "derivation": "directly_from_defect_generation_operation",
+    "prediction_dependency": "forbidden",
+    "required_case_hash_fields": [
+      "reference_sha256",
+      "inspection_sha256",
+      "authoritative_mask_sha256",
+      "generator_configuration_sha256"
+    ],
+    "positive_mask_policy": "non_empty_binary_dimension_bound_and_defect_feature_bound",
+    "negative_mask_policy": "empty_binary_mask_required_for_clean_and_supported_nuisance",
+    "integrity_failures": [
+      "unexpected_empty_mask",
+      "non_binary_mask",
+      "shape_mismatch",
+      "corrupted_bytes",
+      "hash_mismatch",
+      "missing_defect_or_feature_binding"
+    ],
+    "publication_on_failure": false
+  },
+  "metrics": {
+    "image_level": [
+      "true_positive",
+      "true_negative",
+      "false_positive",
+      "false_negative",
+      "precision",
+      "recall",
+      "specificity",
+      "f1",
+      "average_precision",
+      "auroc",
+      "nuisance_only_false_positive_rate",
+      "recall_by_severity",
+      "recall_by_defect_type"
+    ],
+    "pixel_level": [
+      "iou",
+      "dice",
+      "mask_precision",
+      "mask_recall",
+      "empty_mask_accuracy"
+    ],
+    "engineering_level": [
+      "affected_feature_mapping_accuracy",
+      "part_binding_accuracy",
+      "revision_binding_accuracy",
+      "abstention_correctness",
+      "human_disposition_evidence_binding_accuracy"
+    ],
+    "trust_boundary": [
+      "revision_mismatch_publication_count",
+      "corrupted_evidence_publication_count",
+      "bundle_verify_reimport_rate",
+      "dataset_split_hash_overlap",
+      "same_seed_manifest_equivalence"
+    ],
+    "reporting_slices": [
+      "defect_type",
+      "severity",
+      "nuisance_type",
+      "cad_revision",
+      "view_id",
+      "abstention_reason",
+      "trust_boundary_scenario"
+    ],
+    "uncertainty": {
+      "confidence_level": 0.95,
+      "proportion_interval": "wilson_score",
+      "ranking_and_median_interval": "stratified_percentile_bootstrap",
+      "bootstrap_seed": 424242,
+      "bootstrap_replicates": 10000
+    },
+    "undefined_metric_policy": "null_with_machine_readable_reason_and_raw_counts",
+    "trust_cases_in_binary_confusion_matrix": false
+  },
+  "acceptance_gates": [
+    {
+      "gate_id": "medium_high_defect_recall",
+      "scope": "test_defect_medium_high",
+      "operator": "gte",
+      "threshold": 0.9
+    },
+    {
+      "gate_id": "nuisance_only_false_positive_rate",
+      "scope": "test_nuisance_only",
+      "operator": "lte",
+      "threshold": 0.05
+    },
+    {
+      "gate_id": "positive_case_median_dice",
+      "scope": "test_positive_all_severities",
+      "operator": "gte",
+      "threshold": 0.7
+    },
+    {
+      "gate_id": "affected_feature_mapping_accuracy",
+      "scope": "test_positive_with_known_feature",
+      "operator": "gte",
+      "threshold": 0.95
+    },
+    {
+      "gate_id": "revision_mismatch_publication_count",
+      "scope": "all_trust_boundary_cases",
+      "operator": "eq",
+      "threshold": 0
+    },
+    {
+      "gate_id": "corrupted_evidence_publication_count",
+      "scope": "all_trust_boundary_cases",
+      "operator": "eq",
+      "threshold": 0
+    },
+    {
+      "gate_id": "bundle_verify_reimport_rate",
+      "scope": "all_bundle_eligible_cases",
+      "operator": "gte",
+      "threshold": 1.0
+    },
+    {
+      "gate_id": "dataset_split_hash_overlap",
+      "scope": "development_calibration_test",
+      "operator": "eq",
+      "threshold": 0
+    },
+    {
+      "gate_id": "same_seed_manifest_equivalence",
+      "scope": "full_profile_two_runs",
+      "operator": "is_true",
+      "threshold": true
+    },
+    {
+      "gate_id": "v0_1_regression",
+      "scope": "v0_1_0_suite",
+      "operator": "is_true",
+      "threshold": true
+    }
+  ],
+  "repeatability_contract": {
+    "repeat_count": 2,
+    "canonicalization": "mvs-canonical-json/v1",
+    "required_equal_artifacts": [
+      "dataset_manifest_projection",
+      "case_manifest_projection",
+      "reference_sha256",
+      "inspection_sha256",
+      "authoritative_mask_sha256",
+      "metric_projection",
+      "deterministic_result_projection"
+    ],
+    "volatile_fields_excluded_from_projection": [
+      "evaluation_run_id",
+      "generated_at",
+      "duration_ms",
+      "local_absolute_paths"
+    ],
+    "manifest_equivalence": "exact_canonical_projection_sha256_equality",
+    "split_overlap_count": 0
+  },
+  "resource_limits": {
+    "image_bytes_max": 26214400,
+    "image_edge_px_max": 8192,
+    "image_pixels_max": 40000000,
+    "inspection_images_per_case_max": 64,
+    "bundle_compressed_bytes_max": 67108864,
+    "bundle_payload_count_max": 100,
+    "bundle_member_bytes_max": 26214400,
+    "bundle_uncompressed_bytes_max": 134217728,
+    "bundle_compression_ratio_max": 100
+  },
+  "data_policy": {
+    "primary_data": "deterministic_project_generated_synthetic",
+    "full_corpus_tracked": false,
+    "tracked_artifacts": [
+      "generator_source",
+      "protocol",
+      "schema",
+      "seed_configuration",
+      "representative_small_fixtures",
+      "canonical_manifests",
+      "result_json",
+      "bounded_error_gallery_samples",
+      "reproduction_commands"
+    ],
+    "generated_output_root": "output/evaluation/e1",
+    "mvtec_role": "optional_separate_noncommercial_benchmark_not_e1",
+    "real_or_private_data_allowed": false
+  },
+  "exclusions": [
+    "Trust-boundary cases are excluded from TP/TN/FP/FN and pixel-quality denominators and are reported separately.",
+    "Calibration and development cases are excluded from release-gate point estimates, except split, trust, repeatability, and regression gates that explicitly name broader scope.",
+    "LOW severity is excluded from the primary recall gate but remains in all reports and the positive-case Dice gate.",
+    "A case with missing or invalid authoritative truth invalidates the run; it is not silently excluded.",
+    "Cases outside the frozen manifest are not added after test results are observed.",
+    "The gray transition intervals between supported and abstain nuisance ranges are not generated in E1 v1.",
+    "MVTec, real workshop images, private data, and downloaded third-party image bytes are not E1 inputs.",
+    "Hardlink behavior is a supplemental platform-specific security test and is not one of the portable 24 trust cases.",
+    "Human-disposition binding uses explicitly synthetic test fixtures only and must not be described as completed human UAT.",
+    "A failed or abstained case remains in its applicable denominator unless the metric definition explicitly separates trust cases."
+  ],
+  "limitations": [
+    "E1 is deterministic synthetic evidence and does not estimate shop-floor accuracy.",
+    "One synthetic part family, two revisions, and three rendered views do not represent industrial diversity.",
+    "The image-difference baseline remains sensitive to unmodeled lighting, optics, material, pose, focus, and background changes.",
+    "Synthetic masks are exact generator truth and may make localization easier than human-labeled real defects.",
+    "The threshold 0.0025 predates E1 and is not covered by the baseline configuration SHA-256; the E1 protocol digest binds it separately.",
+    "The calibration split may only confirm the single preregistered threshold; a failure requires a new protocol version.",
+    "LOW-severity recall is exploratory and is not a release gate, but it cannot be hidden.",
+    "A hash proves byte identity, not capture authenticity, manufacturing conformance, or lawful provenance.",
+    "Bundle integrity and fail-closed tests do not establish security or safety certification.",
+    "DEMO_READY_E1 does not mean FIELD_READY, production release authority, shipment approval, or inspector replacement."
+  ]
+}
