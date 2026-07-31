@@ -286,3 +286,7 @@ def test_ingestion_is_byte_deterministic_and_preserves_source_hash(tmp_path: Pat
     assert first.canonical_bytes == second.canonical_bytes
     assert first.canonical_sha256 == second.canonical_sha256
     assert first.pixel_sha256 == second.pixel_sha256
+    assert len(first.canonical_bytes) == 73
+    assert first.canonical_sha256 == (
+        "f4964d5a742835220a007070497db4b06271719e5b22d134bfba4975ee6ee224"
+    )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import sqlite3
 import stat
 import warnings
 import zipfile
@@ -466,9 +467,43 @@ def test_published_v010_bundle_remains_verifiable_importable_and_exportable(
 
     assert verified.bundle_sha256 == V010_BUNDLE_SHA256
     assert imported.payload_sha256 == verified.payload_sha256
+    assert reexported.path.read_bytes() == release_bytes
+    assert reexported.bundle_sha256 == V010_BUNDLE_SHA256
+    assert reexported.manifest["payload_sha256"] == verified.payload_sha256
     assert reverified.valid is True
     assert reverified.case_id == imported.case_id
     assert registry.get_case_document(imported.case_id)["status"] == "disposed"
+
+
+def test_imported_evaluation_snapshot_tamper_fails_closed(tmp_path: Path) -> None:
+    release_bytes = (
+        REPOSITORY_ROOT / "docs/releases/v0.1.0/evidence-bundle.zip"
+    ).read_bytes()
+    settings = Settings(data_dir=tmp_path / "published-release-tamper")
+    registry = CaseRegistry(settings)
+    service = EvidenceService(registry, settings)
+    imported = service.import_bundle(release_bytes)
+    destination = tmp_path / "must-not-exist.zip"
+
+    with sqlite3.connect(settings.database_path) as connection:
+        connection.execute(
+            """
+            UPDATE imported_evaluation_snapshots
+            SET document_json = ?
+            WHERE case_id = ? AND case_revision = ?
+            """,
+            (b"{}", imported.case_id, imported.case_revision),
+        )
+
+    with pytest.raises(MVSError) as exc_info:
+        service.export_case(
+            imported.case_id,
+            expected_case_revision=imported.case_revision,
+            destination=destination,
+        )
+
+    assert exc_info.value.code == "HASH_MISMATCH"
+    assert not destination.exists()
 
 
 def test_export_is_byte_stable_and_evaluation_projection_is_deterministic(tmp_path: Path) -> None:

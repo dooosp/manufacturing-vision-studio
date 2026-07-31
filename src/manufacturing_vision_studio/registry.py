@@ -27,7 +27,11 @@ from manufacturing_vision_studio.errors import (
     NotFoundError,
     UnsafeInputError,
 )
-from manufacturing_vision_studio.images import ImageIngestor, IngestedImage
+from manufacturing_vision_studio.images import (
+    ImageIngestor,
+    IngestedImage,
+    resolve_canonical_image_bytes,
+)
 from manufacturing_vision_studio.model import (
     DEFAULT_FEATURE_REGIONS,
     DeterministicDifferenceModel,
@@ -173,6 +177,13 @@ class CaseRegistry:
                     document_sha256 TEXT NOT NULL,
                     recorded_at TEXT NOT NULL,
                     UNIQUE(analysis_id, disposition_revision)
+                );
+                CREATE TABLE IF NOT EXISTS imported_evaluation_snapshots (
+                    case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+                    case_revision INTEGER NOT NULL,
+                    document_json BLOB NOT NULL,
+                    document_sha256 TEXT NOT NULL,
+                    PRIMARY KEY(case_id, case_revision)
                 );
                 """
             )
@@ -652,12 +663,23 @@ class CaseRegistry:
             dispositions = connection.execute(
                 "SELECT * FROM dispositions WHERE case_id = ? ORDER BY recorded_at, id", (case_id,)
             ).fetchall()
+            imported_evaluation = connection.execute(
+                """
+                SELECT case_revision, document_json, document_sha256
+                FROM imported_evaluation_snapshots
+                WHERE case_id = ? AND case_revision = ?
+                """,
+                (case_id, case_row["case_revision"]),
+            ).fetchone()
         return {
             "case_row": dict(case_row),
             "case_document": self._case_document(case_row, images, analyses, dispositions),
             "images": [dict(row) for row in images],
             "analyses": [dict(row) for row in analyses],
             "dispositions": [dict(row) for row in dispositions],
+            "imported_evaluation_snapshot": (
+                None if imported_evaluation is None else dict(imported_evaluation)
+            ),
         }
 
     def assert_case_revision(self, case_id: str, expected_case_revision: int) -> None:
@@ -671,6 +693,8 @@ class CaseRegistry:
         self,
         manifest: dict[str, Any],
         payloads: dict[str, bytes],
+        *,
+        allow_legacy_source_png: bool = False,
     ) -> dict[str, Any]:
         """Atomically restore documents and bytes already verified by EvidenceService."""
 
@@ -690,6 +714,14 @@ class CaseRegistry:
             _decode_canonical_json(payloads[path])
             for path in role_paths.get("human_disposition", [])
         ]
+        evaluation_paths = role_paths.get("evaluation_report", [])
+        if len(evaluation_paths) != 1:
+            raise UnsafeInputError(
+                "Imported evaluation report is incomplete",
+                code="EVIDENCE_INCOMPLETE",
+            )
+        evaluation_payload = payloads[evaluation_paths[0]]
+        _decode_canonical_json(evaluation_payload)
 
         ingestor = ImageIngestor(self.settings)
         ingested_images: dict[str, IngestedImage] = {}
@@ -705,15 +737,31 @@ class CaseRegistry:
                 filename=filename,
                 declared_media_type=cast(str, document["media_type"]),
             )
+            canonical_bytes = resolve_canonical_image_bytes(
+                image,
+                expected_canonical_sha256=cast(str, document["canonical_image_sha256"]),
+                allow_legacy_source_png=allow_legacy_source_png,
+            )
             if (
                 image.original_sha256 != document["sha256"]
-                or image.canonical_sha256 != document["canonical_image_sha256"]
+                or canonical_bytes is None
                 or image.pixel_sha256 != document["pixel_sha256"]
                 or image.width != document["width_px"]
                 or image.height != document["height_px"]
             ):
                 raise UnsafeInputError("Imported image hashes do not match", code="HASH_MISMATCH")
-            ingested_images[cast(str, document["image_id"])] = image
+            ingested_images[cast(str, document["image_id"])] = IngestedImage(
+                original_bytes=image.original_bytes,
+                canonical_bytes=canonical_bytes,
+                original_sha256=image.original_sha256,
+                canonical_sha256=cast(str, document["canonical_image_sha256"]),
+                pixel_sha256=image.pixel_sha256,
+                width=image.width,
+                height=image.height,
+                source_format=image.source_format,
+                media_type=image.media_type,
+                filename=image.filename,
+            )
 
         reference_documents = [doc for doc in image_documents if doc["role"] == "reference"]
         if len(reference_documents) != 1:
@@ -900,6 +948,19 @@ class CaseRegistry:
                             document["recorded_at"],
                         ),
                     )
+                connection.execute(
+                    """
+                    INSERT INTO imported_evaluation_snapshots(
+                        case_id, case_revision, document_json, document_sha256
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        case_id,
+                        case_document["case_revision"],
+                        evaluation_payload,
+                        sha256_bytes(evaluation_payload),
+                    ),
+                )
         except Exception:
             self._remove_created_blobs(created_blobs)
             raise

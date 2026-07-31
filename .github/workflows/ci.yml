@@ -148,6 +148,8 @@ jobs:
           uv run mvs-evidence --data-dir "${release_data}" export \
             case-MVS-DEMO-001 --expected-revision 8 \
             --output "${release_reexport}" >/dev/null
+          cmp "${release_bundle}" "${release_reexport}"
+          sha256sum "${release_bundle}" "${release_reexport}"
           uv run mvs-evidence --data-dir "${release_data}" verify "${release_reexport}" \
             --part-id MVS-DEMO-001 --cad-revision rev-A >/dev/null
 
