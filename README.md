@@ -50,6 +50,16 @@ uv sync --all-groups
 npm --prefix web ci
 ```
 
+Start both local services with one command:
+
+```bash
+make demo
+```
+
+Then open `http://127.0.0.1:4173`. Press `Ctrl-C` once to stop both services.
+
+For separate development terminals, run the services directly:
+
 Run the API:
 
 ```bash
@@ -63,7 +73,7 @@ In a second terminal, run the web application:
 npm --prefix web run dev
 ```
 
-Open `http://127.0.0.1:4173`. The UI creates a deterministic seeded case when
+The UI creates a deterministic seeded case when
 the local registry is empty. English and Korean are available from the header.
 
 ## Validation

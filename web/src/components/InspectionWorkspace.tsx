@@ -63,6 +63,7 @@ export function InspectionWorkspace({
   const topFeature = [...mappedFeatures].sort(
     (left, right) => right.anomaly_score - left.anomaly_score,
   )[0];
+  const emptyFeatureLabel = analysis?.verdict === "normal" ? copy.notApplicable : copy.unmapped;
 
   return (
     <section className="workspace-card" aria-labelledby="workspace-title">
@@ -169,8 +170,8 @@ export function InspectionWorkspace({
         </div>
         <div className="metric-cell feature-cell">
           <span>{copy.affectedFeature}</span>
-          <strong>{topFeature?.label ?? topFeature?.feature_id ?? (analysis ? copy.unmapped : "—")}</strong>
-          <small>{topFeature ? `${formatScore(topFeature.anomaly_score)} ${copy.normalizedDifference}` : analysis ? copy.unmapped : copy.noAnalysis}</small>
+          <strong>{topFeature?.label ?? topFeature?.feature_id ?? (analysis ? emptyFeatureLabel : "—")}</strong>
+          <small>{topFeature ? `${formatScore(topFeature.anomaly_score)} ${copy.normalizedDifference}` : analysis ? emptyFeatureLabel : copy.noAnalysis}</small>
         </div>
         <div className="metric-cell pipeline-cell">
           <span>{copy.pipeline}</span>

@@ -59,6 +59,7 @@ const copy = {
     captured: "Evidence bundle verified",
     normalizedDifference: "Normalized pixel difference",
     unmapped: "Unmapped",
+    notApplicable: "No anomaly to map",
   },
   ko: {
     demoMode: "합성 데이터 데모",
@@ -118,6 +119,7 @@ const copy = {
     captured: "증거 번들 검증 완료",
     normalizedDifference: "정규화 픽셀 차이",
     unmapped: "매핑되지 않음",
+    notApplicable: "매핑할 이상 없음",
   },
 } as const;
 
