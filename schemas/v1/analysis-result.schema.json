@@ -1,0 +1,508 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.manufacturing-vision-studio.local/v1/analysis-result.schema.json",
+  "title": "Manufacturing Vision Studio analysis result v1",
+  "description": "Immutable output from one model invocation over one reference/inspection image pair.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "analysis_id",
+    "case_id",
+    "case_revision",
+    "part_identity",
+    "input_binding",
+    "pipeline",
+    "model",
+    "configuration_sha256",
+    "execution",
+    "result_status",
+    "produced_at",
+    "warnings",
+    "limitations"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "analysis_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "case_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "case_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "part_identity": {
+      "$ref": "#/$defs/part_identity"
+    },
+    "input_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reference_image_id",
+        "reference_image_sha256",
+        "reference_canonical_image_sha256",
+        "reference_pixel_sha256",
+        "inspection_image_id",
+        "inspection_image_sha256",
+        "inspection_canonical_image_sha256",
+        "inspection_pixel_sha256",
+        "normalization"
+      ],
+      "properties": {
+        "reference_image_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "reference_image_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "reference_canonical_image_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "reference_pixel_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "inspection_image_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "inspection_image_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "inspection_canonical_image_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "inspection_pixel_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "normalization": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "authorization",
+            "source_width_px",
+            "source_height_px",
+            "target_width_px",
+            "target_height_px",
+            "parameters_sha256"
+          ],
+          "properties": {
+            "method": {
+              "enum": [
+                "none",
+                "letterbox",
+                "center_crop",
+                "nearest_resize"
+              ]
+            },
+            "authorization": {
+              "enum": [
+                "not_required",
+                "case_configuration"
+              ]
+            },
+            "source_width_px": {
+              "$ref": "#/$defs/dimension"
+            },
+            "source_height_px": {
+              "$ref": "#/$defs/dimension"
+            },
+            "target_width_px": {
+              "$ref": "#/$defs/dimension"
+            },
+            "target_height_px": {
+              "$ref": "#/$defs/dimension"
+            },
+            "parameters_sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "method": {
+                    "const": "none"
+                  }
+                },
+                "required": [
+                  "method"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "authorization": {
+                    "const": "not_required"
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "authorization": {
+                    "const": "case_configuration"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "pipeline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pipeline_id",
+        "pipeline_version"
+      ],
+      "properties": {
+        "pipeline_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "pipeline_version": {
+          "$ref": "#/$defs/semantic_version"
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model_id",
+        "model_version",
+        "model_artifact_sha256"
+      ],
+      "properties": {
+        "model_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "model_version": {
+          "$ref": "#/$defs/semantic_version"
+        },
+        "model_artifact_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "configuration_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_id",
+        "runtime_version",
+        "deterministic",
+        "random_seed"
+      ],
+      "properties": {
+        "runtime_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "runtime_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "deterministic": {
+          "type": "boolean"
+        },
+        "random_seed": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 4294967295
+        }
+      }
+    },
+    "result_status": {
+      "enum": [
+        "completed",
+        "abstained"
+      ]
+    },
+    "completed_output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "anomaly_score",
+        "threshold",
+        "automated_classification",
+        "mask",
+        "feature_findings"
+      ],
+      "properties": {
+        "anomaly_score": {
+          "$ref": "#/$defs/unit_interval"
+        },
+        "threshold": {
+          "$ref": "#/$defs/unit_interval"
+        },
+        "automated_classification": {
+          "enum": [
+            "normal",
+            "anomaly",
+            "indeterminate"
+          ]
+        },
+        "mask": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "relative_path",
+            "media_type",
+            "sha256",
+            "byte_size",
+            "width_px",
+            "height_px",
+            "pixel_encoding"
+          ],
+          "properties": {
+            "relative_path": {
+              "$ref": "#/$defs/safe_relative_path"
+            },
+            "media_type": {
+              "const": "image/png"
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "byte_size": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 26214400
+            },
+            "width_px": {
+              "$ref": "#/$defs/dimension"
+            },
+            "height_px": {
+              "$ref": "#/$defs/dimension"
+            },
+            "pixel_encoding": {
+              "const": "uint8-binary-0-255"
+            }
+          }
+        },
+        "feature_findings": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "mapping_status",
+              "feature_id",
+              "anomaly_score",
+              "mask_fraction",
+              "mapping_confidence",
+              "mapping_method"
+            ],
+            "properties": {
+              "mapping_status": {
+                "enum": [
+                  "mapped",
+                  "unmapped"
+                ]
+              },
+              "feature_id": {
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/identifier"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "anomaly_score": {
+                "$ref": "#/$defs/unit_interval"
+              },
+              "mask_fraction": {
+                "$ref": "#/$defs/unit_interval"
+              },
+              "mapping_confidence": {
+                "$ref": "#/$defs/unit_interval"
+              },
+              "mapping_method": {
+                "enum": [
+                  "feature_map_overlap",
+                  "fixture_lookup",
+                  "unmapped"
+                ]
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "mapping_status": {
+                      "const": "mapped"
+                    }
+                  },
+                  "required": [
+                    "mapping_status"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "feature_id": {
+                      "$ref": "#/$defs/identifier"
+                    }
+                  }
+                },
+                "else": {
+                  "properties": {
+                    "feature_id": {
+                      "type": "null"
+                    },
+                    "mapping_method": {
+                      "const": "unmapped"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "abstention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason_code",
+        "message"
+      ],
+      "properties": {
+        "reason_code": {
+          "enum": [
+            "MODEL_ABSTAINED",
+            "INSUFFICIENT_SIGNAL",
+            "UNSUPPORTED_INPUT_CONTENT"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        }
+      }
+    },
+    "produced_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "warnings": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "limitations": {
+      "$ref": "#/$defs/limitations"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "result_status": {
+            "const": "completed"
+          }
+        },
+        "required": [
+          "result_status"
+        ]
+      },
+      "then": {
+        "required": [
+          "completed_output"
+        ],
+        "not": {
+          "required": [
+            "abstention"
+          ]
+        }
+      },
+      "else": {
+        "required": [
+          "abstention"
+        ],
+        "not": {
+          "required": [
+            "completed_output"
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "semantic_version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "part_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "part_id",
+        "cad_revision"
+      ],
+      "properties": {
+        "part_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "cad_revision": {
+          "$ref": "#/$defs/identifier"
+        }
+      }
+    },
+    "dimension": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8192
+    },
+    "unit_interval": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "safe_relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*//)[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,238}[A-Za-z0-9._-])?$"
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      }
+    }
+  }
+}

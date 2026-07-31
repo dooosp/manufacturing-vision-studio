@@ -1,0 +1,233 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.manufacturing-vision-studio.local/v1/inspection-case.schema.json",
+  "title": "Manufacturing Vision Studio inspection case v1",
+  "description": "Current inspection-case state. Image metadata and derived evidence remain separate immutable documents referenced by ID.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "case_id",
+    "case_revision",
+    "status",
+    "part_identity",
+    "reference_image_id",
+    "inspection_image_ids",
+    "analysis_configuration",
+    "feature_ids",
+    "created_at",
+    "updated_at",
+    "limitations"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "case_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "case_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "status": {
+      "enum": [
+        "draft",
+        "ready",
+        "analyzed",
+        "disposed",
+        "exported"
+      ]
+    },
+    "part_identity": {
+      "$ref": "#/$defs/part_identity"
+    },
+    "reference_image_id": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/identifier"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "inspection_image_ids": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/identifier"
+      }
+    },
+    "analysis_configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pipeline",
+        "model",
+        "configuration_sha256",
+        "normalization_policy"
+      ],
+      "properties": {
+        "pipeline": {
+          "$ref": "#/$defs/versioned_component"
+        },
+        "model": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "model_id",
+            "model_version",
+            "model_artifact_sha256"
+          ],
+          "properties": {
+            "model_id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "model_version": {
+              "$ref": "#/$defs/semantic_version"
+            },
+            "model_artifact_sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        },
+        "configuration_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "normalization_policy": {
+          "enum": [
+            "reject_mismatch",
+            "approved_letterbox",
+            "approved_center_crop",
+            "approved_nearest_resize"
+          ]
+        }
+      }
+    },
+    "feature_ids": {
+      "type": "array",
+      "maxItems": 10000,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/identifier"
+      }
+    },
+    "freecad_adapter_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "export_id",
+        "manifest_sha256"
+      ],
+      "properties": {
+        "export_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "limitations": {
+      "$ref": "#/$defs/limitations"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "ready",
+              "analyzed",
+              "disposed",
+              "exported"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "reference_image_id": {
+            "$ref": "#/$defs/identifier"
+          },
+          "inspection_image_ids": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "semantic_version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "part_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "part_id",
+        "cad_revision"
+      ],
+      "properties": {
+        "part_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "cad_revision": {
+          "$ref": "#/$defs/identifier"
+        }
+      }
+    },
+    "versioned_component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pipeline_id",
+        "pipeline_version"
+      ],
+      "properties": {
+        "pipeline_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "pipeline_version": {
+          "$ref": "#/$defs/semantic_version"
+        }
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      }
+    }
+  }
+}

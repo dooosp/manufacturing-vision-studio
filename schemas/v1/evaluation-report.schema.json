@@ -1,0 +1,333 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.manufacturing-vision-studio.local/v1/evaluation-report.schema.json",
+  "title": "Manufacturing Vision Studio evaluation report v1",
+  "description": "Reproducible evaluation summary for a fixed dataset, pipeline, model, and configuration fingerprint.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_id",
+    "evaluation_run_id",
+    "generated_at",
+    "dataset",
+    "pipeline",
+    "model",
+    "configuration_sha256",
+    "classification_metrics",
+    "segmentation_metrics",
+    "failure_counts",
+    "reproducibility",
+    "acceptance_criteria",
+    "verdict",
+    "limitations"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "report_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "evaluation_run_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "dataset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dataset_id",
+        "dataset_version",
+        "manifest_sha256",
+        "license_id",
+        "sample_count",
+        "positive_count",
+        "negative_count"
+      ],
+      "properties": {
+        "dataset_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "dataset_version": {
+          "$ref": "#/$defs/semantic_version"
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "license_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "sample_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "positive_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "negative_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "pipeline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pipeline_id",
+        "pipeline_version"
+      ],
+      "properties": {
+        "pipeline_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "pipeline_version": {
+          "$ref": "#/$defs/semantic_version"
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model_id",
+        "model_version",
+        "model_artifact_sha256"
+      ],
+      "properties": {
+        "model_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "model_version": {
+          "$ref": "#/$defs/semantic_version"
+        },
+        "model_artifact_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "configuration_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "classification_metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "true_positive",
+        "true_negative",
+        "false_positive",
+        "false_negative",
+        "accuracy",
+        "precision",
+        "recall",
+        "f1",
+        "specificity",
+        "false_positive_rate",
+        "false_negative_rate"
+      ],
+      "properties": {
+        "true_positive": {
+          "$ref": "#/$defs/count"
+        },
+        "true_negative": {
+          "$ref": "#/$defs/count"
+        },
+        "false_positive": {
+          "$ref": "#/$defs/count"
+        },
+        "false_negative": {
+          "$ref": "#/$defs/count"
+        },
+        "accuracy": {
+          "$ref": "#/$defs/unit_interval"
+        },
+        "precision": {
+          "$ref": "#/$defs/nullable_unit_interval"
+        },
+        "recall": {
+          "$ref": "#/$defs/nullable_unit_interval"
+        },
+        "f1": {
+          "$ref": "#/$defs/nullable_unit_interval"
+        },
+        "specificity": {
+          "$ref": "#/$defs/nullable_unit_interval"
+        },
+        "false_positive_rate": {
+          "$ref": "#/$defs/nullable_unit_interval"
+        },
+        "false_negative_rate": {
+          "$ref": "#/$defs/nullable_unit_interval"
+        }
+      }
+    },
+    "segmentation_metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evaluated_mask_count",
+        "mean_iou",
+        "mean_dice"
+      ],
+      "properties": {
+        "evaluated_mask_count": {
+          "$ref": "#/$defs/count"
+        },
+        "mean_iou": {
+          "$ref": "#/$defs/nullable_unit_interval"
+        },
+        "mean_dice": {
+          "$ref": "#/$defs/nullable_unit_interval"
+        }
+      }
+    },
+    "failure_counts": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "count"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]{0,63}$"
+          },
+          "count": {
+            "$ref": "#/$defs/count"
+          }
+        }
+      }
+    },
+    "reproducibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repeat_count",
+        "metric_tolerance",
+        "equivalent",
+        "run_result_sha256s"
+      ],
+      "properties": {
+        "repeat_count": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 100
+        },
+        "metric_tolerance": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "equivalent": {
+          "type": "boolean"
+        },
+        "run_result_sha256s": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/sha256"
+          }
+        }
+      }
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "criterion_id",
+          "passed",
+          "observed",
+          "threshold"
+        ],
+        "properties": {
+          "criterion_id": {
+            "$ref": "#/$defs/identifier"
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "observed": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "threshold": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        }
+      }
+    },
+    "verdict": {
+      "enum": [
+        "pass",
+        "fail",
+        "inconclusive"
+      ]
+    },
+    "limitations": {
+      "$ref": "#/$defs/limitations"
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "semantic_version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "unit_interval": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "nullable_unit_interval": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 1
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      }
+    }
+  }
+}

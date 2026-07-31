@@ -1,0 +1,484 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.manufacturing-vision-studio.local/v1/evidence-bundle-manifest.schema.json",
+  "title": "Manufacturing Vision Studio evidence bundle manifest v1",
+  "description": "Complete, immutable inventory for a revision-bound evidence bundle. The manifest and its .sha256 sidecar are control files and are not listed as payload artifacts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bundle_id",
+    "case_id",
+    "case_revision",
+    "part_identity",
+    "created_at",
+    "exporter",
+    "hash_contract",
+    "artifact_count",
+    "payload_byte_size",
+    "artifacts",
+    "payload_sha256",
+    "limitations"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "bundle_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "case_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "case_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "part_identity": {
+      "$ref": "#/$defs/part_identity"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "exporter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exporter_id",
+        "exporter_version"
+      ],
+      "properties": {
+        "exporter_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "exporter_version": {
+          "$ref": "#/$defs/semantic_version"
+        }
+      }
+    },
+    "hash_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "json_canonicalization",
+        "artifact_order"
+      ],
+      "properties": {
+        "algorithm": {
+          "const": "sha256"
+        },
+        "json_canonicalization": {
+          "const": "mvs-canonical-json/v1"
+        },
+        "artifact_order": {
+          "const": "unicode_code_point_ascending_path"
+        }
+      }
+    },
+    "artifact_count": {
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 100
+    },
+    "payload_byte_size": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 134217728
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "role",
+          "path",
+          "sha256",
+          "byte_size",
+          "media_type"
+        ],
+        "properties": {
+          "role": {
+            "enum": [
+              "inspection_case",
+              "reference_image_metadata",
+              "reference_image",
+              "inspection_image_metadata",
+              "inspection_image",
+              "analysis_result",
+              "anomaly_mask",
+              "human_disposition",
+              "evaluation_report",
+              "limitations",
+              "freecad_adapter_manifest",
+              "freecad_artifact"
+            ]
+          },
+          "path": {
+            "$ref": "#/$defs/safe_relative_path"
+          },
+          "sha256": {
+            "$ref": "#/$defs/sha256"
+          },
+          "byte_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 26214400
+          },
+          "media_type": {
+            "enum": [
+              "application/json",
+              "image/png",
+              "image/jpeg",
+              "text/markdown",
+              "text/plain"
+            ]
+          },
+          "schema_id": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 500
+          },
+          "schema_version": {
+            "const": "1.0.0"
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "role": {
+                  "enum": [
+                    "inspection_case",
+                    "reference_image_metadata",
+                    "inspection_image_metadata",
+                    "analysis_result",
+                    "human_disposition",
+                    "evaluation_report",
+                    "freecad_adapter_manifest"
+                  ]
+                }
+              },
+              "required": [
+                "role"
+              ]
+            },
+            "then": {
+              "required": [
+                "schema_id",
+                "schema_version"
+              ],
+              "properties": {
+                "media_type": {
+                  "const": "application/json"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "role": {
+                  "const": "anomaly_mask"
+                }
+              },
+              "required": [
+                "role"
+              ]
+            },
+            "then": {
+              "properties": {
+                "media_type": {
+                  "const": "image/png"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "role": {
+                  "enum": [
+                    "reference_image",
+                    "inspection_image"
+                  ]
+                }
+              },
+              "required": [
+                "role"
+              ]
+            },
+            "then": {
+              "properties": {
+                "media_type": {
+                  "enum": [
+                    "image/png",
+                    "image/jpeg"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "role": {
+                  "const": "limitations"
+                }
+              },
+              "required": [
+                "role"
+              ]
+            },
+            "then": {
+              "properties": {
+                "media_type": {
+                  "enum": [
+                    "text/markdown",
+                    "text/plain"
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "payload_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "limitations": {
+      "$ref": "#/$defs/limitations"
+    }
+  },
+  "allOf": [
+    {
+      "properties": {
+        "artifacts": {
+          "contains": {
+            "properties": {
+              "role": {
+                "const": "inspection_case"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "artifacts": {
+          "contains": {
+            "properties": {
+              "role": {
+                "const": "reference_image_metadata"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "artifacts": {
+          "contains": {
+            "properties": {
+              "role": {
+                "const": "reference_image"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "artifacts": {
+          "contains": {
+            "properties": {
+              "role": {
+                "const": "inspection_image_metadata"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "minContains": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "artifacts": {
+          "contains": {
+            "properties": {
+              "role": {
+                "const": "inspection_image"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "minContains": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "artifacts": {
+          "contains": {
+            "properties": {
+              "role": {
+                "const": "analysis_result"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "minContains": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "artifacts": {
+          "contains": {
+            "properties": {
+              "role": {
+                "const": "anomaly_mask"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "minContains": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "artifacts": {
+          "contains": {
+            "properties": {
+              "role": {
+                "const": "human_disposition"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "minContains": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "artifacts": {
+          "contains": {
+            "properties": {
+              "role": {
+                "const": "evaluation_report"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "artifacts": {
+          "contains": {
+            "properties": {
+              "role": {
+                "const": "limitations"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "semantic_version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "part_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "part_id",
+        "cad_revision"
+      ],
+      "properties": {
+        "part_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "cad_revision": {
+          "$ref": "#/$defs/identifier"
+        }
+      }
+    },
+    "safe_relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*//)[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,238}[A-Za-z0-9._-])?$"
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      }
+    }
+  }
+}

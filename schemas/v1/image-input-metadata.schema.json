@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.manufacturing-vision-studio.local/v1/image-input-metadata.schema.json",
+  "title": "Manufacturing Vision Studio image input metadata v1",
+  "description": "Immutable metadata for one validated source image copied into the local object store.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "image_id",
+    "case_id",
+    "part_identity",
+    "role",
+    "relative_path",
+    "media_type",
+    "sha256",
+    "canonical_image_sha256",
+    "pixel_sha256",
+    "byte_size",
+    "width_px",
+    "height_px",
+    "pixel_count",
+    "channels",
+    "bit_depth",
+    "decoder",
+    "ingested_at",
+    "source"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "image_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "case_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "part_identity": {
+      "$ref": "#/$defs/part_identity"
+    },
+    "role": {
+      "enum": [
+        "reference",
+        "inspection"
+      ]
+    },
+    "relative_path": {
+      "$ref": "#/$defs/safe_relative_path"
+    },
+    "media_type": {
+      "enum": [
+        "image/png",
+        "image/jpeg"
+      ]
+    },
+    "sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "canonical_image_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "pixel_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "byte_size": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 26214400
+    },
+    "width_px": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8192
+    },
+    "height_px": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8192
+    },
+    "pixel_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 40000000
+    },
+    "channels": {
+      "const": 3
+    },
+    "bit_depth": {
+      "const": 8
+    },
+    "decoder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decoder_id",
+        "decoder_version",
+        "orientation_policy",
+        "canonical_color_mode"
+      ],
+      "properties": {
+        "decoder_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "decoder_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "orientation_policy": {
+          "const": "exif_transpose_then_strip_metadata"
+        },
+        "canonical_color_mode": {
+          "const": "RGB8"
+        }
+      }
+    },
+    "ingested_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "upload",
+            "synthetic_fixture",
+            "freecad_export"
+          ]
+        },
+        "original_filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[^/\\\\\\u0000-\\u001f\\u007f]+$"
+        },
+        "fixture_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "freecad_export_id": {
+          "$ref": "#/$defs/identifier"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "synthetic_fixture"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "fixture_id"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "freecad_export"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "freecad_export_id"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "part_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "part_id",
+        "cad_revision"
+      ],
+      "properties": {
+        "part_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "cad_revision": {
+          "$ref": "#/$defs/identifier"
+        }
+      }
+    },
+    "safe_relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*//)[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,238}[A-Za-z0-9._-])?$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  }
+}

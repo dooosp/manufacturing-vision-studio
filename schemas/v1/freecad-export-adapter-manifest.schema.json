@@ -1,0 +1,275 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.manufacturing-vision-studio.local/v1/freecad-export-adapter-manifest.schema.json",
+  "title": "Manufacturing Vision Studio FreeCAD read-only export adapter manifest v1",
+  "description": "Verified description of inert FreeCAD Automation export artifacts. Version 1 never opens a FreeCAD document, runs a macro, or writes to the source repository.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "adapter_id",
+    "adapter_version",
+    "export_id",
+    "producer",
+    "part_identity",
+    "source_manifest_sha256",
+    "adapter_policy",
+    "features",
+    "artifacts",
+    "limitations"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "adapter_id": {
+      "const": "freecad-automation-read-only-export"
+    },
+    "adapter_version": {
+      "$ref": "#/$defs/semantic_version"
+    },
+    "export_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "system_id",
+        "system_version",
+        "export_schema_version",
+        "exported_at"
+      ],
+      "properties": {
+        "system_id": {
+          "const": "freecad-automation"
+        },
+        "system_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "export_schema_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "exported_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "part_identity": {
+      "$ref": "#/$defs/part_identity"
+    },
+    "source_manifest_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "adapter_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "access_mode",
+        "copy_on_import",
+        "allow_external_paths",
+        "allow_symlinks",
+        "execute_freecad"
+      ],
+      "properties": {
+        "access_mode": {
+          "const": "read_only"
+        },
+        "copy_on_import": {
+          "const": true
+        },
+        "allow_external_paths": {
+          "const": false
+        },
+        "allow_symlinks": {
+          "const": false
+        },
+        "execute_freecad": {
+          "const": false
+        }
+      }
+    },
+    "features": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "feature_id",
+          "display_name",
+          "feature_type",
+          "normalized_region"
+        ],
+        "properties": {
+          "feature_id": {
+            "$ref": "#/$defs/identifier"
+          },
+          "display_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "feature_type": {
+            "enum": [
+              "face",
+              "edge",
+              "hole",
+              "pocket",
+              "boss",
+              "other"
+            ]
+          },
+          "normalized_region": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "x_min",
+              "y_min",
+              "x_max",
+              "y_max"
+            ],
+            "properties": {
+              "x_min": {
+                "$ref": "#/$defs/unit_interval"
+              },
+              "y_min": {
+                "$ref": "#/$defs/unit_interval"
+              },
+              "x_max": {
+                "$ref": "#/$defs/unit_interval"
+              },
+              "y_max": {
+                "$ref": "#/$defs/unit_interval"
+              }
+            }
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "role",
+          "relative_path",
+          "media_type",
+          "sha256",
+          "byte_size"
+        ],
+        "properties": {
+          "artifact_id": {
+            "$ref": "#/$defs/identifier"
+          },
+          "role": {
+            "enum": [
+              "reference_render",
+              "feature_map",
+              "cad_metadata"
+            ]
+          },
+          "relative_path": {
+            "$ref": "#/$defs/safe_relative_path"
+          },
+          "media_type": {
+            "enum": [
+              "application/json",
+              "image/png"
+            ]
+          },
+          "sha256": {
+            "$ref": "#/$defs/sha256"
+          },
+          "byte_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 26214400
+          }
+        }
+      },
+      "contains": {
+        "properties": {
+          "role": {
+            "const": "reference_render"
+          },
+          "media_type": {
+            "const": "image/png"
+          }
+        },
+        "required": [
+          "role",
+          "media_type"
+        ]
+      },
+      "minContains": 1
+    },
+    "limitations": {
+      "$ref": "#/$defs/limitations"
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "semantic_version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "part_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "part_id",
+        "cad_revision"
+      ],
+      "properties": {
+        "part_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "cad_revision": {
+          "$ref": "#/$defs/identifier"
+        }
+      }
+    },
+    "safe_relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*//)[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,238}[A-Za-z0-9._-])?$"
+    },
+    "unit_interval": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      }
+    }
+  }
+}
