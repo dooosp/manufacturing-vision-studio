@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -15,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from PIL import Image
 from PIL import __version__ as pillow_version
 
 from manufacturing_vision_studio.canonical import canonical_json_bytes, sha256_bytes
@@ -50,6 +52,32 @@ REASON_CODES = {
 MODEL_ARTIFACT_SHA256 = sha256_bytes(
     b"manufacturing-vision-studio:registered-absolute-difference:1.0.0"
 )
+
+
+def _same_mask_pixels(
+    current: bytes,
+    imported: bytes,
+    *,
+    expected_size: tuple[int, int],
+) -> bool:
+    """Compare verified mask meaning without coupling it to a PNG compressor build."""
+
+    try:
+        with (
+            Image.open(io.BytesIO(current)) as current_image,
+            Image.open(io.BytesIO(imported)) as imported_image,
+        ):
+            current_image.load()
+            imported_image.load()
+            return (
+                current_image.format == "PNG"
+                and imported_image.format == "PNG"
+                and current_image.mode == imported_image.mode == "L"
+                and current_image.size == imported_image.size == expected_size
+                and current_image.tobytes() == imported_image.tobytes()
+            )
+    except (OSError, SyntaxError, ValueError):
+        return False
 
 
 class CaseRegistry:
@@ -696,23 +724,30 @@ class CaseRegistry:
         reference_id = cast(str, reference_documents[0]["image_id"])
         model = DeterministicDifferenceModel()
         results: dict[str, InspectionResult] = {}
+        verified_mask_payloads: dict[str, bytes] = {}
         for document in analysis_documents:
             binding = cast(dict[str, Any], document["input_binding"])
             inspection_id = cast(str, binding["inspection_image_id"])
             result = model.inspect(ingested_images[reference_id], ingested_images[inspection_id])
             completed = cast(dict[str, Any], document["completed_output"])
             mask = cast(dict[str, Any], completed["mask"])
+            mask_payload = payloads[cast(str, mask["relative_path"])]
             if (
                 result.config_hash != document["configuration_sha256"]
-                or result.mask_sha256 != mask["sha256"]
-                or result.mask_bytes != payloads[cast(str, mask["relative_path"])]
                 or result.anomaly_score != completed["anomaly_score"]
+                or not _same_mask_pixels(
+                    result.mask_bytes,
+                    mask_payload,
+                    expected_size=(cast(int, mask["width_px"]), cast(int, mask["height_px"])),
+                )
             ):
                 raise UnsafeInputError(
                     "Imported analysis does not reproduce",
                     code="HASH_MISMATCH",
                 )
-            results[cast(str, document["analysis_id"])] = result
+            analysis_id = cast(str, document["analysis_id"])
+            results[analysis_id] = result
+            verified_mask_payloads[analysis_id] = mask_payload
 
         case_id = cast(str, case_document["case_id"])
         created_blobs: list[Path] = []
@@ -791,9 +826,13 @@ class CaseRegistry:
                 for document in analysis_documents:
                     analysis_id = cast(str, document["analysis_id"])
                     result = results[analysis_id]
+                    completed = cast(dict[str, Any], document["completed_output"])
+                    mask = cast(dict[str, Any], completed["mask"])
+                    mask_bytes = verified_mask_payloads[analysis_id]
+                    mask_sha256 = cast(str, mask["sha256"])
                     mask_path = self._store_blob(
-                        result.mask_bytes,
-                        result.mask_sha256,
+                        mask_bytes,
+                        mask_sha256,
                         ".mask.png",
                         created_paths=created_blobs,
                     )
@@ -830,8 +869,8 @@ class CaseRegistry:
                                     "mean_absolute_error": result.registration.mean_absolute_error,
                                 }
                             ),
-                            result.mask_sha256,
-                            len(result.mask_bytes),
+                            mask_sha256,
+                            len(mask_bytes),
                             mask_path,
                             result.registered_sha256,
                             len(result.registered_bytes),

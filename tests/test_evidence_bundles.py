@@ -21,6 +21,8 @@ from manufacturing_vision_studio.registry import CaseRegistry
 
 MANIFEST = "bundle-manifest.json"
 SIDECAR = "bundle-manifest.sha256"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+V010_BUNDLE_SHA256 = "1d492d942aa061e16399f715255760b0a37a8b91eba85cb7b729626ff9e435e7"
 
 
 def sha256(data: bytes) -> str:
@@ -433,6 +435,40 @@ def test_complete_bundle_verifies_reimports_and_reexports_equivalent_payloads(
         "part_id": "PART-EVIDENCE",
         "cad_revision": "REV-A",
     }
+
+
+def test_published_v010_bundle_remains_verifiable_importable_and_exportable(
+    tmp_path: Path,
+) -> None:
+    release_bundle = REPOSITORY_ROOT / "docs/releases/v0.1.0/evidence-bundle.zip"
+    release_bytes = release_bundle.read_bytes()
+    assert sha256(release_bytes) == V010_BUNDLE_SHA256
+
+    settings = Settings(data_dir=tmp_path / "published-release-import")
+    registry = CaseRegistry(settings)
+    service = EvidenceService(registry, settings)
+
+    verified = service.verify_bundle(
+        release_bytes,
+        expected_part_id="MVS-DEMO-001",
+        expected_cad_revision="rev-A",
+    )
+    imported = service.import_bundle(release_bytes)
+    reexported = service.export_case(
+        imported.case_id,
+        expected_case_revision=imported.case_revision,
+    )
+    reverified = service.verify_bundle(
+        reexported.path,
+        expected_part_id="MVS-DEMO-001",
+        expected_cad_revision="rev-A",
+    )
+
+    assert verified.bundle_sha256 == V010_BUNDLE_SHA256
+    assert imported.payload_sha256 == verified.payload_sha256
+    assert reverified.valid is True
+    assert reverified.case_id == imported.case_id
+    assert registry.get_case_document(imported.case_id)["status"] == "disposed"
 
 
 def test_export_is_byte_stable_and_evaluation_projection_is_deterministic(tmp_path: Path) -> None:

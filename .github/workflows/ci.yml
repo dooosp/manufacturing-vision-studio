@@ -136,6 +136,21 @@ jobs:
           cmp "${source_bundle}" "${reexported_bundle}"
           sha256sum "${source_bundle}" "${reexported_bundle}"
 
+          release_bundle="docs/releases/v0.1.0/evidence-bundle.zip"
+          release_data="${roundtrip_root}/published-v0.1.0"
+          release_reexport="${roundtrip_root}/published-v0.1.0-reexport.zip"
+          release_sha="$(sha256sum "${release_bundle}" | cut -d ' ' -f 1)"
+          test "${release_sha}" = \
+            "1d492d942aa061e16399f715255760b0a37a8b91eba85cb7b729626ff9e435e7"
+          uv run mvs-evidence --data-dir "${release_data}" verify "${release_bundle}" \
+            --part-id MVS-DEMO-001 --cad-revision rev-A >/dev/null
+          uv run mvs-evidence --data-dir "${release_data}" import "${release_bundle}" >/dev/null
+          uv run mvs-evidence --data-dir "${release_data}" export \
+            case-MVS-DEMO-001 --expected-revision 8 \
+            --output "${release_reexport}" >/dev/null
+          uv run mvs-evidence --data-dir "${release_data}" verify "${release_reexport}" \
+            --part-id MVS-DEMO-001 --cad-revision rev-A >/dev/null
+
   determinism:
     name: Determinism
     runs-on: ubuntu-24.04
