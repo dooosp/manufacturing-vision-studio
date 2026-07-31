@@ -106,6 +106,9 @@ def test_exact_full_and_mini_composition_is_frozen() -> None:
         "trust_boundary": 4,
     }
     assert profiles["mini"]["subset_of"] == "full"
+    assert profiles["mini_selection"]["rule"] == "frozen_exact_membership_v1"
+    assert len(profiles["mini_selection"]["exact_case_ids"]) == 48
+    assert len(set(profiles["mini_selection"]["exact_case_ids"])) == 48
 
     split_expected = {
         "development": (120, {"clean": 24, "nuisance": 30, "defect": 60, "trust_boundary": 6}),
@@ -153,6 +156,10 @@ def test_taxonomy_counts_and_ranges_are_complete() -> None:
     assert [severity["primary_release_gate"] for severity in severities] == [False, True, True]
 
     nuisances = taxonomies["nuisances"]
+    assert taxonomies["nuisance_case_cardinality"] == {
+        "primary_nuisance_per_case": 1,
+        "combined_nuisances_generated": False,
+    }
     assert [nuisance["type"] for nuisance in nuisances] == [
         "translation",
         "rotation",
@@ -195,6 +202,19 @@ def test_seed_families_and_seed_ranges_do_not_overlap_across_splits() -> None:
             allocated.update(seeds)
 
     assert len(allocated) == 480
+
+    split_rules = load_json(CONFIG_PATH)["split_rules"]
+    assert split_rules["leak_keys"] == [
+        "recipe_id",
+        "seed_family",
+        "reference_sha256",
+        "inspection_sha256",
+        "case_binding_sha256",
+    ]
+    assert (
+        split_rules["raw_empty_mask_overlap_policy"]
+        == "allowed_only_for_declared_empty_clean_and_nuisance_truth"
+    )
 
 
 def test_trust_boundary_and_oracle_are_fail_closed() -> None:
@@ -251,4 +271,52 @@ def test_acceptance_gates_are_exactly_preregistered() -> None:
         "feature_mapping_min_mask_pixels": 1,
         "lock_before_test": True,
         "failure_rule": "calibration_failure_is_hold_not_post_hoc_threshold_search",
+        "calibration_confirmation": {
+            "required": True,
+            "gate_ids": [
+                "medium_high_defect_recall",
+                "nuisance_only_false_positive_rate",
+                "positive_case_median_dice",
+                "affected_feature_mapping_accuracy",
+            ],
+            "thresholds": {
+                "medium_high_defect_recall": 0.9,
+                "nuisance_only_false_positive_rate": 0.05,
+                "positive_case_median_dice": 0.7,
+                "affected_feature_mapping_accuracy": 0.95,
+            },
+            "failure_action": "HOLD_WITHOUT_TEST_EXECUTION",
+        },
     }
+
+
+def test_implementation_sensitive_contracts_are_frozen() -> None:
+    config = load_json(CONFIG_PATH)
+    universe = config["universe"]
+    regions = universe["feature_regions_by_view"]
+    assert set(regions) == {"front", "oblique_left", "oblique_right"}
+    for view_regions in regions.values():
+        assert set(view_regions) == set(universe["feature_ids"])
+        for x0, y0, x1, y1 in view_regions.values():
+            assert 0 <= x0 < x1 <= 1
+            assert 0 <= y0 < y1 <= 1
+
+    projection = config["generator"]["configuration_projection"]
+    assert projection["canonicalization"] == "mvs-canonical-json/v1"
+    assert "universe" in projection["included_paths"]
+    assert "metrics" in projection["excluded_paths"]
+
+    uncertainty = config["metrics"]["uncertainty"]
+    assert uncertainty["bootstrap_strata"] == {
+        "ranking_metrics": ["expected_outcome"],
+        "median_dice": ["defect_type"],
+    }
+    eligible = config["repeatability_contract"]["bundle_eligible_artifacts"]
+    assert eligible == [
+        {
+            "artifact_id": "v0.1.0-golden-bundle",
+            "kind": "published_release_bundle",
+            "sha256": "1d492d942aa061e16399f715255760b0a37a8b91eba85cb7b729626ff9e435e7",
+        }
+    ]
+    assert config["data_policy"]["error_gallery_max_cases"] == 12

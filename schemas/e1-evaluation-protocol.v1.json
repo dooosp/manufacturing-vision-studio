@@ -119,7 +119,8 @@
         "seed_derivation",
         "seed_blocks",
         "case_id_format",
-        "generator_configuration_sha256_required"
+        "generator_configuration_sha256_required",
+        "configuration_projection"
       ],
       "properties": {
         "generator_id": {
@@ -180,6 +181,28 @@
         },
         "generator_configuration_sha256_required": {
           "const": true
+        },
+        "configuration_projection": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["canonicalization", "included_paths", "excluded_paths"],
+          "properties": {
+            "canonicalization": {"const": "mvs-canonical-json/v1"},
+            "included_paths": {
+              "type": "array",
+              "minItems": 8,
+              "maxItems": 32,
+              "uniqueItems": true,
+              "items": {"$ref": "#/$defs/bounded_text"}
+            },
+            "excluded_paths": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 16,
+              "uniqueItems": true,
+              "items": {"$ref": "#/$defs/bounded_text"}
+            }
+          }
         }
       }
     },
@@ -265,7 +288,10 @@
       "required": [
         "parts",
         "views",
-        "feature_ids"
+        "feature_ids",
+        "feature_regions_by_view",
+        "baseline_identity_scope",
+        "evaluation_identity_scope"
       ],
       "properties": {
         "parts": {
@@ -292,7 +318,19 @@
             "top_edge",
             "bottom_edge"
           ]
-        }
+        },
+        "feature_regions_by_view": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["front", "oblique_left", "oblique_right"],
+          "properties": {
+            "front": {"$ref": "#/$defs/feature_regions"},
+            "oblique_left": {"$ref": "#/$defs/feature_regions"},
+            "oblique_right": {"$ref": "#/$defs/feature_regions"}
+          }
+        },
+        "baseline_identity_scope": {"$ref": "#/$defs/bounded_text"},
+        "evaluation_identity_scope": {"$ref": "#/$defs/bounded_text"}
       }
     },
     "dataset_profiles": {
@@ -434,14 +472,16 @@
             "rule",
             "rank_key",
             "split_counts",
-            "required_coverage"
+            "required_coverage",
+            "strata",
+            "exact_case_ids"
           ],
           "properties": {
             "rule": {
-              "const": "stratified_lowest_sha256_case_id_v1"
+              "const": "frozen_exact_membership_v1"
             },
             "rank_key": {
-              "const": "sha256(utf8(case_id))"
+              "const": "not_applicable_exact_membership"
             },
             "split_counts": {
               "type": "object",
@@ -494,6 +534,44 @@
                   "const": true
                 }
               }
+            },
+            "strata": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "clean_assignment",
+                "defect_assignment",
+                "nuisance_types_by_split",
+                "trust_scenario_ids"
+              ],
+              "properties": {
+                "clean_assignment": {"$ref": "#/$defs/bounded_text"},
+                "defect_assignment": {"$ref": "#/$defs/bounded_text"},
+                "nuisance_types_by_split": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["development", "calibration", "test"],
+                  "properties": {
+                    "development": {"$ref": "#/$defs/nuisance_type_list"},
+                    "calibration": {"$ref": "#/$defs/nuisance_type_list"},
+                    "test": {"$ref": "#/$defs/nuisance_type_list"}
+                  }
+                },
+                "trust_scenario_ids": {
+                  "type": "array",
+                  "minItems": 4,
+                  "maxItems": 4,
+                  "uniqueItems": true,
+                  "items": {"$ref": "#/$defs/identifier"}
+                }
+              }
+            },
+            "exact_case_ids": {
+              "type": "array",
+              "minItems": 48,
+              "maxItems": 48,
+              "uniqueItems": true,
+              "items": {"$ref": "#/$defs/identifier"}
             }
           }
         }
@@ -505,6 +583,7 @@
       "required": [
         "expected_outcomes",
         "support_boundaries",
+        "nuisance_case_cardinality",
         "severities",
         "defects",
         "nuisances",
@@ -524,6 +603,15 @@
             "SUPPORTED_NORMAL_RANGE",
             "UNSUPPORTED_OR_ABSTAIN_RANGE"
           ]
+        },
+        "nuisance_case_cardinality": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["primary_nuisance_per_case", "combined_nuisances_generated"],
+          "properties": {
+            "primary_nuisance_per_case": {"const": 1},
+            "combined_nuisances_generated": {"const": false}
+          }
         },
         "severities": {
           "type": "array",
@@ -575,6 +663,8 @@
         "split_order",
         "assignment_unit",
         "leak_keys",
+        "case_binding_projection",
+        "raw_empty_mask_overlap_policy",
         "overlap_pairs",
         "overlap_allowed_profiles",
         "development_use",
@@ -599,8 +689,23 @@
             "seed_family",
             "reference_sha256",
             "inspection_sha256",
-            "authoritative_mask_sha256"
+            "case_binding_sha256"
           ]
+        },
+        "case_binding_projection": {
+          "const": [
+            "case_id",
+            "recipe_id",
+            "seed_family",
+            "reference_sha256",
+            "inspection_sha256",
+            "authoritative_mask_sha256",
+            "expected_outcome",
+            "defect_id"
+          ]
+        },
+        "raw_empty_mask_overlap_policy": {
+          "const": "allowed_only_for_declared_empty_clean_and_nuisance_truth"
         },
         "overlap_pairs": {
           "const": [
@@ -639,7 +744,8 @@
         "registration_sample_stride",
         "feature_mapping_min_mask_pixels",
         "lock_before_test",
-        "failure_rule"
+        "failure_rule",
+        "calibration_confirmation"
       ],
       "properties": {
         "locked_image_threshold": {
@@ -673,6 +779,39 @@
         },
         "failure_rule": {
           "const": "calibration_failure_is_hold_not_post_hoc_threshold_search"
+        },
+        "calibration_confirmation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["required", "gate_ids", "thresholds", "failure_action"],
+          "properties": {
+            "required": {"const": true},
+            "gate_ids": {
+              "const": [
+                "medium_high_defect_recall",
+                "nuisance_only_false_positive_rate",
+                "positive_case_median_dice",
+                "affected_feature_mapping_accuracy"
+              ]
+            },
+            "thresholds": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "medium_high_defect_recall",
+                "nuisance_only_false_positive_rate",
+                "positive_case_median_dice",
+                "affected_feature_mapping_accuracy"
+              ],
+              "properties": {
+                "medium_high_defect_recall": {"const": 0.9},
+                "nuisance_only_false_positive_rate": {"const": 0.05},
+                "positive_case_median_dice": {"const": 0.7},
+                "affected_feature_mapping_accuracy": {"const": 0.95}
+              }
+            },
+            "failure_action": {"const": "HOLD_WITHOUT_TEST_EXECUTION"}
+          }
         }
       }
     },
@@ -805,7 +944,8 @@
             "proportion_interval",
             "ranking_and_median_interval",
             "bootstrap_seed",
-            "bootstrap_replicates"
+            "bootstrap_replicates",
+            "bootstrap_strata"
           ],
           "properties": {
             "confidence_level": {
@@ -822,6 +962,15 @@
             },
             "bootstrap_replicates": {
               "const": 10000
+            },
+            "bootstrap_strata": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["ranking_metrics", "median_dice"],
+              "properties": {
+                "ranking_metrics": {"const": ["expected_outcome"]},
+                "median_dice": {"const": ["defect_type"]}
+              }
             }
           }
         },
@@ -850,7 +999,9 @@
         "required_equal_artifacts",
         "volatile_fields_excluded_from_projection",
         "manifest_equivalence",
-        "split_overlap_count"
+        "split_overlap_count",
+        "bundle_eligible_artifacts",
+        "bundle_success_definition"
       ],
       "properties": {
         "repeat_count": {
@@ -883,6 +1034,15 @@
         },
         "split_overlap_count": {
           "const": 0
+        },
+        "bundle_eligible_artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {"$ref": "#/$defs/bundle_eligible_artifact"}
+        },
+        "bundle_success_definition": {
+          "const": "strict_verify_and_clean_registry_reimport_both_succeed"
         }
       }
     },
@@ -938,6 +1098,7 @@
         "full_corpus_tracked",
         "tracked_artifacts",
         "generated_output_root",
+        "error_gallery_max_cases",
         "mvtec_role",
         "real_or_private_data_allowed"
       ],
@@ -964,6 +1125,7 @@
         "generated_output_root": {
           "const": "output/evaluation/e1"
         },
+        "error_gallery_max_cases": {"const": 12},
         "mvtec_role": {
           "const": "optional_separate_noncommercial_benchmark_not_e1"
         },
@@ -1019,6 +1181,53 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 500
+    },
+    "normalized_bbox": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {"$ref": "#/$defs/unit_interval"}
+    },
+    "feature_regions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["top_face", "hole_left", "hole_right", "top_edge", "bottom_edge"],
+      "properties": {
+        "top_face": {"$ref": "#/$defs/normalized_bbox"},
+        "hole_left": {"$ref": "#/$defs/normalized_bbox"},
+        "hole_right": {"$ref": "#/$defs/normalized_bbox"},
+        "top_edge": {"$ref": "#/$defs/normalized_bbox"},
+        "bottom_edge": {"$ref": "#/$defs/normalized_bbox"}
+      }
+    },
+    "nuisance_type_list": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 9,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "translation",
+          "rotation",
+          "scale",
+          "exposure",
+          "directional_shading",
+          "gaussian_blur",
+          "sensor_noise",
+          "jpeg_compression",
+          "background_fixture"
+        ]
+      }
+    },
+    "bundle_eligible_artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_id", "kind", "sha256"],
+      "properties": {
+        "artifact_id": {"$ref": "#/$defs/identifier"},
+        "kind": {"enum": ["published_release_bundle", "generated_representative_bundle"]},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
     },
     "pipeline": {
       "type": "object",

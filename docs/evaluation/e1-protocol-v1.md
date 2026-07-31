@@ -62,8 +62,9 @@ inference denominators are exactly 44 for mini and 456 for full.
 | Test | 48 | 60 | 120 | 12 | Immutable final evaluation |
 
 Mini selects 12 development, 12 calibration, and 24 test cases, with group
-counts `2/3/6/1`, `2/3/6/1`, and `4/6/12/2` respectively. Selection is the
-lowest SHA-256 rank of `case_id` within the frozen strata and must cover both
+counts `2/3/6/1`, `2/3/6/1`, and `4/6/12/2` respectively. The exact 48 case
+IDs are frozen in `dataset_profiles.mini_selection.exact_case_ids`; selection
+is not left to implementation-defined ranking. The frozen strata cover both
 revisions, all three views, all defect types, all severities, all nuisance
 types, and every defect-type/severity pair.
 
@@ -76,7 +77,13 @@ Development, calibration, and test must have zero overlap for:
 - seed family;
 - reference-image SHA-256;
 - inspection-image SHA-256; and
-- authoritative-mask SHA-256.
+- the canonical case-binding SHA-256 projection, which includes the
+  authoritative-mask SHA-256 and case identity.
+
+Clean and nuisance cases intentionally share the one canonical empty-mask
+byte representation, so raw empty-mask SHA overlap is expected and explicitly
+reported. It is not treated as leakage. Positive-mask hashes and the complete
+case-binding projection remain split-disjoint.
 
 Mini/full overlap is required because mini is a subset; it is not split
 leakage. Test results may not drive threshold or case-manifest changes. A failed
@@ -104,7 +111,10 @@ an 8-bit single-channel PNG of the same dimensions with values only 0 or 255.
 The universe contains part `MVS-E1-PLATE-001`, two deliberately distinct
 revisions (`rev-A` and `rev-B`), and three views (`front`, `oblique_left`, and
 `oblique_right`). Feature IDs are `top_face`, `hole_left`, `hole_right`,
-`top_edge`, and `bottom_edge`.
+`top_edge`, and `bottom_edge`. The normalized feature boxes are frozen per view
+in `universe.feature_regions_by_view` and are part of the generator digest.
+The v0.1 identity is used only for release regression; E1 case identity uses
+the explicit E1 part and revisions and never substitutes one scope for another.
 
 ## 4. Defect taxonomy
 
@@ -132,7 +142,8 @@ The nine nuisance types are translation, rotation, scale, exposure,
 directional shading, Gaussian blur, sensor noise, JPEG compression, and benign
 background/fixture variation. All 120 nuisance-only cases contain only values
 from `SUPPORTED_NORMAL_RANGE`, have expected outcome `NORMAL`, and require an
-empty authoritative mask.
+empty authoritative mask. E1 v1 assigns exactly one primary nuisance to each
+nuisance case; combined nuisances are deferred to a later protocol version.
 
 For each nuisance parameter, the config freezes three disjoint intervals:
 
@@ -178,8 +189,11 @@ threshold 32/255, registration shift 12 px, sample stride 4, and minimum mapped
 mask overlap of one pixel are also frozen.
 
 The lock artifact must exist before test execution. If calibration fails, the
-v1 result is `HOLD`. Post-hoc threshold search, threshold weakening, or test-set
-tuning is forbidden. A new value requires a new protocol version.
+v1 result is `HOLD` and the test split is not executed. Calibration confirmation
+uses the same four primary performance thresholds frozen in
+`threshold_selection.calibration_confirmation`. Post-hoc threshold search,
+threshold weakening, or test-set tuning is forbidden. A new value requires a
+new protocol version.
 
 ## 8. Metrics and formulas
 
@@ -229,8 +243,10 @@ reason and coverage count; these ranking metrics are not gates.
 Undefined metrics are `null` with a stable reason and raw numerator/denominator.
 Proportions receive 95% Wilson intervals. Ranking metrics and median Dice use a
 95% stratified percentile bootstrap with seed 424242 and 10,000 replicates.
-Reports include defect, severity, nuisance, revision, view, abstention, and
-trust-scenario slices; weak slices may not be hidden behind aggregates.
+Ranking resampling is stratified by expected outcome; median Dice resampling is
+stratified by defect type. Reports include defect, severity, nuisance, revision,
+view, abstention, and trust-scenario slices; weak slices may not be hidden behind
+aggregates.
 
 ## 9. Locked acceptance gates
 
@@ -275,6 +291,11 @@ Each final run records Git SHA and dirty state, canonical protocol digest,
 generator version/configuration digest, dataset manifest digest, pipeline/model
 identity, threshold source, result digest, environment, every exclusion and
 abstention, raw counts, slices, and gate verdicts.
+
+The generator digest projection is frozen in `generator.configuration_projection`.
+The bundle gate denominator is the non-empty artifact list in
+`repeatability_contract.bundle_eligible_artifacts`; v1 contains the immutable
+published v0.1.0 golden bundle. A bounded gallery may contain at most 12 cases.
 
 ## 12. Exclusions and limitations
 

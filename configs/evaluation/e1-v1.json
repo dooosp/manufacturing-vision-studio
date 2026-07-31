@@ -106,7 +106,31 @@
       }
     },
     "case_id_format": "e1-{split}-{group}-{ordinal:03d}",
-    "generator_configuration_sha256_required": true
+    "generator_configuration_sha256_required": true,
+    "configuration_projection": {
+      "canonicalization": "mvs-canonical-json/v1",
+      "included_paths": [
+        "generator.generator_id",
+        "generator.generator_version",
+        "generator.recipe_version",
+        "generator.seed_derivation",
+        "generator.seed_blocks",
+        "generator.case_id_format",
+        "media",
+        "universe",
+        "dataset_profiles.mini_selection",
+        "taxonomies.severities",
+        "taxonomies.defects",
+        "taxonomies.nuisances",
+        "taxonomies.nuisance_case_cardinality"
+      ],
+      "excluded_paths": [
+        "metrics",
+        "acceptance_gates",
+        "repeatability_contract",
+        "limitations"
+      ]
+    }
   },
   "media": {
     "width_px": 512,
@@ -158,7 +182,32 @@
       "hole_right",
       "top_edge",
       "bottom_edge"
-    ]
+    ],
+    "feature_regions_by_view": {
+      "front": {
+        "top_face": [0.1, 0.14, 0.9, 0.86],
+        "hole_left": [0.2, 0.32, 0.39, 0.68],
+        "hole_right": [0.61, 0.32, 0.8, 0.68],
+        "top_edge": [0.1, 0.12, 0.9, 0.25],
+        "bottom_edge": [0.1, 0.75, 0.9, 0.88]
+      },
+      "oblique_left": {
+        "top_face": [0.12, 0.16, 0.88, 0.84],
+        "hole_left": [0.24, 0.34, 0.43, 0.68],
+        "hole_right": [0.6, 0.32, 0.77, 0.65],
+        "top_edge": [0.12, 0.14, 0.88, 0.27],
+        "bottom_edge": [0.12, 0.73, 0.88, 0.86]
+      },
+      "oblique_right": {
+        "top_face": [0.12, 0.16, 0.88, 0.84],
+        "hole_left": [0.23, 0.32, 0.4, 0.65],
+        "hole_right": [0.57, 0.34, 0.76, 0.68],
+        "top_edge": [0.12, 0.14, 0.88, 0.27],
+        "bottom_edge": [0.12, 0.73, 0.88, 0.86]
+      }
+    },
+    "baseline_identity_scope": "v0.1.0 release regression artifacts only",
+    "evaluation_identity_scope": "MVS-E1-PLATE-001 rev-A and rev-B synthetic cases"
   },
   "dataset_profiles": {
     "mini": {
@@ -216,8 +265,8 @@
       }
     },
     "mini_selection": {
-      "rule": "stratified_lowest_sha256_case_id_v1",
-      "rank_key": "sha256(utf8(case_id))",
+      "rule": "frozen_exact_membership_v1",
+      "rank_key": "not_applicable_exact_membership",
       "split_counts": {
         "development": {
           "case_count": 12,
@@ -254,7 +303,79 @@
         "all_severities": true,
         "all_nuisance_types": true,
         "defect_type_severity_pairs": true
-      }
+      },
+      "strata": {
+        "clean_assignment": "first eight frozen clean ordinals cover all revision-view pairs",
+        "defect_assignment": "each defect type appears dev once calibration once test twice with rotating severities",
+        "nuisance_types_by_split": {
+          "development": ["translation", "rotation", "scale"],
+          "calibration": ["exposure", "directional_shading", "gaussian_blur"],
+          "test": [
+            "translation",
+            "rotation",
+            "scale",
+            "sensor_noise",
+            "jpeg_compression",
+            "background_fixture"
+          ]
+        },
+        "trust_scenario_ids": [
+          "revision_mismatch",
+          "split_hash_overlap",
+          "incomplete_evidence_bundle",
+          "unsupported_view_or_extreme_nuisance"
+        ]
+      },
+      "exact_case_ids": [
+        "e1-development-clean-000",
+        "e1-development-clean-001",
+        "e1-development-nuisance-000",
+        "e1-development-nuisance-001",
+        "e1-development-nuisance-002",
+        "e1-development-defect-000",
+        "e1-development-defect-001",
+        "e1-development-defect-002",
+        "e1-development-defect-003",
+        "e1-development-defect-004",
+        "e1-development-defect-005",
+        "e1-development-trust_boundary-000",
+        "e1-calibration-clean-000",
+        "e1-calibration-clean-001",
+        "e1-calibration-nuisance-000",
+        "e1-calibration-nuisance-001",
+        "e1-calibration-nuisance-002",
+        "e1-calibration-defect-000",
+        "e1-calibration-defect-001",
+        "e1-calibration-defect-002",
+        "e1-calibration-defect-003",
+        "e1-calibration-defect-004",
+        "e1-calibration-defect-005",
+        "e1-calibration-trust_boundary-003",
+        "e1-test-clean-000",
+        "e1-test-clean-001",
+        "e1-test-clean-002",
+        "e1-test-clean-003",
+        "e1-test-nuisance-000",
+        "e1-test-nuisance-001",
+        "e1-test-nuisance-002",
+        "e1-test-nuisance-003",
+        "e1-test-nuisance-004",
+        "e1-test-nuisance-005",
+        "e1-test-defect-000",
+        "e1-test-defect-001",
+        "e1-test-defect-002",
+        "e1-test-defect-003",
+        "e1-test-defect-004",
+        "e1-test-defect-005",
+        "e1-test-defect-006",
+        "e1-test-defect-007",
+        "e1-test-defect-008",
+        "e1-test-defect-009",
+        "e1-test-defect-010",
+        "e1-test-defect-011",
+        "e1-test-trust_boundary-006",
+        "e1-test-trust_boundary-011"
+      ]
     }
   },
   "taxonomies": {
@@ -267,6 +388,10 @@
       "SUPPORTED_NORMAL_RANGE",
       "UNSUPPORTED_OR_ABSTAIN_RANGE"
     ],
+    "nuisance_case_cardinality": {
+      "primary_nuisance_per_case": 1,
+      "combined_nuisances_generated": false
+    },
     "severities": [
       {
         "severity": "LOW",
@@ -964,8 +1089,19 @@
       "seed_family",
       "reference_sha256",
       "inspection_sha256",
-      "authoritative_mask_sha256"
+      "case_binding_sha256"
     ],
+    "case_binding_projection": [
+      "case_id",
+      "recipe_id",
+      "seed_family",
+      "reference_sha256",
+      "inspection_sha256",
+      "authoritative_mask_sha256",
+      "expected_outcome",
+      "defect_id"
+    ],
+    "raw_empty_mask_overlap_policy": "allowed_only_for_declared_empty_clean_and_nuisance_truth",
     "overlap_pairs": [
       "development:calibration",
       "development:test",
@@ -989,7 +1125,23 @@
     "registration_sample_stride": 4,
     "feature_mapping_min_mask_pixels": 1,
     "lock_before_test": true,
-    "failure_rule": "calibration_failure_is_hold_not_post_hoc_threshold_search"
+    "failure_rule": "calibration_failure_is_hold_not_post_hoc_threshold_search",
+    "calibration_confirmation": {
+      "required": true,
+      "gate_ids": [
+        "medium_high_defect_recall",
+        "nuisance_only_false_positive_rate",
+        "positive_case_median_dice",
+        "affected_feature_mapping_accuracy"
+      ],
+      "thresholds": {
+        "medium_high_defect_recall": 0.9,
+        "nuisance_only_false_positive_rate": 0.05,
+        "positive_case_median_dice": 0.7,
+        "affected_feature_mapping_accuracy": 0.95
+      },
+      "failure_action": "HOLD_WITHOUT_TEST_EXECUTION"
+    }
   },
   "oracle_contract": {
     "owner": "generator",
@@ -1064,7 +1216,11 @@
       "proportion_interval": "wilson_score",
       "ranking_and_median_interval": "stratified_percentile_bootstrap",
       "bootstrap_seed": 424242,
-      "bootstrap_replicates": 10000
+      "bootstrap_replicates": 10000,
+      "bootstrap_strata": {
+        "ranking_metrics": ["expected_outcome"],
+        "median_dice": ["defect_type"]
+      }
     },
     "undefined_metric_policy": "null_with_machine_readable_reason_and_raw_counts",
     "trust_cases_in_binary_confusion_matrix": false
@@ -1150,7 +1306,15 @@
       "local_absolute_paths"
     ],
     "manifest_equivalence": "exact_canonical_projection_sha256_equality",
-    "split_overlap_count": 0
+    "split_overlap_count": 0,
+    "bundle_eligible_artifacts": [
+      {
+        "artifact_id": "v0.1.0-golden-bundle",
+        "kind": "published_release_bundle",
+        "sha256": "1d492d942aa061e16399f715255760b0a37a8b91eba85cb7b729626ff9e435e7"
+      }
+    ],
+    "bundle_success_definition": "strict_verify_and_clean_registry_reimport_both_succeed"
   },
   "resource_limits": {
     "image_bytes_max": 26214400,
@@ -1178,6 +1342,7 @@
       "reproduction_commands"
     ],
     "generated_output_root": "output/evaluation/e1",
+    "error_gallery_max_cases": 12,
     "mvtec_role": "optional_separate_noncommercial_benchmark_not_e1",
     "real_or_private_data_allowed": false
   },
