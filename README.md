@@ -104,6 +104,10 @@ and Dice were not evaluated in this release.
 The reviewed case exports 15 payload artifacts plus its manifest and checksum.
 The checked-in evidence bundle has SHA-256
 `1d492d942aa061e16399f715255760b0a37a8b91eba85cb7b729626ff9e435e7`.
+Release artifacts are version-bound: reproduce that exact archive from the
+immutable `v0.1.0` tag, not from a later `main`. Current CI locks the published
+SHA and requires the original bundle to remain verifiable, importable, and
+exportable as the serialization implementation evolves.
 
 - [Schema-valid synthetic evaluation](docs/evaluation/results/v0.1.0-synthetic.json)
 - [Verified evidence bundle](docs/releases/v0.1.0/evidence-bundle.zip)

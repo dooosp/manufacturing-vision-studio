@@ -23,7 +23,7 @@ from manufacturing_vision_studio.errors import (
     EvidenceError,
     IdentityMismatchError,
 )
-from manufacturing_vision_studio.images import ImageIngestor
+from manufacturing_vision_studio.images import ImageIngestor, resolve_canonical_image_bytes
 from manufacturing_vision_studio.registry import (
     LIMITATION,
     MODEL_ARTIFACT_SHA256,
@@ -40,6 +40,13 @@ KNOWN_MODEL = {
     "model_id": "registered-absolute-difference",
     "model_version": "1.0.0",
     "model_artifact_sha256": MODEL_ARTIFACT_SHA256,
+}
+
+# The immutable v0.1.0 payload used Pillow/zlib-produced PNG bytes as its
+# canonical image representation. Compatibility is deliberately limited to
+# this already verified artifact inventory; all new payloads use canonical_png.
+_LEGACY_SOURCE_PNG_PAYLOAD_SHA256S = {
+    "35606fde93bf07e3e9814fb0ce1b0f87e19ec66e16345bde61502b4145061cd7",
 }
 
 _ROLE_SCHEMAS = {
@@ -231,7 +238,13 @@ class EvidenceService:
                 raise
         else:
             raise ConflictError("Imported case identifier already exists")
-        self.registry.restore_verified_evidence(manifest, payloads)
+        self.registry.restore_verified_evidence(
+            manifest,
+            payloads,
+            allow_legacy_source_png=(
+                manifest["payload_sha256"] in _LEGACY_SOURCE_PNG_PAYLOAD_SHA256S
+            ),
+        )
         return self.verify_bundle(archive_bytes)
 
     def _build_payloads(self, snapshot: dict[str, Any]) -> dict[str, bytes]:
@@ -285,9 +298,35 @@ class EvidenceService:
             document = _strict_json_loads(cast(bytes, row["document_json"]))
             validate_document(document, "human-disposition")
             payloads[f"records/dispositions/{row['id']}.json"] = canonical_json_bytes(document)
-        evaluation = self._evaluation_report(case_document, images, analyses, dispositions)
-        validate_document(evaluation, "evaluation-report")
-        payloads["records/evaluation-report.json"] = canonical_json_bytes(evaluation)
+        imported_evaluation = snapshot.get("imported_evaluation_snapshot")
+        if (
+            isinstance(imported_evaluation, dict)
+            and imported_evaluation["case_revision"] == case_document["case_revision"]
+        ):
+            evaluation_bytes = cast(bytes, imported_evaluation["document_json"])
+            if sha256_bytes(evaluation_bytes) != imported_evaluation["document_sha256"]:
+                raise EvidenceError(
+                    "Imported evaluation snapshot hash does not match",
+                    code="HASH_MISMATCH",
+                )
+            evaluation = _strict_json_loads(evaluation_bytes)
+            if canonical_json_bytes(evaluation) != evaluation_bytes:
+                raise EvidenceError(
+                    "Imported evaluation snapshot is not canonical",
+                    code="CANONICAL_JSON_MISMATCH",
+                )
+            validate_document(evaluation, "evaluation-report")
+            self._verify_evaluation(case_document, evaluation)
+            if evaluation["dataset"]["sample_count"] != len(analyses):
+                raise EvidenceError(
+                    "Imported evaluation snapshot does not match the case",
+                    code="HASH_MISMATCH",
+                )
+        else:
+            evaluation = self._evaluation_report(case_document, images, analyses, dispositions)
+            validate_document(evaluation, "evaluation-report")
+            evaluation_bytes = canonical_json_bytes(evaluation)
+        payloads["records/evaluation-report.json"] = evaluation_bytes
         return payloads
 
     def _evaluation_report(
@@ -581,6 +620,9 @@ class EvidenceService:
         manifest: dict[str, Any],
         payloads: dict[str, bytes],
     ) -> None:
+        allow_legacy_source_png = (
+            manifest["payload_sha256"] in _LEGACY_SOURCE_PNG_PAYLOAD_SHA256S
+        )
         inventory = {
             cast(str, entry["path"]): entry
             for entry in cast(list[dict[str, Any]], manifest["artifacts"])
@@ -622,8 +664,13 @@ class EvidenceService:
                 filename=PurePosixPath(image_path).name,
                 declared_media_type=cast(str, document["media_type"]),
             )
+            canonical_bytes = resolve_canonical_image_bytes(
+                decoded,
+                expected_canonical_sha256=cast(str, document["canonical_image_sha256"]),
+                allow_legacy_source_png=allow_legacy_source_png,
+            )
             if (
-                decoded.canonical_sha256 != document["canonical_image_sha256"]
+                canonical_bytes is None
                 or decoded.pixel_sha256 != document["pixel_sha256"]
                 or decoded.width != document["width_px"]
                 or decoded.height != document["height_px"]
@@ -697,7 +744,64 @@ class EvidenceService:
         evaluation_documents = documents_by_role.get("evaluation_report", [])
         if len(evaluation_documents) != 1:
             raise EvidenceError("Evaluation report is incomplete", code="EVIDENCE_INCOMPLETE")
-        self._verify_evaluation(case_document, evaluation_documents[0][1])
+        evaluation = evaluation_documents[0][1]
+        self._verify_evaluation(case_document, evaluation)
+        self._verify_evaluation_artifact_bindings(
+            case_document,
+            evaluation,
+            image_documents=image_documents,
+            analysis_documents=[document for document, _digest in analyses_by_id.values()],
+            disposition_documents=[
+                document
+                for _path, document in documents_by_role.get("human_disposition", [])
+            ],
+        )
+
+    def _verify_evaluation_artifact_bindings(
+        self,
+        case_document: dict[str, Any],
+        evaluation: dict[str, Any],
+        *,
+        image_documents: list[dict[str, Any]],
+        analysis_documents: list[dict[str, Any]],
+        disposition_documents: list[dict[str, Any]],
+    ) -> None:
+        """Bind every derived evaluation field to the verified bundle artifacts."""
+
+        images = []
+        for document in image_documents:
+            source = cast(dict[str, Any], document["source"])
+            images.append(
+                {
+                    "id": document["image_id"],
+                    "original_sha256": document["sha256"],
+                    "role": document["role"],
+                    "source_kind": source["kind"],
+                    "fixture_id": source.get("fixture_id"),
+                }
+            )
+        analyses = [
+            {
+                "id": document["analysis_id"],
+                "inspection_image_id": document["input_binding"]["inspection_image_id"],
+                "repeat_result_sha256": "0" * 64,
+                "document_json": canonical_json_bytes(document),
+            }
+            for document in analysis_documents
+        ]
+        dispositions = [
+            {"analysis_id": document["analysis_binding"]["analysis_id"]}
+            for document in disposition_documents
+        ]
+        expected = self._evaluation_report(case_document, images, analyses, dispositions)
+        expected["reproducibility"]["run_result_sha256s"] = evaluation["reproducibility"][
+            "run_result_sha256s"
+        ]
+        if expected != evaluation:
+            raise EvidenceError(
+                "Evaluation report does not match the evidence artifacts",
+                code="HASH_MISMATCH",
+            )
 
     @staticmethod
     def _assert_identity(manifest: dict[str, Any], document: dict[str, Any]) -> None:

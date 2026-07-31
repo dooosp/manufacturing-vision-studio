@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import io
 import random
 from dataclasses import dataclass
 
 from PIL import Image, ImageDraw
+
+from manufacturing_vision_studio.canonical_png import encode_png
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,9 +93,7 @@ def generate_synthetic_part(
 
     if shift != (0, 0):
         image = _translate(image, dx=shift[0], dy=shift[1], fill=background)
-    output = io.BytesIO()
-    image.save(output, format="PNG", optimize=False, compress_level=9)
-    return output.getvalue()
+    return encode_png(image, mode="RGB")
 
 
 def generate_demo_images(seed: int = 7) -> SyntheticDemoImages:

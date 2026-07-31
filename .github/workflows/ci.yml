@@ -1,0 +1,253 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "codex/**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22"
+  PYTHON_VERSION: "3.12"
+  UV_VERSION: "0.10.12"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  python:
+    name: Python
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install locked Python environment
+        run: |
+          python -m pip install --disable-pip-version-check "uv==${UV_VERSION}"
+          uv sync --all-groups --locked
+      - name: Lint
+        run: uv run ruff check .
+      - name: Typecheck
+        run: uv run mypy src
+      - name: Test
+        run: uv run pytest
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install locked frontend dependencies
+        run: npm --prefix web ci
+      - name: Typecheck and build
+        run: npm --prefix web run check
+
+  browser:
+    name: Browser / Chromium
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install locked project dependencies
+        run: |
+          python -m pip install --disable-pip-version-check "uv==${UV_VERSION}"
+          uv sync --all-groups --locked
+          npm --prefix web ci
+          npm --prefix web exec playwright -- install --with-deps chromium
+      - name: Run Chromium journey
+        run: npm --prefix web run test:e2e
+
+  evidence-roundtrip:
+    name: Evidence roundtrip
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install locked Python environment
+        run: |
+          python -m pip install --disable-pip-version-check "uv==${UV_VERSION}"
+          uv sync --all-groups --locked
+      - name: Export, verify, import, and byte-identically re-export
+        run: |
+          set -euo pipefail
+          roundtrip_root="${RUNNER_TEMP}/evidence-roundtrip"
+          source_data="${roundtrip_root}/source"
+          target_data="${roundtrip_root}/target"
+          source_bundle="${roundtrip_root}/source.zip"
+          reexported_bundle="${roundtrip_root}/reexported.zip"
+          mkdir -p "${roundtrip_root}"
+
+          uv run mvs-demo --data-dir "${source_data}" --seed 7 --reset >/dev/null
+          uv run mvs-evidence --data-dir "${source_data}" export \
+            case-MVS-DEMO-001 --expected-revision 8 --output "${source_bundle}" >/dev/null
+          uv run mvs-evidence --data-dir "${source_data}" verify "${source_bundle}" \
+            --part-id MVS-DEMO-001 --cad-revision rev-A >/dev/null
+          uv run mvs-evidence --data-dir "${target_data}" import "${source_bundle}" >/dev/null
+          uv run mvs-evidence --data-dir "${target_data}" export \
+            case-MVS-DEMO-001 --expected-revision 8 --output "${reexported_bundle}" >/dev/null
+
+          cmp "${source_bundle}" "${reexported_bundle}"
+          sha256sum "${source_bundle}" "${reexported_bundle}"
+
+          release_bundle="docs/releases/v0.1.0/evidence-bundle.zip"
+          release_data="${roundtrip_root}/published-v0.1.0"
+          release_reexport="${roundtrip_root}/published-v0.1.0-reexport.zip"
+          release_sha="$(sha256sum "${release_bundle}" | cut -d ' ' -f 1)"
+          test "${release_sha}" = \
+            "1d492d942aa061e16399f715255760b0a37a8b91eba85cb7b729626ff9e435e7"
+          uv run mvs-evidence --data-dir "${release_data}" verify "${release_bundle}" \
+            --part-id MVS-DEMO-001 --cad-revision rev-A >/dev/null
+          uv run mvs-evidence --data-dir "${release_data}" import "${release_bundle}" >/dev/null
+          uv run mvs-evidence --data-dir "${release_data}" export \
+            case-MVS-DEMO-001 --expected-revision 8 \
+            --output "${release_reexport}" >/dev/null
+          cmp "${release_bundle}" "${release_reexport}"
+          sha256sum "${release_bundle}" "${release_reexport}"
+          uv run mvs-evidence --data-dir "${release_data}" verify "${release_reexport}" \
+            --part-id MVS-DEMO-001 --cad-revision rev-A >/dev/null
+
+  determinism:
+    name: Determinism
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install locked Python environment
+        run: |
+          python -m pip install --disable-pip-version-check "uv==${UV_VERSION}"
+          uv sync --all-groups --locked
+      - name: Verify fixed-seed and byte-stable evidence contracts
+        run: |
+          uv run pytest tests/test_synthetic_determinism.py \
+            tests/test_evidence_bundles.py::test_export_is_byte_stable_and_evaluation_projection_is_deterministic
+
+  hygiene:
+    name: Repository hygiene
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Reject generated, private, dataset, database, and secret material
+        run: python scripts/check_repository_hygiene.py
+      - name: Confirm checkout stayed clean
+        run: test -z "$(git status --porcelain)"
+
+  clean-checkout:
+    name: Clean checkout
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install uv
+        run: python -m pip install --disable-pip-version-check "uv==${UV_VERSION}"
+      - name: Prove clean-checkout setup
+        run: make setup
+      - name: Prove clean-checkout validation
+        run: make validate
+      - name: Smoke the local demo
+        run: |
+          set -euo pipefail
+          demo_log="${RUNNER_TEMP}/manufacturing-vision-studio-demo.log"
+          setsid make demo >"${demo_log}" 2>&1 &
+          demo_pid=$!
+
+          cleanup() {
+            if kill -0 "${demo_pid}" 2>/dev/null; then
+              kill -TERM -- "-${demo_pid}" 2>/dev/null || true
+              wait "${demo_pid}" || true
+            fi
+          }
+          trap cleanup EXIT
+
+          for _attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error \
+                http://127.0.0.1:8000/api/health >/dev/null \
+              && curl --fail --silent --show-error \
+                http://127.0.0.1:4173/ >/dev/null; then
+              echo "Local API and workbench responded successfully."
+              exit 0
+            fi
+            if ! kill -0 "${demo_pid}" 2>/dev/null; then
+              cat "${demo_log}"
+              exit 1
+            fi
+            sleep 1
+          done
+
+          cat "${demo_log}"
+          echo "Timed out waiting for make demo." >&2
+          exit 1

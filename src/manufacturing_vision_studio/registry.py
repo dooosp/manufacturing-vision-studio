@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -15,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from PIL import Image
 from PIL import __version__ as pillow_version
 
 from manufacturing_vision_studio.canonical import canonical_json_bytes, sha256_bytes
@@ -25,7 +27,11 @@ from manufacturing_vision_studio.errors import (
     NotFoundError,
     UnsafeInputError,
 )
-from manufacturing_vision_studio.images import ImageIngestor, IngestedImage
+from manufacturing_vision_studio.images import (
+    ImageIngestor,
+    IngestedImage,
+    resolve_canonical_image_bytes,
+)
 from manufacturing_vision_studio.model import (
     DEFAULT_FEATURE_REGIONS,
     DeterministicDifferenceModel,
@@ -50,6 +56,32 @@ REASON_CODES = {
 MODEL_ARTIFACT_SHA256 = sha256_bytes(
     b"manufacturing-vision-studio:registered-absolute-difference:1.0.0"
 )
+
+
+def _same_mask_pixels(
+    current: bytes,
+    imported: bytes,
+    *,
+    expected_size: tuple[int, int],
+) -> bool:
+    """Compare verified mask meaning without coupling it to a PNG compressor build."""
+
+    try:
+        with (
+            Image.open(io.BytesIO(current)) as current_image,
+            Image.open(io.BytesIO(imported)) as imported_image,
+        ):
+            current_image.load()
+            imported_image.load()
+            return (
+                current_image.format == "PNG"
+                and imported_image.format == "PNG"
+                and current_image.mode == imported_image.mode == "L"
+                and current_image.size == imported_image.size == expected_size
+                and current_image.tobytes() == imported_image.tobytes()
+            )
+    except (OSError, SyntaxError, ValueError):
+        return False
 
 
 class CaseRegistry:
@@ -145,6 +177,13 @@ class CaseRegistry:
                     document_sha256 TEXT NOT NULL,
                     recorded_at TEXT NOT NULL,
                     UNIQUE(analysis_id, disposition_revision)
+                );
+                CREATE TABLE IF NOT EXISTS imported_evaluation_snapshots (
+                    case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+                    case_revision INTEGER NOT NULL,
+                    document_json BLOB NOT NULL,
+                    document_sha256 TEXT NOT NULL,
+                    PRIMARY KEY(case_id, case_revision)
                 );
                 """
             )
@@ -624,12 +663,23 @@ class CaseRegistry:
             dispositions = connection.execute(
                 "SELECT * FROM dispositions WHERE case_id = ? ORDER BY recorded_at, id", (case_id,)
             ).fetchall()
+            imported_evaluation = connection.execute(
+                """
+                SELECT case_revision, document_json, document_sha256
+                FROM imported_evaluation_snapshots
+                WHERE case_id = ? AND case_revision = ?
+                """,
+                (case_id, case_row["case_revision"]),
+            ).fetchone()
         return {
             "case_row": dict(case_row),
             "case_document": self._case_document(case_row, images, analyses, dispositions),
             "images": [dict(row) for row in images],
             "analyses": [dict(row) for row in analyses],
             "dispositions": [dict(row) for row in dispositions],
+            "imported_evaluation_snapshot": (
+                None if imported_evaluation is None else dict(imported_evaluation)
+            ),
         }
 
     def assert_case_revision(self, case_id: str, expected_case_revision: int) -> None:
@@ -643,6 +693,8 @@ class CaseRegistry:
         self,
         manifest: dict[str, Any],
         payloads: dict[str, bytes],
+        *,
+        allow_legacy_source_png: bool = False,
     ) -> dict[str, Any]:
         """Atomically restore documents and bytes already verified by EvidenceService."""
 
@@ -662,6 +714,14 @@ class CaseRegistry:
             _decode_canonical_json(payloads[path])
             for path in role_paths.get("human_disposition", [])
         ]
+        evaluation_paths = role_paths.get("evaluation_report", [])
+        if len(evaluation_paths) != 1:
+            raise UnsafeInputError(
+                "Imported evaluation report is incomplete",
+                code="EVIDENCE_INCOMPLETE",
+            )
+        evaluation_payload = payloads[evaluation_paths[0]]
+        _decode_canonical_json(evaluation_payload)
 
         ingestor = ImageIngestor(self.settings)
         ingested_images: dict[str, IngestedImage] = {}
@@ -677,15 +737,31 @@ class CaseRegistry:
                 filename=filename,
                 declared_media_type=cast(str, document["media_type"]),
             )
+            canonical_bytes = resolve_canonical_image_bytes(
+                image,
+                expected_canonical_sha256=cast(str, document["canonical_image_sha256"]),
+                allow_legacy_source_png=allow_legacy_source_png,
+            )
             if (
                 image.original_sha256 != document["sha256"]
-                or image.canonical_sha256 != document["canonical_image_sha256"]
+                or canonical_bytes is None
                 or image.pixel_sha256 != document["pixel_sha256"]
                 or image.width != document["width_px"]
                 or image.height != document["height_px"]
             ):
                 raise UnsafeInputError("Imported image hashes do not match", code="HASH_MISMATCH")
-            ingested_images[cast(str, document["image_id"])] = image
+            ingested_images[cast(str, document["image_id"])] = IngestedImage(
+                original_bytes=image.original_bytes,
+                canonical_bytes=canonical_bytes,
+                original_sha256=image.original_sha256,
+                canonical_sha256=cast(str, document["canonical_image_sha256"]),
+                pixel_sha256=image.pixel_sha256,
+                width=image.width,
+                height=image.height,
+                source_format=image.source_format,
+                media_type=image.media_type,
+                filename=image.filename,
+            )
 
         reference_documents = [doc for doc in image_documents if doc["role"] == "reference"]
         if len(reference_documents) != 1:
@@ -696,23 +772,30 @@ class CaseRegistry:
         reference_id = cast(str, reference_documents[0]["image_id"])
         model = DeterministicDifferenceModel()
         results: dict[str, InspectionResult] = {}
+        verified_mask_payloads: dict[str, bytes] = {}
         for document in analysis_documents:
             binding = cast(dict[str, Any], document["input_binding"])
             inspection_id = cast(str, binding["inspection_image_id"])
             result = model.inspect(ingested_images[reference_id], ingested_images[inspection_id])
             completed = cast(dict[str, Any], document["completed_output"])
             mask = cast(dict[str, Any], completed["mask"])
+            mask_payload = payloads[cast(str, mask["relative_path"])]
             if (
                 result.config_hash != document["configuration_sha256"]
-                or result.mask_sha256 != mask["sha256"]
-                or result.mask_bytes != payloads[cast(str, mask["relative_path"])]
                 or result.anomaly_score != completed["anomaly_score"]
+                or not _same_mask_pixels(
+                    result.mask_bytes,
+                    mask_payload,
+                    expected_size=(cast(int, mask["width_px"]), cast(int, mask["height_px"])),
+                )
             ):
                 raise UnsafeInputError(
                     "Imported analysis does not reproduce",
                     code="HASH_MISMATCH",
                 )
-            results[cast(str, document["analysis_id"])] = result
+            analysis_id = cast(str, document["analysis_id"])
+            results[analysis_id] = result
+            verified_mask_payloads[analysis_id] = mask_payload
 
         case_id = cast(str, case_document["case_id"])
         created_blobs: list[Path] = []
@@ -791,9 +874,13 @@ class CaseRegistry:
                 for document in analysis_documents:
                     analysis_id = cast(str, document["analysis_id"])
                     result = results[analysis_id]
+                    completed = cast(dict[str, Any], document["completed_output"])
+                    mask = cast(dict[str, Any], completed["mask"])
+                    mask_bytes = verified_mask_payloads[analysis_id]
+                    mask_sha256 = cast(str, mask["sha256"])
                     mask_path = self._store_blob(
-                        result.mask_bytes,
-                        result.mask_sha256,
+                        mask_bytes,
+                        mask_sha256,
                         ".mask.png",
                         created_paths=created_blobs,
                     )
@@ -830,8 +917,8 @@ class CaseRegistry:
                                     "mean_absolute_error": result.registration.mean_absolute_error,
                                 }
                             ),
-                            result.mask_sha256,
-                            len(result.mask_bytes),
+                            mask_sha256,
+                            len(mask_bytes),
                             mask_path,
                             result.registered_sha256,
                             len(result.registered_bytes),
@@ -859,6 +946,20 @@ class CaseRegistry:
                             payload,
                             sha256_bytes(payload),
                             document["recorded_at"],
+                        ),
+                    )
+                if allow_legacy_source_png:
+                    connection.execute(
+                        """
+                        INSERT INTO imported_evaluation_snapshots(
+                            case_id, case_revision, document_json, document_sha256
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            case_id,
+                            case_document["case_revision"],
+                            evaluation_payload,
+                            sha256_bytes(evaluation_payload),
                         ),
                     )
         except Exception:

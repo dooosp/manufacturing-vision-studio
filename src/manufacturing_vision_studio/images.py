@@ -14,6 +14,7 @@ import numpy as np
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from manufacturing_vision_studio.canonical import sha256_bytes
+from manufacturing_vision_studio.canonical_png import encode_png
 from manufacturing_vision_studio.config import Settings
 from manufacturing_vision_studio.errors import UnsafeInputError
 
@@ -39,6 +40,31 @@ class IngestedImage:
     def as_array(self) -> np.ndarray:
         with Image.open(io.BytesIO(self.canonical_bytes)) as image:
             return np.asarray(image.convert("RGB"), dtype=np.uint8)
+
+
+def resolve_canonical_image_bytes(
+    image: IngestedImage,
+    *,
+    expected_canonical_sha256: str,
+    allow_legacy_source_png: bool = False,
+) -> bytes | None:
+    """Resolve the bytes that satisfy a declared canonical-image binding.
+
+    New evidence must bind to the platform-independent encoder. The one legacy
+    form accepted here is an explicitly authorized PNG whose source bytes were
+    themselves declared canonical. Callers must authorize that form only for a
+    recognized, already hash-verified evidence payload.
+    """
+
+    if image.canonical_sha256 == expected_canonical_sha256:
+        return image.canonical_bytes
+    if (
+        allow_legacy_source_png
+        and image.source_format == "PNG"
+        and image.original_sha256 == expected_canonical_sha256
+    ):
+        return image.original_bytes
+    return None
 
 
 class ImageIngestor:
@@ -167,9 +193,7 @@ class ImageIngestor:
                 "Image could not be decoded", code="IMAGE_DECODE_FAILED"
             ) from exc
 
-        output = io.BytesIO()
-        normalized.save(output, format="PNG", optimize=False, compress_level=9)
-        canonical = output.getvalue()
+        canonical = encode_png(normalized, mode="RGB")
         pixels = np.asarray(normalized, dtype=np.uint8)
         return IngestedImage(
             original_bytes=data,

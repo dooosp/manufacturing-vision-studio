@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import sqlite3
 import stat
 import warnings
 import zipfile
@@ -21,6 +22,8 @@ from manufacturing_vision_studio.registry import CaseRegistry
 
 MANIFEST = "bundle-manifest.json"
 SIDECAR = "bundle-manifest.sha256"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+V010_BUNDLE_SHA256 = "1d492d942aa061e16399f715255760b0a37a8b91eba85cb7b729626ff9e435e7"
 
 
 def sha256(data: bytes) -> str:
@@ -221,6 +224,14 @@ def mutate_pipeline(bundle: bytes) -> bytes:
     return reseal(files)
 
 
+def mutate_evaluation_provenance(bundle: bytes) -> bytes:
+    files = read_archive(bundle)
+    evaluation = json.loads(files["records/evaluation-report.json"])
+    evaluation["dataset"]["manifest_sha256"] = "0" * 64
+    files["records/evaluation-report.json"] = canonical_json_bytes(evaluation)
+    return reseal(files)
+
+
 def corrupt_mask_with_consistent_outer_hashes(bundle: bytes) -> bytes:
     files = read_archive(bundle)
     manifest = json.loads(files[MANIFEST])
@@ -263,6 +274,7 @@ def assert_import_rejected(bundle: bytes, code: str, root: Path) -> None:
         (add_fifo, "UNSAFE_PATH"),
         (duplicate_manifest, "DUPLICATE_ARTIFACT_PATH"),
         (mutate_pipeline, "UNKNOWN_PIPELINE_VERSION"),
+        (mutate_evaluation_provenance, "HASH_MISMATCH"),
         (corrupt_mask_with_consistent_outer_hashes, "MASK_CORRUPT"),
     ],
 )
@@ -433,6 +445,74 @@ def test_complete_bundle_verifies_reimports_and_reexports_equivalent_payloads(
         "part_id": "PART-EVIDENCE",
         "cad_revision": "REV-A",
     }
+
+
+def test_published_v010_bundle_remains_verifiable_importable_and_exportable(
+    tmp_path: Path,
+) -> None:
+    release_bundle = REPOSITORY_ROOT / "docs/releases/v0.1.0/evidence-bundle.zip"
+    release_bytes = release_bundle.read_bytes()
+    assert sha256(release_bytes) == V010_BUNDLE_SHA256
+
+    settings = Settings(data_dir=tmp_path / "published-release-import")
+    registry = CaseRegistry(settings)
+    service = EvidenceService(registry, settings)
+
+    verified = service.verify_bundle(
+        release_bytes,
+        expected_part_id="MVS-DEMO-001",
+        expected_cad_revision="rev-A",
+    )
+    imported = service.import_bundle(release_bytes)
+    reexported = service.export_case(
+        imported.case_id,
+        expected_case_revision=imported.case_revision,
+    )
+    reverified = service.verify_bundle(
+        reexported.path,
+        expected_part_id="MVS-DEMO-001",
+        expected_cad_revision="rev-A",
+    )
+
+    assert verified.bundle_sha256 == V010_BUNDLE_SHA256
+    assert imported.payload_sha256 == verified.payload_sha256
+    assert reexported.path.read_bytes() == release_bytes
+    assert reexported.bundle_sha256 == V010_BUNDLE_SHA256
+    assert reexported.manifest["payload_sha256"] == verified.payload_sha256
+    assert reverified.valid is True
+    assert reverified.case_id == imported.case_id
+    assert registry.get_case_document(imported.case_id)["status"] == "disposed"
+
+
+def test_imported_evaluation_snapshot_tamper_fails_closed(tmp_path: Path) -> None:
+    release_bytes = (
+        REPOSITORY_ROOT / "docs/releases/v0.1.0/evidence-bundle.zip"
+    ).read_bytes()
+    settings = Settings(data_dir=tmp_path / "published-release-tamper")
+    registry = CaseRegistry(settings)
+    service = EvidenceService(registry, settings)
+    imported = service.import_bundle(release_bytes)
+    destination = tmp_path / "must-not-exist.zip"
+
+    with sqlite3.connect(settings.database_path) as connection:
+        connection.execute(
+            """
+            UPDATE imported_evaluation_snapshots
+            SET document_json = ?
+            WHERE case_id = ? AND case_revision = ?
+            """,
+            (b"{}", imported.case_id, imported.case_revision),
+        )
+
+    with pytest.raises(MVSError) as exc_info:
+        service.export_case(
+            imported.case_id,
+            expected_case_revision=imported.case_revision,
+            destination=destination,
+        )
+
+    assert exc_info.value.code == "HASH_MISMATCH"
+    assert not destination.exists()
 
 
 def test_export_is_byte_stable_and_evaluation_projection_is_deterministic(tmp_path: Path) -> None:
