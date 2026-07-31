@@ -6,6 +6,7 @@ import io
 import os
 import stat
 import warnings
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -146,6 +147,7 @@ class ImageIngestor:
                                 "detected": _FORMAT_MEDIA_TYPES[source_format],
                             },
                         )
+                    _validate_exact_container(data, source_format)
                     probe.verify()
 
                 with Image.open(io.BytesIO(data)) as decoded:
@@ -259,3 +261,141 @@ def _read_regular_no_follow(
     finally:
         if descriptor is not None:
             os.close(descriptor)
+
+
+def _validate_exact_container(data: bytes, source_format: str) -> None:
+    """Require the detected image container to terminate exactly at EOF."""
+
+    if source_format == "PNG":
+        _validate_png_container(data)
+        return
+    if source_format == "JPEG":
+        _validate_jpeg_container(data)
+        return
+    raise ValueError("unsupported image container")
+
+
+def _validate_png_container(data: bytes) -> None:
+    """Validate PNG chunk framing, CRCs, and an EOF-aligned IEND chunk."""
+
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("invalid PNG signature")
+
+    view = memoryview(data)
+    position = 8
+    chunk_index = 0
+    saw_idat = False
+    while position < len(data):
+        if len(data) - position < 12:
+            raise ValueError("truncated PNG chunk")
+        chunk_length = int.from_bytes(view[position : position + 4], "big")
+        chunk_type = bytes(view[position + 4 : position + 8])
+        if not all(
+            ord("A") <= value <= ord("Z") or ord("a") <= value <= ord("z") for value in chunk_type
+        ):
+            raise ValueError("invalid PNG chunk type")
+        chunk_end = position + 12 + chunk_length
+        if chunk_end > len(data):
+            raise ValueError("truncated PNG chunk")
+
+        payload_start = position + 8
+        payload_end = payload_start + chunk_length
+        expected_crc = int.from_bytes(view[payload_end : payload_end + 4], "big")
+        actual_crc = zlib.crc32(chunk_type)
+        actual_crc = zlib.crc32(view[payload_start:payload_end], actual_crc) & 0xFFFFFFFF
+        if actual_crc != expected_crc:
+            raise ValueError("invalid PNG chunk CRC")
+
+        if chunk_index == 0 and (chunk_type != b"IHDR" or chunk_length != 13):
+            raise ValueError("invalid PNG header chunk")
+        if chunk_index > 0 and chunk_type == b"IHDR":
+            raise ValueError("duplicate PNG header chunk")
+        if chunk_type == b"IDAT":
+            saw_idat = True
+        if chunk_type == b"IEND":
+            if chunk_length != 0 or not saw_idat or chunk_end != len(data):
+                raise ValueError("invalid PNG end chunk")
+            return
+
+        position = chunk_end
+        chunk_index += 1
+
+    raise ValueError("missing PNG end chunk")
+
+
+def _validate_jpeg_container(data: bytes) -> None:
+    """Walk JPEG markers and require the first real EOI marker at exact EOF."""
+
+    if not data.startswith(b"\xff\xd8"):
+        raise ValueError("invalid JPEG start marker")
+
+    position = 2
+    in_scan = False
+    saw_scan = False
+    while True:
+        marker_from_scan = in_scan
+        if in_scan:
+            marker, position = _next_jpeg_scan_marker(data, position)
+            in_scan = False
+        else:
+            marker, position = _next_jpeg_marker(data, position)
+
+        if marker == 0xD9:  # EOI
+            if not saw_scan or position != len(data):
+                raise ValueError("JPEG end marker is not at EOF")
+            return
+        if marker == 0xD8:  # SOI may only occur at byte zero.
+            raise ValueError("unexpected JPEG start marker")
+        if 0xD0 <= marker <= 0xD7:  # Restart markers belong inside scan data.
+            raise ValueError("JPEG restart marker outside scan data")
+        if marker == 0x01:  # Standalone TEM marker.
+            in_scan = marker_from_scan
+            continue
+
+        if len(data) - position < 2:
+            raise ValueError("truncated JPEG segment")
+        segment_length = int.from_bytes(data[position : position + 2], "big")
+        if segment_length < 2:
+            raise ValueError("invalid JPEG segment length")
+        segment_end = position + segment_length
+        if segment_end > len(data):
+            raise ValueError("truncated JPEG segment")
+        position = segment_end
+
+        if marker == 0xDA:  # SOS starts entropy-coded scan data.
+            saw_scan = True
+            in_scan = True
+        elif marker_from_scan and marker == 0xDC:  # DNL does not end the scan.
+            in_scan = True
+
+
+def _next_jpeg_marker(data: bytes, position: int) -> tuple[int, int]:
+    """Read one marker outside entropy-coded scan data."""
+
+    if position >= len(data) or data[position] != 0xFF:
+        raise ValueError("missing JPEG marker prefix")
+    while position < len(data) and data[position] == 0xFF:
+        position += 1
+    if position >= len(data) or data[position] == 0x00:
+        raise ValueError("invalid JPEG marker")
+    return data[position], position + 1
+
+
+def _next_jpeg_scan_marker(data: bytes, position: int) -> tuple[int, int]:
+    """Find the next unstuffed, non-restart marker in JPEG scan data."""
+
+    while position < len(data):
+        marker_prefix = data.find(b"\xff", position)
+        if marker_prefix < 0:
+            break
+        position = marker_prefix + 1
+        while position < len(data) and data[position] == 0xFF:
+            position += 1
+        if position >= len(data):
+            break
+        marker = data[position]
+        position += 1
+        if marker == 0x00 or 0xD0 <= marker <= 0xD7:
+            continue
+        return marker, position
+    raise ValueError("missing JPEG end marker")
