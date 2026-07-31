@@ -3,7 +3,7 @@
 setup:
 	uv sync --all-groups
 	npm --prefix web ci
-	npm --prefix web exec playwright -- install chromium
+	npm --prefix web exec playwright -- install --with-deps chromium
 
 lint:
 	uv run ruff check .

@@ -1,5 +1,7 @@
 .DS_Store
 .env
+.env.*
+!.env.example
 .venv/
 __pycache__/
 *.py[cod]
@@ -7,6 +9,8 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
 dist/
 build/
@@ -19,5 +23,18 @@ playwright-report/
 .playwright/
 .playwright-cli/
 data/
-output/playwright/
+output/
 tmp/
+uploads/
+private/
+private-data/
+customer-data/
+mvtec*/
+MVTec*/
+**/mvtec_anomaly_detection/
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.log
