@@ -224,6 +224,14 @@ def mutate_pipeline(bundle: bytes) -> bytes:
     return reseal(files)
 
 
+def mutate_evaluation_provenance(bundle: bytes) -> bytes:
+    files = read_archive(bundle)
+    evaluation = json.loads(files["records/evaluation-report.json"])
+    evaluation["dataset"]["manifest_sha256"] = "0" * 64
+    files["records/evaluation-report.json"] = canonical_json_bytes(evaluation)
+    return reseal(files)
+
+
 def corrupt_mask_with_consistent_outer_hashes(bundle: bytes) -> bytes:
     files = read_archive(bundle)
     manifest = json.loads(files[MANIFEST])
@@ -266,6 +274,7 @@ def assert_import_rejected(bundle: bytes, code: str, root: Path) -> None:
         (add_fifo, "UNSAFE_PATH"),
         (duplicate_manifest, "DUPLICATE_ARTIFACT_PATH"),
         (mutate_pipeline, "UNKNOWN_PIPELINE_VERSION"),
+        (mutate_evaluation_provenance, "HASH_MISMATCH"),
         (corrupt_mask_with_consistent_outer_hashes, "MASK_CORRUPT"),
     ],
 )

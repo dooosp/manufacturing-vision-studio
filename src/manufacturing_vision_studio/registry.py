@@ -948,19 +948,20 @@ class CaseRegistry:
                             document["recorded_at"],
                         ),
                     )
-                connection.execute(
-                    """
-                    INSERT INTO imported_evaluation_snapshots(
-                        case_id, case_revision, document_json, document_sha256
-                    ) VALUES (?, ?, ?, ?)
-                    """,
-                    (
-                        case_id,
-                        case_document["case_revision"],
-                        evaluation_payload,
-                        sha256_bytes(evaluation_payload),
-                    ),
-                )
+                if allow_legacy_source_png:
+                    connection.execute(
+                        """
+                        INSERT INTO imported_evaluation_snapshots(
+                            case_id, case_revision, document_json, document_sha256
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            case_id,
+                            case_document["case_revision"],
+                            evaluation_payload,
+                            sha256_bytes(evaluation_payload),
+                        ),
+                    )
         except Exception:
             self._remove_created_blobs(created_blobs)
             raise

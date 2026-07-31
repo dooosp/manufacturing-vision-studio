@@ -744,7 +744,64 @@ class EvidenceService:
         evaluation_documents = documents_by_role.get("evaluation_report", [])
         if len(evaluation_documents) != 1:
             raise EvidenceError("Evaluation report is incomplete", code="EVIDENCE_INCOMPLETE")
-        self._verify_evaluation(case_document, evaluation_documents[0][1])
+        evaluation = evaluation_documents[0][1]
+        self._verify_evaluation(case_document, evaluation)
+        self._verify_evaluation_artifact_bindings(
+            case_document,
+            evaluation,
+            image_documents=image_documents,
+            analysis_documents=[document for document, _digest in analyses_by_id.values()],
+            disposition_documents=[
+                document
+                for _path, document in documents_by_role.get("human_disposition", [])
+            ],
+        )
+
+    def _verify_evaluation_artifact_bindings(
+        self,
+        case_document: dict[str, Any],
+        evaluation: dict[str, Any],
+        *,
+        image_documents: list[dict[str, Any]],
+        analysis_documents: list[dict[str, Any]],
+        disposition_documents: list[dict[str, Any]],
+    ) -> None:
+        """Bind every derived evaluation field to the verified bundle artifacts."""
+
+        images = []
+        for document in image_documents:
+            source = cast(dict[str, Any], document["source"])
+            images.append(
+                {
+                    "id": document["image_id"],
+                    "original_sha256": document["sha256"],
+                    "role": document["role"],
+                    "source_kind": source["kind"],
+                    "fixture_id": source.get("fixture_id"),
+                }
+            )
+        analyses = [
+            {
+                "id": document["analysis_id"],
+                "inspection_image_id": document["input_binding"]["inspection_image_id"],
+                "repeat_result_sha256": "0" * 64,
+                "document_json": canonical_json_bytes(document),
+            }
+            for document in analysis_documents
+        ]
+        dispositions = [
+            {"analysis_id": document["analysis_binding"]["analysis_id"]}
+            for document in disposition_documents
+        ]
+        expected = self._evaluation_report(case_document, images, analyses, dispositions)
+        expected["reproducibility"]["run_result_sha256s"] = evaluation["reproducibility"][
+            "run_result_sha256s"
+        ]
+        if expected != evaluation:
+            raise EvidenceError(
+                "Evaluation report does not match the evidence artifacts",
+                code="HASH_MISMATCH",
+            )
 
     @staticmethod
     def _assert_identity(manifest: dict[str, Any], document: dict[str, Any]) -> None:
