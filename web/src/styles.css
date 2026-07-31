@@ -592,6 +592,11 @@ button:disabled,
   pointer-events: none;
 }
 
+.upload-button:focus-within {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+
 .comparison-toolbar {
   min-height: 43px;
   display: flex;

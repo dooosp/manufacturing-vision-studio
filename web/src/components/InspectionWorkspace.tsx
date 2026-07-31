@@ -45,6 +45,10 @@ function formatScore(value: number | undefined): string {
   return typeof value === "number" ? value.toFixed(3) : "—";
 }
 
+function formatPercent(value: number | undefined): string {
+  return typeof value === "number" ? `${(value * 100).toFixed(3)}%` : "—";
+}
+
 export function InspectionWorkspace({
   inspectionCase,
   copy,
@@ -68,7 +72,7 @@ export function InspectionWorkspace({
   const emptyFeatureLabel = analysis?.verdict === "normal" ? copy.notApplicable : copy.unmapped;
   const displayedFeature = topFeature?.label ?? topFeature?.feature_id ?? emptyFeatureLabel;
   const inspectionAlt = analysis
-    ? `${copy.inspection}: ${inspectionCase.part_id} ${inspectionCase.revision}. ${copy.anomalyScore}: ${formatScore(analysis.anomaly_score)}; ${copy.modelVerdict}: ${analysis.verdict}; ${copy.affectedFeature}: ${displayedFeature}; ${copy.disposition}: ${inspectionCase.disposition?.decision ?? copy.missing}.`
+    ? `${copy.inspection}: ${inspectionCase.part_id} ${inspectionCase.revision}. ${copy.anomalyScore}: ${formatScore(analysis.anomaly_score)}; ${copy.modelVerdict}: ${analysis.verdict}; ${copy.maskArea}: ${formatPercent(analysis.anomaly_score)}; ${copy.maskLocation}: ${displayedFeature}; ${copy.affectedFeature}: ${displayedFeature}; ${copy.disposition}: ${inspectionCase.disposition?.decision ?? copy.missing}.`
     : `${copy.inspection}: ${inspectionCase.part_id} ${inspectionCase.revision}`;
 
   return (
