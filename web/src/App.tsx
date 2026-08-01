@@ -1,12 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api } from "./api";
+import { ApiError, api } from "./api";
 import { getCopy } from "./copy";
 import { AppHeader } from "./components/AppHeader";
 import { CaseRail } from "./components/CaseRail";
 import { DispositionPanel } from "./components/DispositionPanel";
 import { EvidencePanel } from "./components/EvidencePanel";
+import {
+  EvaluationWorkspace,
+  type EvaluationLoadState,
+} from "./components/EvaluationWorkspace";
 import { InspectionWorkspace } from "./components/InspectionWorkspace";
-import type { Decision, InspectionCase, Locale } from "./types";
+import type {
+  AppSurface,
+  Decision,
+  E1EvaluationSnapshot,
+  EvaluationProfile,
+  InspectionCase,
+  Locale,
+} from "./types";
 
 type Operation = "loading" | "create" | "upload" | "analyze" | "disposition" | "export" | null;
 
@@ -16,6 +27,7 @@ function caseIdentity(item: InspectionCase): string {
 
 export function App() {
   const [locale, setLocale] = useState<Locale>("en");
+  const [activeSurface, setActiveSurface] = useState<AppSurface>("inspection");
   const [cases, setCases] = useState<InspectionCase[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [operation, setOperation] = useState<Operation>("loading");
@@ -23,7 +35,12 @@ export function App() {
   const [showOverlay, setShowOverlay] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [evaluation, setEvaluation] = useState<E1EvaluationSnapshot | null>(null);
+  const [evaluationProfile, setEvaluationProfile] = useState<EvaluationProfile>("mini");
+  const [evaluationState, setEvaluationState] = useState<EvaluationLoadState>("idle");
+  const [evaluationError, setEvaluationError] = useState<string | null>(null);
   const started = useRef(false);
+  const evaluationRequestId = useRef(0);
   const copy = getCopy(locale);
 
   const selectedCase = useMemo(
@@ -43,13 +60,8 @@ export function App() {
       try {
         const [health, existingCases] = await Promise.all([api.health(), api.listCases()]);
         setConnected(health.status === "ok" || health.status === "healthy");
-        let nextCases = existingCases;
-        if (nextCases.length === 0) {
-          const demo = await api.createDemo();
-          nextCases = [demo];
-        }
-        setCases(nextCases);
-        setSelectedId(nextCases[0] ? caseIdentity(nextCases[0]) : null);
+        setCases(existingCases);
+        setSelectedId(existingCases[0] ? caseIdentity(existingCases[0]) : null);
       } catch (cause) {
         setConnected(false);
         setError(cause instanceof Error ? cause.message : "Unable to load the local API");
@@ -160,6 +172,36 @@ export function App() {
     }
   }
 
+  async function loadEvaluation(profile: EvaluationProfile = evaluationProfile) {
+    const requestId = evaluationRequestId.current + 1;
+    evaluationRequestId.current = requestId;
+    setEvaluationProfile(profile);
+    setEvaluationState("loading");
+    setEvaluationError(null);
+    try {
+      const latest = await api.getLatestEvaluation(profile);
+      if (requestId !== evaluationRequestId.current) return;
+      setEvaluation(latest);
+      setEvaluationState(latest ? "ready" : "empty");
+    } catch (cause) {
+      if (requestId !== evaluationRequestId.current) return;
+      setEvaluation(null);
+      if (cause instanceof ApiError && cause.status === 404) {
+        setEvaluationState("empty");
+        return;
+      }
+      setEvaluationError(cause instanceof Error ? cause.message : "Unable to read E1 evaluation");
+      setEvaluationState("error");
+    }
+  }
+
+  function selectSurface(surface: AppSurface) {
+    setActiveSurface(surface);
+    if (surface === "evaluation" && evaluationState === "idle") {
+      void loadEvaluation();
+    }
+  }
+
   const busy = operation !== null;
 
   return (
@@ -168,73 +210,108 @@ export function App() {
         locale={locale}
         copy={copy}
         connected={connected}
+        activeSurface={activeSurface}
         onLocaleChange={setLocale}
+        onSurfaceChange={selectSurface}
       />
 
-      <div className="app-layout">
-        <CaseRail
-          cases={cases}
-          selectedId={selectedId}
-          copy={copy}
-          busy={busy}
-          onSelect={setSelectedId}
-          onCreate={createCase}
-          onCreateDemo={createDemo}
-        />
+      <>
+        <div
+          id="inspection-panel"
+          className="app-layout"
+          role="tabpanel"
+          aria-labelledby="inspection-tab"
+          hidden={activeSurface !== "inspection"}
+        >
+          <CaseRail
+            cases={cases}
+            selectedId={selectedId}
+            copy={copy}
+            busy={busy}
+            onSelect={setSelectedId}
+            onCreate={createCase}
+            onCreateDemo={createDemo}
+          />
 
-        <main id="main-content" className="main-content">
-          {error ? (
-            <div className="alert alert-error" role="alert">
-              <span aria-hidden="true">!</span>
-              <div><strong>{copy.safeFailure}</strong><p>{error}</p></div>
-              <button type="button" aria-label={copy.dismissError} onClick={() => setError(null)}>×</button>
-            </div>
-          ) : null}
-          {notice ? (
-            <div className="alert alert-success" role="status">
-              <span aria-hidden="true">✓</span>
-              <p>{notice}</p>
-              <button type="button" aria-label={copy.dismissNotice} onClick={() => setNotice(null)}>×</button>
-            </div>
-          ) : null}
-
-          {selectedCase ? (
-            <div className="workspace-grid">
-              <InspectionWorkspace
-                inspectionCase={selectedCase}
-                copy={copy}
-                busy={busy}
-                showOverlay={showOverlay}
-                onOverlayChange={setShowOverlay}
-                onAnalyze={analyze}
-                onUploadReference={uploadReference}
-                onUploadInspection={uploadInspection}
-              />
-              <div className="side-column">
-                <EvidencePanel inspectionCase={selectedCase} copy={copy} />
-                <DispositionPanel
-                  key={caseIdentity(selectedCase)}
-                  current={selectedCase.disposition}
-                  copy={copy}
-                  disabled={busy || !selectedCase.analysis}
-                  exporting={operation === "export"}
-                  onSubmit={recordDisposition}
-                  onExport={exportAndVerify}
-                />
+          <main
+            id={activeSurface === "inspection" ? "main-content" : "inspection-main-content"}
+            className="main-content"
+          >
+            {error ? (
+              <div className="alert alert-error" role="alert">
+                <span aria-hidden="true">!</span>
+                <div><strong>{copy.safeFailure}</strong><p>{error}</p></div>
+                <button type="button" aria-label={copy.dismissError} onClick={() => setError(null)}>×</button>
               </div>
-            </div>
-          ) : (
-            <section className="empty-workspace">
-              <div className="empty-workspace-mark" aria-hidden="true">◇</div>
-              <h2>{copy.openCase}</h2>
-              <p>{copy.selectCase}</p>
-              <button className="button button-primary" type="button" disabled={busy} onClick={() => void createDemo()}>
-                {copy.loadDemo}
-              </button>
-            </section>
-          )}
-        </main>
-      </div>
+            ) : null}
+            {notice ? (
+              <div className="alert alert-success" role="status">
+                <span aria-hidden="true">✓</span>
+                <p>{notice}</p>
+                <button type="button" aria-label={copy.dismissNotice} onClick={() => setNotice(null)}>×</button>
+              </div>
+            ) : null}
+
+            {selectedCase ? (
+              <div className="workspace-grid">
+                <InspectionWorkspace
+                  inspectionCase={selectedCase}
+                  copy={copy}
+                  busy={busy}
+                  showOverlay={showOverlay}
+                  onOverlayChange={setShowOverlay}
+                  onAnalyze={analyze}
+                  onUploadReference={uploadReference}
+                  onUploadInspection={uploadInspection}
+                />
+                <div className="side-column">
+                  <EvidencePanel inspectionCase={selectedCase} copy={copy} />
+                  <DispositionPanel
+                    key={caseIdentity(selectedCase)}
+                    current={selectedCase.disposition}
+                    copy={copy}
+                    disabled={busy || !selectedCase.analysis}
+                    exporting={operation === "export"}
+                    onSubmit={recordDisposition}
+                    onExport={exportAndVerify}
+                  />
+                </div>
+              </div>
+            ) : (
+              <section className="empty-workspace">
+                <div className="empty-workspace-mark" aria-hidden="true">◇</div>
+                <h2>{copy.openCase}</h2>
+                <p>{copy.selectCase}</p>
+                <button className="button button-primary" type="button" disabled={busy} onClick={() => void createDemo()}>
+                  {copy.loadDemo}
+                </button>
+              </section>
+            )}
+          </main>
+        </div>
+        <div
+          id="evaluation-panel"
+          role="tabpanel"
+          aria-labelledby="evaluation-tab"
+          hidden={activeSurface !== "evaluation"}
+        >
+          <main
+            id={activeSurface === "evaluation" ? "main-content" : "evaluation-main-content"}
+            className="evaluation-main"
+          >
+            <EvaluationWorkspace
+              copy={copy}
+              locale={locale}
+              snapshot={evaluation}
+              profile={evaluationProfile}
+              state={evaluationState}
+              error={evaluationError}
+              onRefresh={loadEvaluation}
+              onProfileChange={loadEvaluation}
+            />
+          </main>
+        </div>
+      </>
 
       <footer className="app-footer">
         <span>{copy.footerTarget}</span>

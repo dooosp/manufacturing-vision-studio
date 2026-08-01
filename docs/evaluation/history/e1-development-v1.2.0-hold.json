@@ -1,0 +1,82 @@
+{
+  "schema_version": "1.0.0",
+  "evidence_type": "development_gate_result",
+  "protocol": {
+    "protocol_id": "mvs-e1",
+    "protocol_version": "1.2.0",
+    "protocol_sha256": "be0fc24071a9060e145c6ef0a49f60cff62da953926611937e12850a4cd236b8"
+  },
+  "pipeline": {
+    "pipeline_id": "e1-normalized-local-difference",
+    "pipeline_version": "1.0.0",
+    "model_version": "1.0.0",
+    "model_artifact_sha256": "51f25d98c22a812996e8f2ce6207151a17ea393acf7cc30af11092477cb4557d",
+    "configuration_sha256": "01af9e34c20aa025dfc3540f375720f359189507bc69d9939ab06f544a4b5912",
+    "locked_image_threshold": 0.0025
+  },
+  "scope": {
+    "profile": "full",
+    "evaluation_split": "development",
+    "inference_case_count": 114,
+    "trust_case_count_excluded": 6,
+    "calibration_case_count_executed": 0,
+    "test_case_count_executed": 0
+  },
+  "metrics": {
+    "confusion": {
+      "true_positive": 44,
+      "true_negative": 54,
+      "false_positive": 0,
+      "false_negative": 16,
+      "sample_count": 114
+    },
+    "recall_by_severity": {
+      "LOW": {"numerator": 11, "denominator": 20, "value": 0.55},
+      "MEDIUM": {"numerator": 15, "denominator": 20, "value": 0.75},
+      "HIGH": {"numerator": 18, "denominator": 20, "value": 0.9}
+    },
+    "nuisance_only_false_positive_rate": {
+      "numerator": 0,
+      "denominator": 30,
+      "value": 0.0
+    },
+    "positive_case_median_dice": {"value": 1.0},
+    "affected_feature_mapping_accuracy": {
+      "numerator": 58,
+      "denominator": 60,
+      "value": 0.9666666666666667
+    }
+  },
+  "gates": [
+    {
+      "gate_id": "medium_high_defect_recall",
+      "operator": "gte",
+      "threshold": 0.9,
+      "observed": 0.825,
+      "passed": false
+    },
+    {
+      "gate_id": "nuisance_only_false_positive_rate",
+      "operator": "lte",
+      "threshold": 0.05,
+      "observed": 0.0,
+      "passed": true
+    },
+    {
+      "gate_id": "positive_case_median_dice",
+      "operator": "gte",
+      "threshold": 0.7,
+      "observed": 1.0,
+      "passed": true
+    },
+    {
+      "gate_id": "affected_feature_mapping_accuracy",
+      "operator": "gte",
+      "threshold": 0.95,
+      "observed": 0.9666666666666667,
+      "passed": true
+    }
+  ],
+  "verdict": "HOLD",
+  "failure_action": "AMEND_PROTOCOL_BEFORE_CALIBRATION_OR_TEST"
+}

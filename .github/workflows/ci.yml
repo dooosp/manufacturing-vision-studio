@@ -7,6 +7,12 @@ on:
       - "codex/**"
   pull_request:
   workflow_dispatch:
+    inputs:
+      run_e1_full:
+        description: Run the 480-case E1 release-candidate evaluation
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -174,6 +180,63 @@ jobs:
         run: |
           uv run pytest tests/test_synthetic_determinism.py \
             tests/test_evidence_bundles.py::test_export_is_byte_stable_and_evaluation_projection_is_deterministic
+
+  e1-mini:
+    name: E1 mini / 48 cases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install locked Python environment
+        run: |
+          python -m pip install --disable-pip-version-check "uv==${UV_VERSION}"
+          uv sync --all-groups --locked
+      - name: Evaluate frozen E1 mini profile
+        run: make evaluate-e1-mini
+      - name: Verify E1 mini artifacts and immutable bindings
+        run: make verify-e1-mini
+      - name: Enforce E1 mini PASS verdict
+        run: >-
+          uv run mvs-e1 --output-root data/e1-evaluation verify
+          --profile mini --require-pass
+      - name: Confirm generated evaluation data stayed ignored
+        run: test -z "$(git status --porcelain)"
+
+  e1-full:
+    name: E1 full / 480 cases
+    if: github.event_name == 'workflow_dispatch' && inputs.run_e1_full
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install locked Python environment
+        run: |
+          python -m pip install --disable-pip-version-check "uv==${UV_VERSION}"
+          uv sync --all-groups --locked
+      - name: Evaluate frozen E1 full profile
+        run: make evaluate-e1-full
+      - name: Verify E1 full artifacts and immutable bindings
+        run: make verify-e1-full
+      - name: Enforce E1 full PASS verdict
+        run: >-
+          uv run mvs-e1 --output-root data/e1-evaluation verify
+          --profile full --require-pass
+      - name: Confirm generated evaluation data stayed ignored
+        run: test -z "$(git status --porcelain)"
 
   hygiene:
     name: Repository hygiene

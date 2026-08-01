@@ -1,0 +1,71 @@
+"""Public generator and oracle contracts for E1 synthetic evaluation."""
+
+from manufacturing_vision_studio.e1.domain import (
+    AuthoritativeMaskValidation,
+    CadRevision,
+    CaseGroup,
+    DatasetProfile,
+    DatasetSplit,
+    DefectSpec,
+    DefectType,
+    E1CasePlan,
+    E1GeneratedCase,
+    ExpectedOutcome,
+    NuisanceSpec,
+    NuisanceType,
+    RecipeParameter,
+    Severity,
+    SupportBoundary,
+    TrustBoundarySpec,
+    ViewId,
+)
+from manufacturing_vision_studio.e1.generator import (
+    E1Generator,
+    plan_e1_cases,
+    plan_e1_full,
+    render_e1_case,
+    select_e1_profile,
+)
+from manufacturing_vision_studio.e1.oracle import (
+    validate_authoritative_mask,
+    validate_authoritative_truth,
+    validate_generated_case,
+)
+from manufacturing_vision_studio.e1.protocol import (
+    DEFAULT_E1_CONFIG_PATH,
+    E1Protocol,
+    E1ProtocolError,
+    load_e1_protocol,
+)
+
+__all__ = [
+    "DEFAULT_E1_CONFIG_PATH",
+    "AuthoritativeMaskValidation",
+    "CadRevision",
+    "CaseGroup",
+    "DatasetProfile",
+    "DatasetSplit",
+    "DefectSpec",
+    "DefectType",
+    "E1CasePlan",
+    "E1GeneratedCase",
+    "E1Generator",
+    "E1Protocol",
+    "E1ProtocolError",
+    "ExpectedOutcome",
+    "NuisanceSpec",
+    "NuisanceType",
+    "RecipeParameter",
+    "Severity",
+    "SupportBoundary",
+    "TrustBoundarySpec",
+    "ViewId",
+    "load_e1_protocol",
+    "plan_e1_cases",
+    "plan_e1_full",
+    "render_e1_case",
+    "select_e1_profile",
+    "validate_authoritative_mask",
+    "validate_authoritative_truth",
+    "validate_generated_case",
+]

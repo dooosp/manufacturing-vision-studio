@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.manufacturing-vision-studio.local/e1-threshold-lock.v1.json",
+  "title": "Manufacturing Vision Studio E1 threshold lock v1",
+  "description": "Deterministic calibration evidence that either locks the sole preregistered threshold or places E1 in HOLD before test execution.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "lock_id",
+    "protocol",
+    "profile",
+    "code_commit_sha",
+    "dirty_worktree",
+    "calibration_manifest_sha256",
+    "calibration_result_sha256",
+    "threshold_source_split",
+    "selection_method",
+    "selection_candidates",
+    "locked_image_threshold",
+    "calibration_gate_results",
+    "lock_status",
+    "test_execution_allowed",
+    "failure_action",
+    "threshold_lock_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "lock_id": {"$ref": "#/$defs/identifier"},
+    "protocol": {"$ref": "#/$defs/protocol_binding"},
+    "profile": {"enum": ["mini", "full"]},
+    "code_commit_sha": {"$ref": "#/$defs/git_sha1"},
+    "dirty_worktree": {"type": "boolean"},
+    "calibration_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "calibration_result_sha256": {"$ref": "#/$defs/sha256"},
+    "threshold_source_split": {"const": "calibration"},
+    "selection_method": {
+      "const": "single_pre_registered_candidate_confirmed_on_calibration"
+    },
+    "selection_candidates": {"const": [0.0025]},
+    "locked_image_threshold": {"const": 0.0025},
+    "calibration_gate_results": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {"$ref": "#/$defs/calibration_gate"}
+    },
+    "lock_status": {"enum": ["LOCKED", "HOLD"]},
+    "test_execution_allowed": {"type": "boolean"},
+    "failure_action": {"const": "HOLD_WITHOUT_TEST_EXECUTION"},
+    "threshold_lock_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"lock_status": {"const": "LOCKED"}}, "required": ["lock_status"]},
+      "then": {"properties": {"test_execution_allowed": {"const": true}}}
+    },
+    {
+      "if": {"properties": {"lock_status": {"const": "HOLD"}}, "required": ["lock_status"]},
+      "then": {"properties": {"test_execution_allowed": {"const": false}}}
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "git_sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "unit_interval": {"type": "number", "minimum": 0, "maximum": 1},
+    "protocol_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_id", "protocol_version", "protocol_sha256"],
+      "properties": {
+        "protocol_id": {"const": "mvs-e1"},
+        "protocol_version": {"const": "1.3.0"},
+        "protocol_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "calibration_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gate_id", "operator", "threshold", "observed", "passed", "reason"],
+      "properties": {
+        "gate_id": {
+          "enum": [
+            "medium_high_defect_recall",
+            "nuisance_only_false_positive_rate",
+            "positive_case_median_dice",
+            "affected_feature_mapping_accuracy"
+          ]
+        },
+        "operator": {"enum": ["gte", "lte"]},
+        "threshold": {"$ref": "#/$defs/unit_interval"},
+        "observed": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/unit_interval"}]
+        },
+        "passed": {"type": "boolean"},
+        "reason": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "string", "minLength": 1, "maxLength": 256}
+          ]
+        }
+      }
+    }
+  }
+}

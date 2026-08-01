@@ -74,8 +74,9 @@ In a second terminal, run the web application:
 npm --prefix web run dev
 ```
 
-The UI creates a deterministic seeded case when
-the local registry is empty. English and Korean are available from the header.
+When the local registry is empty, the UI offers an explicit button to create a
+deterministic seeded case; page load never performs an automatic mutation.
+English and Korean are available from the header.
 
 ## Validation
 
@@ -91,6 +92,33 @@ make validate
 The browser suite starts isolated API and web servers and stores its temporary
 registry beneath `tmp/`. Release evidence is generated from the same bounded
 synthetic journey; optional public datasets are never a test prerequisite.
+
+### E1 authoritative synthetic evaluation
+
+E1 adds independent generator-owned masks, six defect classes at three
+severities, nine supported nuisance classes, two revisions, three views, and
+24 fail-closed trust-boundary scenarios. `mini` is an exact 48-case subset;
+`full` contains exactly 480 cases. Generated corpora remain under ignored local
+storage and are never committed.
+
+```bash
+make evaluate-e1-mini
+make evaluate-e1-full
+make verify-e1-results
+```
+
+Each profile publishes an immutable canonical manifest, calibration evidence,
+threshold lock, result, repeatability manifests, bounded gallery, and inventory
+beneath `data/e1-evaluation/<profile>/`. Use a fresh `E1_OUTPUT_ROOT` for another
+run rather than overwriting evidence. The Evaluation tab and its read-only API
+display only already-published artifacts; they cannot start an evaluation.
+
+The frozen protocol is `mvs-e1` `1.3.0`, canonical SHA-256
+`140887fb9e9980c8f7854d2d9f8b0a927aee4994fb74ee2535aa109f19fa7d99`.
+The threshold remains the single preregistered `0.0025` candidate and test
+inference is impossible until calibration persists a passing lock. See the
+[normative protocol](docs/evaluation/e1-protocol-v1.md). E1 is synthetic
+portfolio evidence, not real inspection accuracy or release authority.
 
 ### Measured v0.1 synthetic result
 
@@ -155,8 +183,8 @@ optional adapter can inspect a user-supplied local MVTec AD copy, but the data
 is not downloaded, committed, redistributed, or required. MVTec AD is governed
 by CC BY-NC-SA 4.0 and is treated as a separate non-commercial benchmark.
 
-Read [data and licensing](docs/data/data-and-licensing.md) before using an
-external dataset.
+Read [third-party data policy](THIRD_PARTY_DATA.md) before using an external
+dataset.
 
 ## Readiness language
 

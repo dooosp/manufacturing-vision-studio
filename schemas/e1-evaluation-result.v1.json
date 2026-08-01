@@ -1,0 +1,734 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.manufacturing-vision-studio.local/e1-evaluation-result.v1.json",
+  "title": "Manufacturing Vision Studio E1 evaluation result v1",
+  "description": "Strict result contract for a completed E1 evaluation or a preregistered calibration HOLD.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "result_id",
+    "evaluation_run_id",
+    "generated_at",
+    "duration_ms",
+    "local_absolute_paths",
+    "evaluation_status",
+    "profile",
+    "protocol",
+    "code",
+    "generator",
+    "dataset",
+    "pipeline",
+    "model",
+    "configuration_sha256",
+    "threshold",
+    "execution_environment",
+    "metrics",
+    "reproducibility",
+    "error_gallery",
+    "exclusions",
+    "limitations",
+    "deterministic_projection_sha256",
+    "result_sha256",
+    "verdict"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "result_id": {"$ref": "#/$defs/identifier"},
+    "evaluation_run_id": {"$ref": "#/$defs/identifier"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "duration_ms": {"type": "integer", "minimum": 0, "maximum": 604800000},
+    "local_absolute_paths": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^/"}
+    },
+    "evaluation_status": {"enum": ["COMPLETED", "CALIBRATION_HOLD"]},
+    "profile": {"enum": ["mini", "full"]},
+    "protocol": {"$ref": "#/$defs/protocol_binding"},
+    "code": {"$ref": "#/$defs/code_binding"},
+    "generator": {"$ref": "#/$defs/generator_binding"},
+    "dataset": {"$ref": "#/$defs/dataset_binding"},
+    "pipeline": {"$ref": "#/$defs/pipeline_binding"},
+    "model": {"$ref": "#/$defs/model_binding"},
+    "configuration_sha256": {
+      "const": "70400090ee420f42470e1b8c539f1145e5a71620ceb57d32b7cf6823ffd8ade0"
+    },
+    "threshold": {"$ref": "#/$defs/threshold_binding"},
+    "execution_environment": {"$ref": "#/$defs/execution_environment"},
+    "metrics": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/metrics"}]},
+    "reproducibility": {"$ref": "#/$defs/reproducibility"},
+    "error_gallery": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {"$ref": "#/$defs/error_gallery_case"}
+    },
+    "exclusions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/bounded_text"}
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/bounded_text"}
+    },
+    "deterministic_projection_sha256": {"$ref": "#/$defs/sha256"},
+    "result_sha256": {"$ref": "#/$defs/sha256"},
+    "verdict": {"enum": ["PASS", "HOLD"]}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"evaluation_status": {"const": "COMPLETED"}},
+        "required": ["evaluation_status"]
+      },
+      "then": {
+        "properties": {
+          "threshold": {
+            "allOf": [
+              {"$ref": "#/$defs/threshold_binding"},
+              {"properties": {"lock_status": {"const": "LOCKED"}}}
+            ]
+          },
+          "metrics": {"$ref": "#/$defs/metrics"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"evaluation_status": {"const": "CALIBRATION_HOLD"}},
+        "required": ["evaluation_status"]
+      },
+      "then": {
+        "properties": {
+          "threshold": {
+            "allOf": [
+              {"$ref": "#/$defs/threshold_binding"},
+              {"properties": {"lock_status": {"const": "HOLD"}}}
+            ]
+          },
+          "metrics": {"type": "null"},
+          "verdict": {"const": "HOLD"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"profile": {"const": "mini"}}, "required": ["profile"]},
+      "then": {
+        "properties": {
+          "dataset": {
+            "allOf": [
+              {"$ref": "#/$defs/dataset_binding"},
+              {
+                "properties": {
+                  "case_count": {"const": 48},
+                  "inference_case_count": {"const": 44},
+                  "trust_case_count": {"const": 4}
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"profile": {"const": "full"}}, "required": ["profile"]},
+      "then": {
+        "properties": {
+          "dataset": {
+            "allOf": [
+              {"$ref": "#/$defs/dataset_binding"},
+              {
+                "properties": {
+                  "case_count": {"const": 480},
+                  "inference_case_count": {"const": 456},
+                  "trust_case_count": {"const": 24}
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "bounded_text": {"type": "string", "minLength": 1, "maxLength": 512},
+    "semantic_version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "maxLength": 32
+    },
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "git_sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "count": {"type": "integer", "minimum": 0, "maximum": 1000000000},
+    "unit_interval": {"type": "number", "minimum": 0, "maximum": 1},
+    "nullable_unit_interval": {
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/unit_interval"}]
+    },
+    "nullable_text": {
+      "oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 256}]
+    },
+    "confidence_interval": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {"$ref": "#/$defs/unit_interval"},
+            {"$ref": "#/$defs/unit_interval"}
+          ],
+          "items": false
+        }
+      ]
+    },
+    "protocol_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_id", "protocol_version", "protocol_sha256"],
+      "properties": {
+        "protocol_id": {"const": "mvs-e1"},
+        "protocol_version": {"const": "1.3.0"},
+        "protocol_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "code_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code_commit_sha", "dirty_worktree"],
+      "properties": {
+        "code_commit_sha": {"$ref": "#/$defs/git_sha1"},
+        "dirty_worktree": {"type": "boolean"}
+      }
+    },
+    "generator_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generator_id", "generator_version", "generator_configuration_sha256"],
+      "properties": {
+        "generator_id": {"const": "mvs-e1-generator"},
+        "generator_version": {"const": "1.0.0"},
+        "generator_configuration_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "dataset_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dataset_id",
+        "dataset_version",
+        "dataset_manifest_sha256",
+        "case_count",
+        "inference_case_count",
+        "trust_case_count"
+      ],
+      "properties": {
+        "dataset_id": {"$ref": "#/$defs/identifier"},
+        "dataset_version": {"const": "1.0.0"},
+        "dataset_manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "case_count": {"type": "integer", "minimum": 48, "maximum": 480},
+        "inference_case_count": {"type": "integer", "minimum": 44, "maximum": 456},
+        "trust_case_count": {"type": "integer", "minimum": 4, "maximum": 24}
+      }
+    },
+    "pipeline_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pipeline_id", "pipeline_version"],
+      "properties": {
+        "pipeline_id": {"const": "e1-normalized-local-difference"},
+        "pipeline_version": {"const": "1.1.0"}
+      }
+    },
+    "model_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model_id", "model_version", "model_artifact_sha256"],
+      "properties": {
+        "model_id": {"const": "e1-normalized-local-difference"},
+        "model_version": {"const": "1.1.0"},
+        "model_artifact_sha256": {
+          "const": "15d557ed44541d4e3b7f382b9b6ff6a9e510a1924b7b9d86a07c7ba52bcbbc03"
+        }
+      }
+    },
+    "threshold_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lock_id",
+        "threshold_lock_sha256",
+        "lock_status",
+        "locked_image_threshold",
+        "threshold_source_split"
+      ],
+      "properties": {
+        "lock_id": {"$ref": "#/$defs/identifier"},
+        "threshold_lock_sha256": {"$ref": "#/$defs/sha256"},
+        "lock_status": {"enum": ["LOCKED", "HOLD"]},
+        "locked_image_threshold": {"const": 0.0025},
+        "threshold_source_split": {"const": "calibration"}
+      }
+    },
+    "execution_environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_id",
+        "python_version",
+        "numpy_version",
+        "pillow_version",
+        "platform"
+      ],
+      "properties": {
+        "runtime_id": {"const": "python-numpy"},
+        "python_version": {"type": "string", "minLength": 3, "maxLength": 32},
+        "numpy_version": {"type": "string", "minLength": 1, "maxLength": 32},
+        "pillow_version": {"type": "string", "minLength": 1, "maxLength": 32},
+        "platform": {"type": "string", "minLength": 1, "maxLength": 160}
+      }
+    },
+    "proportion_metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "reason", "numerator", "denominator", "confidence_interval"],
+      "properties": {
+        "value": {"$ref": "#/$defs/nullable_unit_interval"},
+        "reason": {"$ref": "#/$defs/nullable_text"},
+        "numerator": {"$ref": "#/$defs/count"},
+        "denominator": {"$ref": "#/$defs/count"},
+        "confidence_interval": {"$ref": "#/$defs/confidence_interval"}
+      }
+    },
+    "scalar_metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "reason"],
+      "properties": {
+        "value": {"$ref": "#/$defs/nullable_unit_interval"},
+        "reason": {"$ref": "#/$defs/nullable_text"},
+        "confidence_interval": {"$ref": "#/$defs/confidence_interval"}
+      }
+    },
+    "ranking_metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "reason", "positive_count", "negative_count"],
+      "properties": {
+        "value": {"$ref": "#/$defs/nullable_unit_interval"},
+        "reason": {"$ref": "#/$defs/nullable_text"},
+        "positive_count": {"$ref": "#/$defs/count"},
+        "negative_count": {"$ref": "#/$defs/count"},
+        "confidence_interval": {"$ref": "#/$defs/confidence_interval"}
+      }
+    },
+    "confusion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "true_positive",
+        "true_negative",
+        "false_positive",
+        "false_negative",
+        "sample_count"
+      ],
+      "properties": {
+        "true_positive": {"$ref": "#/$defs/count"},
+        "true_negative": {"$ref": "#/$defs/count"},
+        "false_positive": {"$ref": "#/$defs/count"},
+        "false_negative": {"$ref": "#/$defs/count"},
+        "sample_count": {"$ref": "#/$defs/count"}
+      }
+    },
+    "score_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scored", "total", "excluded"],
+      "properties": {
+        "scored": {"$ref": "#/$defs/count"},
+        "total": {"$ref": "#/$defs/count"},
+        "excluded": {"$ref": "#/$defs/count"}
+      }
+    },
+    "image_level": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "confusion",
+        "precision",
+        "recall",
+        "specificity",
+        "f1",
+        "average_precision",
+        "auroc",
+        "score_coverage",
+        "nuisance_only_false_positive_rate"
+      ],
+      "properties": {
+        "confusion": {"$ref": "#/$defs/confusion"},
+        "precision": {"$ref": "#/$defs/proportion_metric"},
+        "recall": {"$ref": "#/$defs/proportion_metric"},
+        "specificity": {"$ref": "#/$defs/proportion_metric"},
+        "f1": {"$ref": "#/$defs/scalar_metric"},
+        "average_precision": {"$ref": "#/$defs/ranking_metric"},
+        "auroc": {"$ref": "#/$defs/ranking_metric"},
+        "score_coverage": {"$ref": "#/$defs/score_coverage"},
+        "nuisance_only_false_positive_rate": {"$ref": "#/$defs/proportion_metric"}
+      }
+    },
+    "pixel_case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "defect_type",
+        "severity",
+        "iou",
+        "dice",
+        "truth_positive_pixels",
+        "predicted_positive_pixels",
+        "intersection_pixels"
+      ],
+      "properties": {
+        "case_id": {"$ref": "#/$defs/identifier"},
+        "defect_type": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "enum": [
+                "scratch",
+                "stain",
+                "edge_chip",
+                "burr",
+                "blocked_hole",
+                "hole_geometry_deviation"
+              ]
+            }
+          ]
+        },
+        "severity": {"oneOf": [{"type": "null"}, {"enum": ["LOW", "MEDIUM", "HIGH"]}]},
+        "iou": {"$ref": "#/$defs/unit_interval"},
+        "dice": {"$ref": "#/$defs/unit_interval"},
+        "truth_positive_pixels": {"$ref": "#/$defs/count"},
+        "predicted_positive_pixels": {"$ref": "#/$defs/count"},
+        "intersection_pixels": {"$ref": "#/$defs/count"}
+      }
+    },
+    "pixel_level": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "positive_case_median_dice",
+        "positive_case_median_iou",
+        "mask_precision",
+        "mask_recall",
+        "empty_mask_accuracy",
+        "positive_case_distribution"
+      ],
+      "properties": {
+        "positive_case_median_dice": {"$ref": "#/$defs/scalar_metric"},
+        "positive_case_median_iou": {"$ref": "#/$defs/scalar_metric"},
+        "mask_precision": {"$ref": "#/$defs/proportion_metric"},
+        "mask_recall": {"$ref": "#/$defs/proportion_metric"},
+        "empty_mask_accuracy": {"$ref": "#/$defs/proportion_metric"},
+        "positive_case_distribution": {
+          "type": "array",
+          "maxItems": 120,
+          "items": {"$ref": "#/$defs/pixel_case"}
+        }
+      }
+    },
+    "engineering_level": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "affected_feature_mapping_accuracy",
+        "part_binding_accuracy",
+        "revision_binding_accuracy",
+        "abstention_correctness"
+      ],
+      "properties": {
+        "affected_feature_mapping_accuracy": {"$ref": "#/$defs/proportion_metric"},
+        "part_binding_accuracy": {"$ref": "#/$defs/proportion_metric"},
+        "revision_binding_accuracy": {"$ref": "#/$defs/proportion_metric"},
+        "abstention_correctness": {"$ref": "#/$defs/proportion_metric"}
+      }
+    },
+    "trust_boundary_metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision_mismatch_publication_count",
+        "corrupted_evidence_publication_count",
+        "bundle_verify_reimport_rate",
+        "dataset_split_hash_overlap",
+        "same_seed_manifest_equivalence",
+        "v0_1_regression"
+      ],
+      "properties": {
+        "revision_mismatch_publication_count": {"$ref": "#/$defs/count"},
+        "corrupted_evidence_publication_count": {"$ref": "#/$defs/count"},
+        "bundle_verify_reimport_rate": {"$ref": "#/$defs/proportion_metric"},
+        "dataset_split_hash_overlap": {"$ref": "#/$defs/count"},
+        "same_seed_manifest_equivalence": {"type": "boolean"},
+        "v0_1_regression": {"type": "boolean"}
+      }
+    },
+    "proportion_map": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 64,
+      "patternProperties": {
+        "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$": {"$ref": "#/$defs/proportion_metric"}
+      }
+    },
+    "trust_slice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "expected_error_code",
+        "observed_error_code",
+        "abstained",
+        "published",
+        "passed"
+      ],
+      "properties": {
+        "case_id": {"$ref": "#/$defs/identifier"},
+        "expected_error_code": {"$ref": "#/$defs/nullable_text"},
+        "observed_error_code": {"$ref": "#/$defs/nullable_text"},
+        "abstained": {"type": "boolean"},
+        "published": {"type": "boolean"},
+        "passed": {"type": "boolean"}
+      }
+    },
+    "trust_slice_map": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 24,
+      "patternProperties": {
+        "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$": {"$ref": "#/$defs/trust_slice"}
+      }
+    },
+    "slices": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recall_by_severity",
+        "recall_by_defect_type",
+        "nuisance_false_positive_rate",
+        "classification_accuracy_by_revision",
+        "classification_accuracy_by_view",
+        "trust_boundary_scenario"
+      ],
+      "properties": {
+        "recall_by_severity": {"$ref": "#/$defs/proportion_map"},
+        "recall_by_defect_type": {"$ref": "#/$defs/proportion_map"},
+        "nuisance_false_positive_rate": {"$ref": "#/$defs/proportion_map"},
+        "classification_accuracy_by_revision": {"$ref": "#/$defs/proportion_map"},
+        "classification_accuracy_by_view": {"$ref": "#/$defs/proportion_map"},
+        "trust_boundary_scenario": {"$ref": "#/$defs/trust_slice_map"}
+      }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gate_id", "scope", "operator", "threshold", "observed", "passed", "reason"],
+      "properties": {
+        "gate_id": {
+          "enum": [
+            "medium_high_defect_recall",
+            "nuisance_only_false_positive_rate",
+            "positive_case_median_dice",
+            "affected_feature_mapping_accuracy",
+            "revision_mismatch_publication_count",
+            "corrupted_evidence_publication_count",
+            "bundle_verify_reimport_rate",
+            "dataset_split_hash_overlap",
+            "same_seed_manifest_equivalence",
+            "v0_1_regression"
+          ]
+        },
+        "scope": {"type": "string", "minLength": 1, "maxLength": 128},
+        "operator": {"enum": ["gte", "lte", "eq", "is_true"]},
+        "threshold": {"oneOf": [{"type": "boolean"}, {"type": "number"}]},
+        "observed": {
+          "oneOf": [{"type": "null"}, {"type": "boolean"}, {"type": "number"}]
+        },
+        "passed": {"type": "boolean"},
+        "reason": {"$ref": "#/$defs/nullable_text"}
+      }
+    },
+    "gate_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "total", "all_passed"],
+      "properties": {
+        "passed": {"type": "integer", "minimum": 0, "maximum": 10},
+        "total": {"const": 10},
+        "all_passed": {"type": "boolean"}
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evaluation_split",
+        "image_level",
+        "pixel_level",
+        "engineering_level",
+        "trust_boundary",
+        "slices",
+        "gates",
+        "gate_summary",
+        "verdict"
+      ],
+      "properties": {
+        "evaluation_split": {"const": "test"},
+        "image_level": {"$ref": "#/$defs/image_level"},
+        "pixel_level": {"$ref": "#/$defs/pixel_level"},
+        "engineering_level": {"$ref": "#/$defs/engineering_level"},
+        "trust_boundary": {"$ref": "#/$defs/trust_boundary_metrics"},
+        "slices": {"$ref": "#/$defs/slices"},
+        "gates": {
+          "type": "array",
+          "minItems": 10,
+          "maxItems": 10,
+          "items": {"$ref": "#/$defs/gate"}
+        },
+        "gate_summary": {"$ref": "#/$defs/gate_summary"},
+        "verdict": {"enum": ["PASS", "HOLD"]}
+      }
+    },
+    "reproducibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repeat_count",
+        "equivalent",
+        "deterministic_projection_sha256s",
+        "volatile_fields_excluded"
+      ],
+      "properties": {
+        "repeat_count": {"const": 2},
+        "equivalent": {"type": "boolean"},
+        "deterministic_projection_sha256s": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {"$ref": "#/$defs/sha256"}
+        },
+        "volatile_fields_excluded": {
+          "const": ["duration_ms", "evaluation_run_id", "generated_at", "local_absolute_paths"]
+        }
+      }
+    },
+    "part_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["part_id", "cad_revision"],
+      "properties": {
+        "part_id": {"const": "MVS-E1-PLATE-001"},
+        "cad_revision": {"enum": ["rev-A", "rev-B"]}
+      }
+    },
+    "gallery_source_hashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reference_sha256",
+        "inspection_sha256",
+        "authoritative_mask_sha256",
+        "predicted_mask_sha256"
+      ],
+      "properties": {
+        "reference_sha256": {"$ref": "#/$defs/sha256"},
+        "inspection_sha256": {"$ref": "#/$defs/sha256"},
+        "authoritative_mask_sha256": {"$ref": "#/$defs/sha256"},
+        "predicted_mask_sha256": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]
+        }
+      }
+    },
+    "asset_url": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^/api/v1/e1/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+$"
+        }
+      ]
+    },
+    "gallery_assets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reference_image_url",
+        "inspection_image_url",
+        "authoritative_mask_url",
+        "predicted_mask_url",
+        "overlay_url"
+      ],
+      "properties": {
+        "reference_image_url": {"$ref": "#/$defs/asset_url"},
+        "inspection_image_url": {"$ref": "#/$defs/asset_url"},
+        "authoritative_mask_url": {"$ref": "#/$defs/asset_url"},
+        "predicted_mask_url": {"$ref": "#/$defs/asset_url"},
+        "overlay_url": {"$ref": "#/$defs/asset_url"}
+      }
+    },
+    "error_gallery_case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "category",
+        "part_identity",
+        "score",
+        "threshold",
+        "expected_feature_id",
+        "predicted_feature_id",
+        "failure_reason",
+        "source_hashes",
+        "assets"
+      ],
+      "properties": {
+        "case_id": {"$ref": "#/$defs/identifier"},
+        "category": {
+          "enum": [
+            "false_positive",
+            "false_negative",
+            "low_dice",
+            "wrong_feature_mapping",
+            "unsupported_view",
+            "revision_mismatch",
+            "bundle_verification_failure"
+          ]
+        },
+        "part_identity": {"$ref": "#/$defs/part_identity"},
+        "score": {"$ref": "#/$defs/nullable_unit_interval"},
+        "threshold": {"const": 0.0025},
+        "expected_feature_id": {"$ref": "#/$defs/nullable_text"},
+        "predicted_feature_id": {"$ref": "#/$defs/nullable_text"},
+        "failure_reason": {"$ref": "#/$defs/nullable_text"},
+        "source_hashes": {"$ref": "#/$defs/gallery_source_hashes"},
+        "assets": {"$ref": "#/$defs/gallery_assets"}
+      }
+    }
+  }
+}

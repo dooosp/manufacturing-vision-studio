@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "manufacturing-vision-studio"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first deterministic manufacturing vision evidence demo"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -37,6 +37,7 @@ mvs-demo = "manufacturing_vision_studio.cli:demo"
 mvs-evidence = "manufacturing_vision_studio.cli:evidence"
 mvs-freecad = "manufacturing_vision_studio.cli:freecad"
 mvs-mvtec = "manufacturing_vision_studio.cli:mvtec"
+mvs-e1 = "manufacturing_vision_studio.cli:e1"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/manufacturing_vision_studio"]
