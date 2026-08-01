@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://manufacturing-vision-studio.local/schemas/e1-candidate-selection.v2.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "record_type",
+    "configuration_sha256",
+    "implementation_projection",
+    "implementation_projection_sha256",
+    "candidates",
+    "selected_candidate_id",
+    "outcome",
+    "record_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "2.0.0"},
+    "record_type": {"const": "e1_candidate_selection_v2"},
+    "configuration_sha256": {"$ref": "#/$defs/sha256"},
+    "implementation_projection": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"},
+          "sha256": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    },
+    "implementation_projection_sha256": {"$ref": "#/$defs/sha256"},
+    "candidates": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {"$ref": "#/$defs/candidate"}
+    },
+    "selected_candidate_id": {"type": ["string", "null"], "enum": ["A", "B", null]},
+    "outcome": {"enum": ["SELECTED", "HOLD"]},
+    "record_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id", "deterministic", "dependency_guard_passed", "work_cap_passed",
+        "development_gates_passed", "medium_high_defect_recall", "trust_passed",
+        "v0_1_regression_passed", "maximum_diagnostic_truth_recall_drop",
+        "diagnostic_median_dice_drop", "development_nuisance_false_positives",
+        "medium_high_defect_false_negatives", "affected_feature_mapping_errors",
+        "positive_case_median_dice", "median_post_normalization_objective",
+        "worst_case_candidate_pixels", "runtime_p95_ns", "rejection_reasons"
+      ],
+      "properties": {
+        "candidate_id": {"enum": ["A", "B"]},
+        "deterministic": {"type": "boolean"},
+        "dependency_guard_passed": {"type": "boolean"},
+        "work_cap_passed": {"type": "boolean"},
+        "development_gates_passed": {"type": "boolean"},
+        "medium_high_defect_recall": {"type": "number", "minimum": 0, "maximum": 1},
+        "trust_passed": {"type": "boolean"},
+        "v0_1_regression_passed": {"type": "boolean"},
+        "maximum_diagnostic_truth_recall_drop": {"type": "number"},
+        "diagnostic_median_dice_drop": {"type": "number"},
+        "development_nuisance_false_positives": {"type": "integer", "minimum": 0},
+        "medium_high_defect_false_negatives": {"type": "integer", "minimum": 0},
+        "affected_feature_mapping_errors": {"type": "integer", "minimum": 0},
+        "positive_case_median_dice": {"type": "number", "minimum": 0, "maximum": 1},
+        "median_post_normalization_objective": {"type": "number", "minimum": 0},
+        "worst_case_candidate_pixels": {"type": "integer", "minimum": 0},
+        "runtime_p95_ns": {"type": "integer", "minimum": 0},
+        "rejection_reasons": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      }
+    }
+  }
+}
