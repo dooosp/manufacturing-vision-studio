@@ -1,8 +1,8 @@
 # E1 v2 Scale and Feature Remediation Design
 
-**Date:** 2026-08-01  
-**Status:** Approved for implementation  
-**Target product release:** `v0.2.0`  
+**Date:** 2026-08-01
+**Status:** Approved for implementation
+**Target product release:** `v0.2.0`
 **Evaluation protocol and dataset:** `2.0.0`
 
 ## Purpose

@@ -1,7 +1,7 @@
 # E1 v2 Remediation Preflight
 
-**Recorded:** 2026-08-01 (Asia/Seoul)  
-**Repository:** `dooosp/manufacturing-vision-studio`  
+**Recorded:** 2026-08-01 (Asia/Seoul)
+**Repository:** `dooosp/manufacturing-vision-studio`
 **Remote:** `https://github.com/dooosp/manufacturing-vision-studio.git`
 
 ## Repository identity and branch boundary

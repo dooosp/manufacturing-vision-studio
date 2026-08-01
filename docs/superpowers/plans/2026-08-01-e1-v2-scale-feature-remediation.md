@@ -87,7 +87,7 @@ def test_v2_protocol_pins_versions_counts_and_seed_blocks() -> None:
 
 - [ ] **Step 2: Run the focused protocol test and record RED**
 
-Run: `uv run pytest tests/test_e1_v2_protocol.py -q`  
+Run: `uv run pytest tests/test_e1_v2_protocol.py -q`
 Expected: FAIL because `protocol_v2`, schema v2, and config v2 do not exist.
 
 - [ ] **Step 3: Implement strict v2 domain/config/schema loading**
@@ -210,8 +210,8 @@ development diagnostics.
 
 - [ ] **Step 10: Run focused and v1 regression tests**
 
-Run: `uv run pytest tests/test_e1_v2_protocol.py tests/test_e1_v2_generator.py tests/test_e1_v2_overlap.py tests/test_e1_v1_history_integrity.py tests/test_e1_evaluation_protocol.py tests/test_e1_generator.py -q`  
-Run: `uv run python scripts/verify_e1_v1_history.py`  
+Run: `uv run pytest tests/test_e1_v2_protocol.py tests/test_e1_v2_generator.py tests/test_e1_v2_overlap.py tests/test_e1_v1_history_integrity.py tests/test_e1_evaluation_protocol.py tests/test_e1_generator.py -q`
+Run: `uv run python scripts/verify_e1_v1_history.py`
 Expected: all pass with no new warnings.
 
 - [ ] **Step 11: Commit Task 1**
@@ -262,7 +262,7 @@ def test_revision_b_right_hole_layout_differs_from_revision_a() -> None:
 
 - [ ] **Step 2: Run ownership tests and record RED**
 
-Run: `uv run pytest tests/test_e1_v2_feature_mapping.py -q`  
+Run: `uv run pytest tests/test_e1_v2_feature_mapping.py -q`
 Expected: FAIL because `feature_mapping.py` and ownership protocol fields are absent.
 
 - [ ] **Step 3: Implement half-open rasterization and one-owner priority**
@@ -343,9 +343,9 @@ Dice/IoU denominators remain unchanged.
 
 - [ ] **Step 7: Run focused tests and static checks**
 
-Run: `uv run pytest tests/test_e1_v2_feature_mapping.py tests/test_e1_metrics.py -q`  
-Run: `uv run ruff check src/manufacturing_vision_studio/e1/feature_mapping.py tests/test_e1_v2_feature_mapping.py`  
-Run: `uv run mypy src/manufacturing_vision_studio/e1/feature_mapping.py`  
+Run: `uv run pytest tests/test_e1_v2_feature_mapping.py tests/test_e1_metrics.py -q`
+Run: `uv run ruff check src/manufacturing_vision_studio/e1/feature_mapping.py tests/test_e1_v2_feature_mapping.py`
+Run: `uv run mypy src/manufacturing_vision_studio/e1/feature_mapping.py`
 Expected: all pass with pristine output.
 
 - [ ] **Step 8: Commit Task 2**
@@ -396,7 +396,7 @@ def test_transform_sign_order_and_fill_on_asymmetric_image() -> None:
 
 - [ ] **Step 2: Run geometry tests and record RED**
 
-Run: `uv run pytest tests/test_e1_v2_geometry.py tests/test_e1_v2_geometry_search.py -q`  
+Run: `uv run pytest tests/test_e1_v2_geometry.py tests/test_e1_v2_geometry_search.py -q`
 Expected: FAIL because both candidate modules are absent.
 
 - [ ] **Step 3: Implement shared image-only geometry primitives**
@@ -503,9 +503,9 @@ medium/high classification recall remains at least 0.90.
 
 - [ ] **Step 9: Run focused tests and static checks**
 
-Run: `uv run pytest tests/test_e1_v2_geometry.py tests/test_e1_v2_geometry_search.py -q`  
-Run: `uv run ruff check src/manufacturing_vision_studio/e1/geometry.py src/manufacturing_vision_studio/e1/geometry_search.py tests/test_e1_v2_geometry.py tests/test_e1_v2_geometry_search.py`  
-Run: `uv run mypy src/manufacturing_vision_studio/e1/geometry.py src/manufacturing_vision_studio/e1/geometry_search.py`  
+Run: `uv run pytest tests/test_e1_v2_geometry.py tests/test_e1_v2_geometry_search.py -q`
+Run: `uv run ruff check src/manufacturing_vision_studio/e1/geometry.py src/manufacturing_vision_studio/e1/geometry_search.py tests/test_e1_v2_geometry.py tests/test_e1_v2_geometry_search.py`
+Run: `uv run mypy src/manufacturing_vision_studio/e1/geometry.py src/manufacturing_vision_studio/e1/geometry_search.py`
 Expected: all pass with pristine output.
 
 - [ ] **Step 10: Commit Task 3**
@@ -568,7 +568,7 @@ def test_runtime_input_has_no_diagnostic_truth_field() -> None:
 
 - [ ] **Step 2: Run diagnostic/policy tests and record RED**
 
-Run: `uv run pytest tests/test_e1_v2_diagnostics.py tests/test_e1_v2_policy.py -q`  
+Run: `uv run pytest tests/test_e1_v2_diagnostics.py tests/test_e1_v2_policy.py -q`
 Expected: FAIL because v2 diagnostic and policy modules do not exist.
 
 - [ ] **Step 3: Implement the diagnostic matrix and record schema**
@@ -661,7 +661,7 @@ tests for all three rules.
 
 - [ ] **Step 9: Execute the full development comparison once and check in the selected record**
 
-Run: `uv run python -m manufacturing_vision_studio.e1.diagnostics_v2 --output-root data/e1-v2-development compare-candidates`  
+Run: `uv run python -m manufacturing_vision_studio.e1.diagnostics_v2 --output-root data/e1-v2-development compare-candidates`
 Expected: both candidate records are complete; exactly one eligible candidate is selected according to preregistered criteria. If neither is eligible, record `HOLD` and stop formal progression without changing the criteria.
 
 Copy the verified canonical selection record to
@@ -673,9 +673,9 @@ record hash, projection hash, and checkout SHA separately.
 
 - [ ] **Step 10: Run focused and v1 regression tests**
 
-Run: `uv run pytest tests/test_e1_v2_diagnostics.py tests/test_e1_v2_policy.py tests/test_e1_v2_metrics.py tests/test_e1_model.py tests/test_e1_policy.py tests/test_e1_metrics.py tests/test_e1_artifacts.py -q`  
-Run: `uv run ruff check src/manufacturing_vision_studio/e1 tests/test_e1_v2_diagnostics.py tests/test_e1_v2_policy.py`  
-Run: `uv run mypy src`  
+Run: `uv run pytest tests/test_e1_v2_diagnostics.py tests/test_e1_v2_policy.py tests/test_e1_v2_metrics.py tests/test_e1_model.py tests/test_e1_policy.py tests/test_e1_metrics.py tests/test_e1_artifacts.py -q`
+Run: `uv run ruff check src/manufacturing_vision_studio/e1 tests/test_e1_v2_diagnostics.py tests/test_e1_v2_policy.py`
+Run: `uv run mypy src`
 Expected: all pass with no new warnings.
 
 - [ ] **Step 11: Commit Task 4**
@@ -737,7 +737,7 @@ def test_pr_make_target_contains_no_release_material(tmp_path: Path) -> None:
 
 - [ ] **Step 2: Run runner tests and record RED**
 
-Run: `uv run pytest tests/test_e1_v2_runner.py tests/test_e1_v2_guard.py tests/test_e1_v2_artifacts.py -q`  
+Run: `uv run pytest tests/test_e1_v2_runner.py tests/test_e1_v2_guard.py tests/test_e1_v2_artifacts.py -q`
 Expected: FAIL because stage runner, guards, and schemas do not exist.
 
 - [ ] **Step 3: Implement development/smoke stage isolation and artifacts**
@@ -821,9 +821,9 @@ mask, inspection, or case-binding identities fail.
 
 - [ ] **Step 9: Run focused and security regressions**
 
-Run: `uv run pytest tests/test_e1_v2_artifacts.py tests/test_e1_v2_guard.py tests/test_e1_v2_runner.py tests/test_e1_trust_boundaries.py tests/test_e1_result_schemas.py tests/test_api_fail_closed.py tests/test_input_safety.py -q`  
-Run: `uv run ruff check src/manufacturing_vision_studio/e1 tests/test_e1_v2_artifacts.py tests/test_e1_v2_guard.py tests/test_e1_v2_runner.py`  
-Run: `uv run mypy src`  
+Run: `uv run pytest tests/test_e1_v2_artifacts.py tests/test_e1_v2_guard.py tests/test_e1_v2_runner.py tests/test_e1_trust_boundaries.py tests/test_e1_result_schemas.py tests/test_api_fail_closed.py tests/test_input_safety.py -q`
+Run: `uv run ruff check src/manufacturing_vision_studio/e1 tests/test_e1_v2_artifacts.py tests/test_e1_v2_guard.py tests/test_e1_v2_runner.py`
+Run: `uv run mypy src`
 Expected: all pass with no new warnings.
 
 - [ ] **Step 10: Commit Task 5**
@@ -876,8 +876,8 @@ def test_v2_cli_release_without_pass_seal_fails_closed(tmp_path: Path) -> None:
 
 - [ ] **Step 2: Run CLI/API/web tests and record RED**
 
-Run: `uv run pytest tests/test_e1_v2_cli.py tests/test_e1_v2_api.py -q`  
-Run: `npm --prefix web run test:e2e -- --grep "E1 v2"`  
+Run: `uv run pytest tests/test_e1_v2_cli.py tests/test_e1_v2_api.py -q`
+Run: `npm --prefix web run test:e2e -- --grep "E1 v2"`
 Expected: FAIL because the CLI/API/UI surface is absent.
 
 - [ ] **Step 3: Implement CLI and Make boundaries**
@@ -962,12 +962,12 @@ seeds, images, or manifest hashes in smoke UI payloads.
 
 - [ ] **Step 8: Validate workflow guards and full web surface**
 
-Run: `rg -n "continue-on-error|calibrat|release-test|release_test" .github/workflows/ci.yml`  
+Run: `rg -n "continue-on-error|calibrat|release-test|release_test" .github/workflows/ci.yml`
 Expected: no allowed-failure setting and no formal v2 stage in normal CI.
 
-Run: `uv run pytest tests/test_e1_v2_cli.py tests/test_e1_v2_api.py tests/test_e1_cli.py tests/test_e1_api.py -q`  
-Run: `npm --prefix web run check`  
-Run: `npm --prefix web run test:e2e`  
+Run: `uv run pytest tests/test_e1_v2_cli.py tests/test_e1_v2_api.py tests/test_e1_cli.py tests/test_e1_api.py -q`
+Run: `npm --prefix web run check`
+Run: `npm --prefix web run test:e2e`
 Expected: all pass with pristine output.
 
 - [ ] **Step 9: Commit Task 6**
@@ -1083,10 +1083,10 @@ Neither wording authorizes a main merge, tag, or release.
 
 - [ ] **Step 7: Run final local verification of the committed evidence projection**
 
-Run: `make validate`  
-Run: `make verify-e1-v1-history`  
-Run: `uv run mvs-e1-v2 --output-root data/e1-v2-evaluation verify`  
-Run: `git diff --check`  
+Run: `make validate`
+Run: `make verify-e1-v1-history`
+Run: `uv run mvs-e1-v2 --output-root data/e1-v2-evaluation verify`
+Run: `git diff --check`
 Expected: all pass; formal artifact bytes still bind to the earlier candidate SHA.
 
 - [ ] **Step 8: Commit Task 7 evidence separately from the candidate**
