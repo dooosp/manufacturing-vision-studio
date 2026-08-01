@@ -395,14 +395,15 @@ def test_development_diagnostic_defects_are_preserved_after_image_only_alignment
             dice_drops.append(
                 _dice(identity_difference, truth) - _dice(corrected_difference, truth)
             )
-            classified += (
-                _classify_with_downstream_model(
-                    downstream,
-                    case.reference_bytes,
-                    result,
+            if result.status is not AlignmentStatus.ABSTAIN:
+                classified += (
+                    _classify_with_downstream_model(
+                        downstream,
+                        case.reference_bytes,
+                        result,
+                    )
+                    == "ANOMALY"
                 )
-                == "ANOMALY"
-            )
         candidate_metrics.append((recall_drops, dice_drops, classified))
     for recall_drops, dice_drops, classified in candidate_metrics:
         assert max(recall_drops) <= 0.05

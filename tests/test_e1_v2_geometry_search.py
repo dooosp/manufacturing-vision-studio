@@ -51,8 +51,10 @@ def test_candidate_b_obeys_search_caps_and_grid() -> None:
         reference, rotation=0.8, scale=1.01, dx=2, dy=-2
     )
     result = align_coarse_to_fine(reference, inspection, config)
-    assert result.trace.coarse_candidates_evaluated > 0
-    assert result.trace.refine_candidates_evaluated > 0
+    # Hand-fixed for this affine fixture: 1,575 unique parameter tuples collapse
+    # to 1,294 distinct rendered coarse silhouettes before scoring.
+    assert result.trace.coarse_candidates_evaluated == 1_294
+    assert result.trace.refine_candidates_evaluated == 81
     assert result.trace.coarse_candidates_evaluated <= 1_575
     assert result.trace.refine_candidates_evaluated <= 81
     assert result.trace.candidate_pixels_evaluated <= 35_278_848
@@ -64,7 +66,7 @@ def test_candidate_b_obeys_search_caps_and_grid() -> None:
     assert result.trace.candidate_pixels_evaluated == (
         result.trace.coarse_candidates_evaluated * 128 * 96
         + result.trace.refine_candidates_evaluated * 512 * 384
-    )
+    ) == 31_825_920
 
 
 def test_candidate_b_divides_full_resolution_translation_by_four_on_coarse_grid() -> None:
