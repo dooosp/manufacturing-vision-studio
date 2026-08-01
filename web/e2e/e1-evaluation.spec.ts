@@ -417,6 +417,16 @@ test("renders the read-only E1 evidence surface with semantic, bounded evidence"
   await expect(fullyVisualGalleryCase).toContainText(SHA.sourcePrediction);
   await expect(fullyVisualGalleryCase).toContainText("0.0004");
   await expect(fullyVisualGalleryCase).toContainText("0.0025");
+  const fullyVisualAssetGrid = fullyVisualGalleryCase.locator(".evaluation-gallery-assets");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await expect.poll(() => fullyVisualAssetGrid.evaluate((grid) =>
+    getComputedStyle(grid).gridTemplateColumns.split(" ").length,
+  )).toBe(5);
+  await page.setViewportSize({ width: 800, height: 900 });
+  await expect.poll(() => fullyVisualAssetGrid.evaluate((grid) =>
+    getComputedStyle(grid).gridTemplateColumns.split(" ").length,
+  )).toBe(1);
+  await page.setViewportSize({ width: 1280, height: 900 });
   const firstGalleryImage = page.locator(".evaluation-gallery img").first();
   await firstGalleryImage.scrollIntoViewIfNeeded();
   await expect(firstGalleryImage).toHaveJSProperty("complete", true);

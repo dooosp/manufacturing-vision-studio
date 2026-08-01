@@ -106,7 +106,41 @@ timestamps are intentionally excluded.
 - Repository hygiene: PASS across 133 tracked or unignored files
 - npm audit: zero vulnerabilities
 - Independent correctness, security, and UI reviews: initial P2 findings were
-  repaired before the evaluation commit; final re-review remains required.
+  repaired before the evaluation commit.
+
+## Post-evaluation packaging verification
+
+The formal mini and full artifacts above remain unchanged. The packaging and
+read-only evidence UI were verified after the formal decision without changing
+the protocol, generator, pipeline, threshold, manifests, or result digests.
+
+- `make verify-e1-results`: PASS for both frozen profiles and all bindings above
+- `make validate`: Ruff PASS; Mypy PASS across 27 source files; Pytest 232
+  passed; TypeScript and Vite production build PASS; Chromium 15 passed
+- `mvs-e1 verify --profile mini --require-pass`: expected exit 1 for `HOLD`
+- `mvs-e1 verify --profile full --require-pass`: expected exit 1 for `HOLD`
+- Repository hygiene: PASS across 140 tracked or unignored files
+- npm audit at `high`: zero vulnerabilities
+- Independent result reconciliation: 316 expected fields checked, zero
+  discrepancies between generated artifacts and public summaries
+- Independent correctness, security, metric, and product-UI re-reviews: no
+  unresolved P0-P2 product defects; the five-pane responsive gallery correction
+  was re-tested at 1280 px and 800 px
+- Final CI review classified the intentionally failing `--require-pass` step as
+  a P1 landability blocker. It is retained and dispositioned as the formal HOLD
+  signal: a failed preregistered release gate must keep this Draft PR unmerged.
+- Actual mini API inspection: seven bounded gallery cases; exact E1 asset
+  namespace; no local absolute paths in the public payload; unpublished trust
+  assets remain null and read-only
+
+Review screenshots are presentation evidence only; the JSON artifacts and
+digests above remain authoritative.
+
+| View | Screenshot SHA-256 |
+| --- | --- |
+| [Mini HOLD overview](../../screenshots/e1-mini-hold-overview.png) | `f42a3816d6d6c3c9ea0e6159d0c3f4cdb268a93eb89e7e57986e7ca648530608` |
+| [Mini five-pane error explorer](../../screenshots/e1-mini-error-explorer.png) | `8a24a841cf55322a2d5fb3eb1fbc66b5bff39bb699e16d30fe2f7db66bbd10a0` |
+| [Full calibration HOLD in Korean](../../screenshots/e1-full-calibration-hold-ko.png) | `99943dede339e85e3d44413902211ae715eb5e35b47ae3af260bdd2b55a32d7f` |
 
 ## Next protocol scope
 

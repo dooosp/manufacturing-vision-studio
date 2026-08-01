@@ -2012,9 +2012,6 @@ button:disabled,
     grid-column: 1 / -1;
   }
 
-  .evaluation-gallery-assets {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
 }
 
 @media (max-width: 1050px) {
@@ -2114,9 +2111,12 @@ button:disabled,
     grid-column: auto;
   }
 
-  .evaluation-metric-grid,
-  .evaluation-gallery-assets {
+  .evaluation-metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .evaluation-gallery-assets {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .evaluation-gallery-evidence {
