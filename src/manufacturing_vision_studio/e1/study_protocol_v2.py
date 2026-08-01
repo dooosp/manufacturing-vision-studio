@@ -190,7 +190,15 @@ def load_study_protocol_v2(
 def load_frozen_diagnostic_matrix(
     path: Path | str = DEFAULT_DIAGNOSTIC_MATRIX_PATH,
 ) -> tuple[FrozenDiagnosticPlan, ...]:
-    document = _load_json_object(Path(path).expanduser().resolve())
+    source_path = Path(path).expanduser().resolve()
+    return _load_frozen_diagnostic_matrix_bytes(_read_bounded_bytes(source_path), source_path)
+
+
+def _load_frozen_diagnostic_matrix_bytes(
+    source_bytes: bytes,
+    source_path: Path,
+) -> tuple[FrozenDiagnosticPlan, ...]:
+    document = _parse_json_object(source_bytes, source_path)
     if document.get("record_type") != "e1_feasibility_diagnostic_matrix_v1":
         raise StudyProtocolError("frozen diagnostic matrix record type is invalid")
     rows = document.get("rows")
@@ -230,10 +238,11 @@ def _validate_protocol_document(document: Mapping[str, Any]) -> str:
     _validate_snapshots(document)
     matrix = _object(document, "diagnostic_matrix")
     matrix_path = _project_path(_string(matrix, "path"))
-    actual = sha256_bytes(matrix_path.read_bytes())
+    matrix_bytes = _read_bounded_bytes(matrix_path)
+    actual = sha256_bytes(matrix_bytes)
     if actual != _string(matrix, "sha256"):
         raise StudyProtocolError("frozen diagnostic matrix raw hash does not match")
-    load_frozen_diagnostic_matrix(matrix_path)
+    _load_frozen_diagnostic_matrix_bytes(matrix_bytes, matrix_path)
     return actual
 
 
@@ -280,7 +289,7 @@ def _validate_snapshots(document: Mapping[str, Any]) -> None:
                 "negative-result provenance must retain its original sibling path"
             )
         local_path = _project_path(_string(snapshot, "checked_in_path"))
-        if sha256_bytes(local_path.read_bytes()) != expected:
+        if sha256_bytes(_read_bounded_bytes(local_path)) != expected:
             raise StudyProtocolError("checked negative-result snapshot bytes changed")
     if seen != set(required):
         raise StudyProtocolError("negative-result snapshot coverage is incomplete")
@@ -350,9 +359,22 @@ def _frozen_plan(value: object, ordinal: int) -> FrozenDiagnosticPlan:
 
 
 def _load_json_object(path: Path) -> dict[str, Any]:
+    return _parse_json_object(_read_bounded_bytes(path), path)
+
+
+def _read_bounded_bytes(path: Path) -> bytes:
     try:
-        if path.stat().st_size > _MAX_JSON_BYTES:
-            raise StudyProtocolError(f"JSON input exceeds {_MAX_JSON_BYTES} byte limit: {path}")
+        with path.open("rb") as source:
+            loaded = source.read(_MAX_JSON_BYTES + 1)
+    except OSError as exc:
+        raise StudyProtocolError(f"input could not be read from {path}: {exc}") from exc
+    if len(loaded) > _MAX_JSON_BYTES:
+        raise StudyProtocolError(f"input exceeds {_MAX_JSON_BYTES} byte limit: {path}")
+    return loaded
+
+
+def _parse_json_object(source_bytes: bytes, path: Path) -> dict[str, Any]:
+    try:
 
         def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             loaded: dict[str, Any] = {}
@@ -363,11 +385,11 @@ def _load_json_object(path: Path) -> dict[str, Any]:
             return loaded
 
         loaded = json.loads(
-            path.read_bytes(),
+            source_bytes,
             object_pairs_hook=reject_duplicates,
             parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)),
         )
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise StudyProtocolError(f"JSON could not be loaded from {path}: {exc}") from exc
     if not isinstance(loaded, dict):
         raise StudyProtocolError(f"JSON root must be an object: {path}")
