@@ -3,7 +3,7 @@
   "$id": "https://manufacturing-vision-studio.local/schemas/e1-evaluation-protocol.v2.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["$schema", "schema_version", "protocol_id", "protocol_version", "dataset_version", "evaluation_pipeline", "generator", "scopes", "feature_ownership", "threshold_selection", "acceptance_gates"],
+  "required": ["$schema", "schema_version", "protocol_id", "protocol_version", "dataset_version", "evaluation_pipeline", "generator", "scopes", "feature_ownership", "geometry", "threshold_selection", "acceptance_gates"],
   "properties": {
     "$schema": {"const": "../../schemas/e1-evaluation-protocol.v2.json"},
     "schema_version": {"const": "2.0.0"},
@@ -14,6 +14,7 @@
     "generator": {"$ref": "#/$defs/generator"},
     "scopes": {"$ref": "#/$defs/scopes"},
     "feature_ownership": {"$ref": "#/$defs/feature_ownership"},
+    "geometry": {"$ref": "#/$defs/geometry"},
     "threshold_selection": {"$ref": "#/$defs/thresholds"},
     "acceptance_gates": {"type": "array", "minItems": 10, "items": {"$ref": "#/$defs/gate"}}
   },
@@ -29,6 +30,58 @@
     "ownership_views": {"type": "object", "additionalProperties": false, "required": ["front", "oblique_left", "oblique_right"], "properties": {"front": {"$ref": "#/$defs/ownership_boxes"}, "oblique_left": {"$ref": "#/$defs/ownership_boxes"}, "oblique_right": {"$ref": "#/$defs/ownership_boxes"}}},
     "ownership_boxes": {"type": "object", "additionalProperties": false, "required": ["bottom_edge", "hole_left", "hole_right", "top_edge", "top_face"], "properties": {"bottom_edge": {"$ref": "#/$defs/normalized_box"}, "hole_left": {"$ref": "#/$defs/normalized_box"}, "hole_right": {"$ref": "#/$defs/normalized_box"}, "top_edge": {"$ref": "#/$defs/normalized_box"}, "top_face": {"$ref": "#/$defs/normalized_box"}}},
     "normalized_box": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1}, "minItems": 4, "maxItems": 4},
+    "geometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "image_size", "foreground_threshold", "connectivity", "minimum_component_pixels", "trim_tail_fraction", "pca_eigengap_minimum", "silhouette_weight", "edge_weight", "rotation_bounds_degrees", "correction_scale_bounds", "translation_bound_pixels", "minimum_improvement_ratio", "minimum_confidence_gap", "candidate_a", "candidate_b"],
+      "properties": {
+        "algorithm": {"const": "bounded_image_geometry_v2"},
+        "image_size": {"const": [512, 384]},
+        "foreground_threshold": {"const": 18},
+        "connectivity": {"const": 8},
+        "minimum_component_pixels": {"const": 512},
+        "trim_tail_fraction": {"const": 0.01},
+        "pca_eigengap_minimum": {"const": 0.05},
+        "silhouette_weight": {"const": 0.70},
+        "edge_weight": {"const": 0.30},
+        "rotation_bounds_degrees": {"const": [-1.5, 1.5]},
+        "correction_scale_bounds": {"const": [0.9803921568627451, 1.0204081632653061]},
+        "translation_bound_pixels": {"const": 12},
+        "minimum_improvement_ratio": {"const": 0.05},
+        "minimum_confidence_gap": {"const": 0.01},
+        "candidate_a": {"$ref": "#/$defs/geometry_candidate_a"},
+        "candidate_b": {"$ref": "#/$defs/geometry_candidate_b"}
+      }
+    },
+    "geometry_candidate_a": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rotation_offsets_degrees", "scale_offsets", "translation_offsets_pixels", "candidate_cap", "candidate_pixel_cap"],
+      "properties": {
+        "rotation_offsets_degrees": {"const": [-0.5, 0.0, 0.5]},
+        "scale_offsets": {"const": [-0.004, 0.0, 0.004]},
+        "translation_offsets_pixels": {"const": [-2, -1, 0, 1, 2]},
+        "candidate_cap": {"const": 225},
+        "candidate_pixel_cap": {"const": 44236800}
+      }
+    },
+    "geometry_candidate_b": {
+      "type": "object", "additionalProperties": false,
+      "required": ["downsample_block_size", "downsample_majority_pixels", "search_size", "coarse_rotation_degrees", "coarse_scales", "coarse_translation_offsets_pixels", "coarse_candidate_cap", "refine_rotation_offsets_degrees", "refine_scale_offsets", "refine_translation_offsets_pixels", "refine_candidate_cap", "candidate_pixel_cap"],
+      "properties": {
+        "downsample_block_size": {"const": 4},
+        "downsample_majority_pixels": {"const": 8},
+        "search_size": {"const": [128, 96]},
+        "coarse_rotation_degrees": {"const": [-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5]},
+        "coarse_scales": {"const": [0.9803921568627451, 0.985, 0.990, 0.995, 1.000, 1.005, 1.010, 1.015, 1.0204081632653061]},
+        "coarse_translation_offsets_pixels": {"const": [-4, -2, 0, 2, 4]},
+        "coarse_candidate_cap": {"const": 1575},
+        "refine_rotation_offsets_degrees": {"const": [-0.25, 0.0, 0.25]},
+        "refine_scale_offsets": {"const": [-0.002, 0.0, 0.002]},
+        "refine_translation_offsets_pixels": {"const": [-1, 0, 1]},
+        "refine_candidate_cap": {"const": 81},
+        "candidate_pixel_cap": {"const": 35278848}
+      }
+    },
     "thresholds": {"type": "object", "additionalProperties": false, "required": ["locked_image_threshold"], "properties": {"locked_image_threshold": {"const": 0.0025}}},
     "gate": {"type": "object", "additionalProperties": false, "required": ["gate_id", "operator", "threshold"], "properties": {"gate_id": {"type": "string"}, "operator": {"type": "string"}, "threshold": {}}}
   }

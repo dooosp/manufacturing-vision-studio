@@ -39,6 +39,43 @@
       }
     }
   },
+  "geometry": {
+    "algorithm": "bounded_image_geometry_v2",
+    "image_size": [512, 384],
+    "foreground_threshold": 18,
+    "connectivity": 8,
+    "minimum_component_pixels": 512,
+    "trim_tail_fraction": 0.01,
+    "pca_eigengap_minimum": 0.05,
+    "silhouette_weight": 0.70,
+    "edge_weight": 0.30,
+    "rotation_bounds_degrees": [-1.5, 1.5],
+    "correction_scale_bounds": [0.9803921568627451, 1.0204081632653061],
+    "translation_bound_pixels": 12,
+    "minimum_improvement_ratio": 0.05,
+    "minimum_confidence_gap": 0.01,
+    "candidate_a": {
+      "rotation_offsets_degrees": [-0.5, 0.0, 0.5],
+      "scale_offsets": [-0.004, 0.0, 0.004],
+      "translation_offsets_pixels": [-2, -1, 0, 1, 2],
+      "candidate_cap": 225,
+      "candidate_pixel_cap": 44236800
+    },
+    "candidate_b": {
+      "downsample_block_size": 4,
+      "downsample_majority_pixels": 8,
+      "search_size": [128, 96],
+      "coarse_rotation_degrees": [-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5],
+      "coarse_scales": [0.9803921568627451, 0.985, 0.990, 0.995, 1.000, 1.005, 1.010, 1.015, 1.0204081632653061],
+      "coarse_translation_offsets_pixels": [-4, -2, 0, 2, 4],
+      "coarse_candidate_cap": 1575,
+      "refine_rotation_offsets_degrees": [-0.25, 0.0, 0.25],
+      "refine_scale_offsets": [-0.002, 0.0, 0.002],
+      "refine_translation_offsets_pixels": [-1, 0, 1],
+      "refine_candidate_cap": 81,
+      "candidate_pixel_cap": 35278848
+    }
+  },
   "threshold_selection": {"locked_image_threshold": 0.0025},
   "acceptance_gates": [
     {"gate_id": "medium_high_defect_recall", "operator": "gte", "threshold": 0.9},
