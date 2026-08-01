@@ -1,0 +1,38 @@
+{
+  "$schema": "../../schemas/e1-evaluation-protocol.v2.json",
+  "schema_version": "2.0.0",
+  "protocol_id": "mvs-e1",
+  "protocol_version": "2.0.0",
+  "dataset_version": "2.0.0",
+  "evaluation_pipeline": {"pipeline_version": "1.2.0", "model_version": "1.2.0"},
+  "generator": {
+    "generator_version": "2.0.0",
+    "recipe_version": "2.0.0",
+    "case_id_format": "e1-v2-{scope}-{group}-{ordinal:03d}",
+    "seed_blocks": {
+      "development": {"clean": {"seed_family": "e1-v2-development-clean-v2", "start": 400000, "count": 24}, "nuisance": {"seed_family": "e1-v2-development-nuisance-v2", "start": 410000, "count": 30}, "defect": {"seed_family": "e1-v2-development-defect-v2", "start": 420000, "count": 60}, "trust_boundary": {"seed_family": "e1-v2-development-trust-v2", "start": 430000, "count": 6}},
+      "smoke": {"clean": {"seed_family": "e1-v2-smoke-clean-v2", "start": 440000, "count": 8}, "nuisance": {"seed_family": "e1-v2-smoke-nuisance-v2", "start": 450000, "count": 12}, "defect": {"seed_family": "e1-v2-smoke-defect-v2", "start": 460000, "count": 24}, "trust_boundary": {"seed_family": "e1-v2-smoke-trust-v2", "start": 470000, "count": 4}},
+      "calibration": {"clean": {"seed_family": "e1-v2-calibration-clean-v2", "start": 500000, "count": 24}, "nuisance": {"seed_family": "e1-v2-calibration-nuisance-v2", "start": 510000, "count": 30}, "defect": {"seed_family": "e1-v2-calibration-defect-v2", "start": 520000, "count": 60}, "trust_boundary": {"seed_family": "e1-v2-calibration-trust-v2", "start": 530000, "count": 6}},
+      "release_test": {"clean": {"seed_family": "e1-v2-release-test-clean-v2", "start": 700000, "count": 48}, "nuisance": {"seed_family": "e1-v2-release-test-nuisance-v2", "start": 710000, "count": 60}, "defect": {"seed_family": "e1-v2-release-test-defect-v2", "start": 720000, "count": 120}, "trust_boundary": {"seed_family": "e1-v2-release-test-trust-v2", "start": 730000, "count": 12}}
+    }
+  },
+  "scopes": {
+    "development": {"clean": 24, "nuisance": 30, "defect": 60, "trust_boundary": 6, "case_count": 120},
+    "smoke": {"clean": 8, "nuisance": 12, "defect": 24, "trust_boundary": 4, "case_count": 48},
+    "calibration": {"clean": 24, "nuisance": 30, "defect": 60, "trust_boundary": 6, "case_count": 120},
+    "release_test": {"clean": 48, "nuisance": 60, "defect": 120, "trust_boundary": 12, "case_count": 240}
+  },
+  "threshold_selection": {"locked_image_threshold": 0.0025},
+  "acceptance_gates": [
+    {"gate_id": "medium_high_defect_recall", "operator": "gte", "threshold": 0.9},
+    {"gate_id": "nuisance_only_false_positive_rate", "operator": "lte", "threshold": 0.05},
+    {"gate_id": "positive_case_median_dice", "operator": "gte", "threshold": 0.7},
+    {"gate_id": "affected_feature_mapping_accuracy", "operator": "gte", "threshold": 0.95},
+    {"gate_id": "revision_mismatch_publication_count", "operator": "eq", "threshold": 0},
+    {"gate_id": "corrupted_evidence_publication_count", "operator": "eq", "threshold": 0},
+    {"gate_id": "bundle_verify_reimport_rate", "operator": "gte", "threshold": 1.0},
+    {"gate_id": "dataset_split_hash_overlap", "operator": "eq", "threshold": 0},
+    {"gate_id": "same_seed_manifest_equivalence", "operator": "is_true", "threshold": true},
+    {"gate_id": "v0_1_regression", "operator": "is_true", "threshold": true}
+  ]
+}

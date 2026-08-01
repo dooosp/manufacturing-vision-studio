@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0.0",
+  "artifacts": [
+    {"path": "configs/evaluation/e1-v1.json", "sha256": "3f89a3a872318909245caacb43c856efed70f594f3714b42d021969b21f311a2", "expected_fields": {"protocol_id": "mvs-e1", "protocol_version": "1.3.0", "status": "frozen_before_test"}},
+    {"path": "schemas/e1-case-manifest.v1.json", "sha256": "40b2fcb57fd4a851ea26450a86dadbb56aaf916dad4abff663ff52f2b2661a9e", "expected_fields": {"$schema": "https://json-schema.org/draft/2020-12/schema"}},
+    {"path": "schemas/e1-evaluation-protocol.v1.json", "sha256": "8464de044671a901ebe1f7793dc3f71eb6c2f9acbf3b37d6b7b750235f4045f5", "expected_fields": {"$schema": "https://json-schema.org/draft/2020-12/schema"}},
+    {"path": "schemas/e1-evaluation-result.v1.json", "sha256": "fc5c65d07e47838750c99a07f71de050460040e48bb4116442665b86dfe14194", "expected_fields": {"$schema": "https://json-schema.org/draft/2020-12/schema"}},
+    {"path": "schemas/e1-threshold-lock.v1.json", "sha256": "561b0ed02c009849dd57d7122e60788c110dcabc0bfb888c534d5e54527fd475", "expected_fields": {"$schema": "https://json-schema.org/draft/2020-12/schema"}},
+    {"path": "docs/evaluation/results/e1-mini-v0.2.0-hold.json", "sha256": "f026d1fccb34711b82bcda30eab399558c418f9e3ca33f1c754ed8117d624764", "expected_fields": {"profile": "mini", "verdict": "HOLD", "evaluation_status": "COMPLETED"}},
+    {"path": "docs/evaluation/results/e1-full-v0.2.0-hold.json", "sha256": "557ea17abe655f82e5974ab7121de4ed905755ee4f1ff02976a0ed62a01f964c", "expected_fields": {"profile": "full", "verdict": "HOLD", "evaluation_status": "CALIBRATION_HOLD"}},
+    {"path": "docs/releases/v0.2.0/E1_HOLD.md", "sha256": "91d3c3dbb3241fd7c5b3d697f08ee9b239ff347e8cebb1e3aa6b6a842d4dc62d"},
+    {"path": "docs/releases/v0.1.0/evidence-bundle.zip", "sha256": "1d492d942aa061e16399f715255760b0a37a8b91eba85cb7b729626ff9e435e7"}
+  ],
+  "preflight": {
+    "parent_branch": "codex/e1-authoritative-mask-nuisance-evaluation-v0.2.0",
+    "parent_head": "d7254cf8e09561a085def5cb9c914c31d79b9725",
+    "v0_1_tag": "v0.1.0",
+    "v0_1_tag_object": "67bd8af8d6bfdbcb5ff2654fd37b797dc7c75f3d",
+    "v0_1_commit": "cf7b9ac37d0533f656068199d3275410cf8cc2f8",
+    "e1_evaluation_commit": "2f87b885b29c12468effea927279d27424eaa340"
+  }
+}

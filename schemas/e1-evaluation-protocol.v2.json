@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://manufacturing-vision-studio.local/schemas/e1-evaluation-protocol.v2.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schema_version", "protocol_id", "protocol_version", "dataset_version", "evaluation_pipeline", "generator", "scopes", "threshold_selection", "acceptance_gates"],
+  "properties": {
+    "$schema": {"const": "../../schemas/e1-evaluation-protocol.v2.json"},
+    "schema_version": {"const": "2.0.0"},
+    "protocol_id": {"const": "mvs-e1"},
+    "protocol_version": {"const": "2.0.0"},
+    "dataset_version": {"const": "2.0.0"},
+    "evaluation_pipeline": {"$ref": "#/$defs/pipeline"},
+    "generator": {"$ref": "#/$defs/generator"},
+    "scopes": {"$ref": "#/$defs/scopes"},
+    "threshold_selection": {"$ref": "#/$defs/thresholds"},
+    "acceptance_gates": {"type": "array", "minItems": 10, "items": {"$ref": "#/$defs/gate"}}
+  },
+  "$defs": {
+    "pipeline": {"type": "object", "additionalProperties": false, "required": ["pipeline_version", "model_version"], "properties": {"pipeline_version": {"const": "1.2.0"}, "model_version": {"const": "1.2.0"}}},
+    "generator": {"type": "object", "additionalProperties": false, "required": ["generator_version", "recipe_version", "case_id_format", "seed_blocks"], "properties": {"generator_version": {"const": "2.0.0"}, "recipe_version": {"const": "2.0.0"}, "case_id_format": {"const": "e1-v2-{scope}-{group}-{ordinal:03d}"}, "seed_blocks": {"$ref": "#/$defs/seed_blocks"}}},
+    "seed_blocks": {"type": "object", "additionalProperties": false, "required": ["development", "smoke", "calibration", "release_test"], "properties": {"development": {"$ref": "#/$defs/scope_blocks"}, "smoke": {"$ref": "#/$defs/scope_blocks"}, "calibration": {"$ref": "#/$defs/scope_blocks"}, "release_test": {"$ref": "#/$defs/scope_blocks"}}},
+    "scope_blocks": {"type": "object", "additionalProperties": false, "required": ["clean", "nuisance", "defect", "trust_boundary"], "properties": {"clean": {"$ref": "#/$defs/block"}, "nuisance": {"$ref": "#/$defs/block"}, "defect": {"$ref": "#/$defs/block"}, "trust_boundary": {"$ref": "#/$defs/block"}}},
+    "block": {"type": "object", "additionalProperties": false, "required": ["seed_family", "start", "count"], "properties": {"seed_family": {"type": "string", "pattern": "-v2$"}, "start": {"type": "integer", "minimum": 0, "maximum": 4294967295}, "count": {"type": "integer", "minimum": 1}}},
+    "scopes": {"type": "object", "additionalProperties": false, "required": ["development", "smoke", "calibration", "release_test"], "properties": {"development": {"$ref": "#/$defs/scope_counts"}, "smoke": {"$ref": "#/$defs/scope_counts"}, "calibration": {"$ref": "#/$defs/scope_counts"}, "release_test": {"$ref": "#/$defs/scope_counts"}}},
+    "scope_counts": {"type": "object", "additionalProperties": false, "required": ["clean", "nuisance", "defect", "trust_boundary", "case_count"], "properties": {"clean": {"type": "integer"}, "nuisance": {"type": "integer"}, "defect": {"type": "integer"}, "trust_boundary": {"type": "integer"}, "case_count": {"type": "integer"}}},
+    "thresholds": {"type": "object", "additionalProperties": false, "required": ["locked_image_threshold"], "properties": {"locked_image_threshold": {"const": 0.0025}}},
+    "gate": {"type": "object", "additionalProperties": false, "required": ["gate_id", "operator", "threshold"], "properties": {"gate_id": {"type": "string"}, "operator": {"type": "string"}, "threshold": {}}}
+  }
+}

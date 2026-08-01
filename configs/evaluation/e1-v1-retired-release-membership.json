@@ -1,0 +1,1451 @@
+{
+  "schema_version": "1.0.0",
+  "v1_protocol_id": "mvs-e1",
+  "v1_protocol_version": "1.3.0",
+  "v1_configuration_sha256": "140887fb9e9980c8f7854d2d9f8b0a927aee4994fb74ee2535aa109f19fa7d99",
+  "mini_manifest_sha256": "00e6ac243217a90f04776855354c2d30de387245b9306c46c22ef992fa0159e3",
+  "full_manifest_sha256": "1a8f6a32b7e98fe51c72f711f172effcbf04eeda00d0d4fdc8fe5f3ba36dbbc2",
+  "members": [
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-000",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-000",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200000,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-001",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-001",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200001,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-002",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-002",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200002,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-003",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-003",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200003,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-004",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-004",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200004,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-005",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-005",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200005,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-006",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-006",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200006,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-007",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-007",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200007,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-008",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-008",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200008,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-009",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-009",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200009,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-010",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-010",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200010,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-011",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-011",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200011,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-012",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-012",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200012,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-013",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-013",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200013,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-014",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-014",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200014,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-015",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-015",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200015,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-016",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-016",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200016,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-017",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-017",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200017,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-018",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-018",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200018,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-019",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-019",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200019,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-020",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-020",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200020,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-021",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-021",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200021,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-022",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-022",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200022,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-clean-023",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-clean-023",
+      "seed_family": "e1-cal-clean-v1",
+      "seed": 200023,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-000",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-000",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210000,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-001",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-001",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210001,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-002",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-002",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210002,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-003",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-003",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210003,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-004",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-004",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210004,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-005",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-005",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210005,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-006",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-006",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210006,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-007",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-007",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210007,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-008",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-008",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210008,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-009",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-009",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210009,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-010",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-010",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210010,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-011",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-011",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210011,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-012",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-012",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210012,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-013",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-013",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210013,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-014",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-014",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210014,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-015",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-015",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210015,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-016",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-016",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210016,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-017",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-017",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210017,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-018",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-018",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210018,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-019",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-019",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210019,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-020",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-020",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210020,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-021",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-021",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210021,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-022",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-022",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210022,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-023",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-023",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210023,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-024",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-024",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210024,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-025",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-025",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210025,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-026",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-026",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210026,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-027",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-027",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210027,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-028",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-028",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210028,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-nuisance-029",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-nuisance-029",
+      "seed_family": "e1-cal-nuisance-v1",
+      "seed": 210029,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-000",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-000",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220000,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-000-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-001",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-001",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220001,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-001-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-002",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-002",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220002,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-002-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-003",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-003",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220003,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-003-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-004",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-004",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220004,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-004-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-005",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-005",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220005,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-005-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-006",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-006",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220006,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-006-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-007",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-007",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220007,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-007-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-008",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-008",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220008,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-008-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-009",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-009",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220009,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-009-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-010",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-010",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220010,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-010-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-011",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-011",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220011,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-011-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-012",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-012",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220012,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-012-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-013",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-013",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220013,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-013-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-014",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-014",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220014,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-014-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-015",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-015",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220015,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-015-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-016",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-016",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220016,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-016-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-017",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-017",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220017,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-017-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-018",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-018",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220018,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-018-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-019",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-019",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220019,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-019-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-020",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-020",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220020,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-020-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-021",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-021",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220021,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-021-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-022",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-022",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220022,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-022-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-023",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-023",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220023,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-023-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-024",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-024",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220024,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-024-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-025",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-025",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220025,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-025-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-026",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-026",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220026,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-026-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-027",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-027",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220027,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-027-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-028",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-028",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220028,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-028-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-029",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-029",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220029,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-029-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-030",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-030",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220030,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-030-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-031",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-031",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220031,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-031-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-032",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-032",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220032,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-032-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-033",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-033",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220033,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-033-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-034",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-034",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220034,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-034-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-035",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-035",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220035,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-035-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-036",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-036",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220036,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-036-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-037",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-037",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220037,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-037-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-038",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-038",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220038,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-038-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-039",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-039",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220039,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-039-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-040",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-040",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220040,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-040-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-041",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-041",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220041,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-041-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-042",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-042",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220042,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-042-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-043",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-043",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220043,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-043-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-044",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-044",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220044,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-044-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-045",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-045",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220045,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-045-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-046",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-046",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220046,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-046-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-047",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-047",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220047,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-047-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-048",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-048",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220048,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-048-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-049",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-049",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220049,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-049-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-050",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-050",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220050,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-050-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-051",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-051",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220051,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-051-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-052",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-052",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220052,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-052-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-053",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-053",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220053,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-053-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-054",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-054",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220054,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-054-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-055",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-055",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220055,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-055-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-056",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-056",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220056,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-056-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-057",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-057",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220057,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-057-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-058",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-058",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220058,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-058-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-defect-059",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-defect-059",
+      "seed_family": "e1-cal-defect-v1",
+      "seed": 220059,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-calibration-defect-059-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-trust_boundary-000",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-trust_boundary-000",
+      "seed_family": "e1-cal-trust-v1",
+      "seed": 230000,
+      "expected_outcome": "ABSTAIN",
+      "defect_id": null,
+      "group": "trust_boundary"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-trust_boundary-001",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-trust_boundary-001",
+      "seed_family": "e1-cal-trust-v1",
+      "seed": 230001,
+      "expected_outcome": "ABSTAIN",
+      "defect_id": null,
+      "group": "trust_boundary"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-trust_boundary-002",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-trust_boundary-002",
+      "seed_family": "e1-cal-trust-v1",
+      "seed": 230002,
+      "expected_outcome": "ABSTAIN",
+      "defect_id": null,
+      "group": "trust_boundary"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-trust_boundary-003",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-trust_boundary-003",
+      "seed_family": "e1-cal-trust-v1",
+      "seed": 230003,
+      "expected_outcome": "ABSTAIN",
+      "defect_id": null,
+      "group": "trust_boundary"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-trust_boundary-004",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-trust_boundary-004",
+      "seed_family": "e1-cal-trust-v1",
+      "seed": 230004,
+      "expected_outcome": "ABSTAIN",
+      "defect_id": null,
+      "group": "trust_boundary"
+    },
+    {
+      "kind": "calibration",
+      "case_id": "e1-calibration-trust_boundary-005",
+      "recipe_id": "mvs-e1-recipe-v1/e1-calibration-trust_boundary-005",
+      "seed_family": "e1-cal-trust-v1",
+      "seed": 230005,
+      "expected_outcome": "ABSTAIN",
+      "defect_id": null,
+      "group": "trust_boundary"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-clean-000",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-clean-000",
+      "seed_family": "e1-test-clean-v1",
+      "seed": 300000,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-clean-001",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-clean-001",
+      "seed_family": "e1-test-clean-v1",
+      "seed": 300001,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-clean-002",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-clean-002",
+      "seed_family": "e1-test-clean-v1",
+      "seed": 300002,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-clean-003",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-clean-003",
+      "seed_family": "e1-test-clean-v1",
+      "seed": 300003,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "clean"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-nuisance-000",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-nuisance-000",
+      "seed_family": "e1-test-nuisance-v1",
+      "seed": 310000,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-nuisance-001",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-nuisance-001",
+      "seed_family": "e1-test-nuisance-v1",
+      "seed": 310001,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-nuisance-002",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-nuisance-002",
+      "seed_family": "e1-test-nuisance-v1",
+      "seed": 310002,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-nuisance-003",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-nuisance-003",
+      "seed_family": "e1-test-nuisance-v1",
+      "seed": 310003,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-nuisance-004",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-nuisance-004",
+      "seed_family": "e1-test-nuisance-v1",
+      "seed": 310004,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-nuisance-005",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-nuisance-005",
+      "seed_family": "e1-test-nuisance-v1",
+      "seed": 310005,
+      "expected_outcome": "NORMAL",
+      "defect_id": null,
+      "group": "nuisance"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-defect-000",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-defect-000",
+      "seed_family": "e1-test-defect-v1",
+      "seed": 320000,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-test-defect-000-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-defect-001",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-defect-001",
+      "seed_family": "e1-test-defect-v1",
+      "seed": 320001,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-test-defect-001-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-defect-002",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-defect-002",
+      "seed_family": "e1-test-defect-v1",
+      "seed": 320002,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-test-defect-002-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-defect-003",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-defect-003",
+      "seed_family": "e1-test-defect-v1",
+      "seed": 320003,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-test-defect-003-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-defect-004",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-defect-004",
+      "seed_family": "e1-test-defect-v1",
+      "seed": 320004,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-test-defect-004-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-defect-005",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-defect-005",
+      "seed_family": "e1-test-defect-v1",
+      "seed": 320005,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-test-defect-005-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-defect-006",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-defect-006",
+      "seed_family": "e1-test-defect-v1",
+      "seed": 320006,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-test-defect-006-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-defect-007",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-defect-007",
+      "seed_family": "e1-test-defect-v1",
+      "seed": 320007,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-test-defect-007-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-defect-008",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-defect-008",
+      "seed_family": "e1-test-defect-v1",
+      "seed": 320008,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-test-defect-008-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-defect-009",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-defect-009",
+      "seed_family": "e1-test-defect-v1",
+      "seed": 320009,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-test-defect-009-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-defect-010",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-defect-010",
+      "seed_family": "e1-test-defect-v1",
+      "seed": 320010,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-test-defect-010-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-defect-011",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-defect-011",
+      "seed_family": "e1-test-defect-v1",
+      "seed": 320011,
+      "expected_outcome": "ANOMALY",
+      "defect_id": "e1-test-defect-011-truth-001",
+      "group": "defect"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-trust_boundary-006",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-trust_boundary-006",
+      "seed_family": "e1-test-trust-v1",
+      "seed": 330006,
+      "expected_outcome": "ABSTAIN",
+      "defect_id": null,
+      "group": "trust_boundary"
+    },
+    {
+      "kind": "mini_test",
+      "case_id": "e1-test-trust_boundary-011",
+      "recipe_id": "mvs-e1-recipe-v1/e1-test-trust_boundary-011",
+      "seed_family": "e1-test-trust-v1",
+      "seed": 330011,
+      "expected_outcome": "ABSTAIN",
+      "defect_id": null,
+      "group": "trust_boundary"
+    }
+  ],
+  "membership_sha256": "30011adfb3aaf6690972d111e78d1cc477a518de156aa2ad91941f66a30c3928"
+}
