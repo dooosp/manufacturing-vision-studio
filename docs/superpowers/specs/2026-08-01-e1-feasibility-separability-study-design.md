@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-01
 
-**Status:** Pending user review of written specification
+**Status:** Approved written specification
 
 **Study base:** `9fd6d0c600206083fde4fafc874e0226b5df60b3`
 
@@ -187,10 +187,18 @@ and these retained modules:
 - `canonical`, `canonical_png`, `images`, and the core `model`;
 - `e1.domain`, `e1.model`, `e1.feature_mapping`, `e1.protocol_v2`, and
   `e1.metrics_v2`;
-- `e1.domain_v2`, `e1.generator_v2`, and `e1.oracle` only inside the offline
-  truth layer.
+- `e1.domain_v2`, `e1.generator`, `e1.generator_v2`, and `e1.oracle` only inside
+  the offline truth layer.
 
-Production study modules must not import `e1.policy_v2`, `e1.geometry`,
+This is the direct-import allowlist for study-owned production modules. The
+complete implementation projection additionally records every retained
+transitive repository dependency. For example, the unchanged feature mapper
+reaches the canonical decoder through `e1.oracle`, and `e1.generator_v2`
+reaches legacy generator/protocol modules. These retained transitive imports are
+permitted only when the projected bytes and expected path are exact; they do not
+authorize study-owned direct access to truth or protected scopes.
+
+Production study modules must not directly import `e1.policy_v2`, `e1.geometry`,
 `e1.geometry_search`, or `e1.diagnostics_v2`. Test-only parity/matrix checks may
 import them but cannot be dependencies of an experiment command. The frozen
 108-row config carries the complete plan projection so Phase 1 does not import
@@ -257,6 +265,16 @@ Every row runs all three fixed resampling modes. The forward order remains
 scale, rotation, translation, then exposure. The study reverses geometry only;
 it does not erase or compensate exposure.
 
+The comparison called `identity` retains the existing diagnostic definition; it
+is not a second inference pass with identity correction. Decode the canonical
+reference and unnormalized inspection RGB bytes, compute the per-channel
+absolute difference in signed integer arithmetic, and mark a pixel when the
+maximum channel difference is `>= 32`. Identity recall and Dice are calculated
+from that mask. Study recall and Dice are calculated from the verified final
+postprocessed prediction mask. Recall-drop and Dice-drop denominators include
+defect rows only, while medium/high classification recall includes every
+medium/high diagnostic defect row.
+
 Each mode records:
 
 - exact forward and correction parameters;
@@ -265,7 +283,16 @@ Each mode records:
 - core registration and postprocessing trace;
 - anomaly classification and feature mapping;
 - truth recall, Dice, IoU, and classification metrics computed offline;
-- residual pixels overall and in boundary/edge bands.
+- residual pixels overall and in the fixed reference-boundary band.
+
+The reference-boundary band is frozen as follows: compute the median RGB of the
+one-pixel image border with each corner included once; mark foreground where the
+maximum absolute channel distance from that median is greater than `18`; retain
+the largest 8-connected component using `(-area, min_y, min_x, max_y, max_x)`
+ordering; mark its pixels that touch background in any 8-neighbor direction;
+and Chebyshev-dilate that boundary by exactly 3 pixels. The boundary residual is
+the count of final predicted-mask positives inside this band. The artifact also
+records total positives and `outside_boundary_residual = total - boundary`.
 
 The three modes are ablations, not candidates. They are not ranked or selected.
 
@@ -290,6 +317,14 @@ candidate.
 Pre-execution repeated-fixture tests establish deterministic implementation
 behavior. The single full 108-row execution does not make a cross-run
 determinism claim.
+
+Immediately before its first diagnostic row, Phase 1 atomically publishes an
+immutable execution claim binding the execution commit, protocol hash, fixed
+artifact root, phase name, and expected row/mode counts. The existence of that
+claim blocks another Phase 1 attempt even if the process later fails. An
+incomplete claimed phase is `STUDY_INVALID`; a retry requires a separately
+approved protocol version and artifact root rather than an output-dependent
+rerun.
 
 ## 9. Feature-ownership oracle
 
@@ -336,6 +371,13 @@ planning or rendering with hard failures and assert zero calls and zero emitted
 members. This constrains the study command; it does not claim those capabilities
 are absent from the repository's general generator.
 
+The scope audit records the ordered unique v2 scope projection as exactly
+`['development']` and records one external request made by
+`DevelopmentCorpusProvider`. Calls made internally by the unchanged generator
+to revalidate a development plan's membership remain development-only and are
+recorded separately; they do not change the external request count and are not
+misreported as protected-scope requests.
+
 The existing v2 generator internally obtains retired v1 templates by planning a
 legacy FULL profile and filtering it. This study treats that as a documented
 legacy template dependency, not as v2 calibration/release authorization. It may
@@ -354,15 +396,24 @@ byte-for-byte using the frozen generator primitive. Any hash mismatch records
 `APPLIED_TRANSFORM_PROOF_FAILED` and invalidates the run.
 
 Geometric nuisance rows receive their known correction. Non-geometric nuisance,
-clean, defect, and trust rows receive an explicit identity correction. The
-sidecar is never added to `E1V2InferenceInput` or any runtime API.
+clean, defect, and trust rows receive an explicit identity correction. For the
+six trust-boundary rows this is a binding-only sidecar record; it is never sent
+to image inference because those rows represent dedicated validation stimuli,
+not model-performance images. The sidecar is never added to
+`E1V2InferenceInput` or any runtime API.
 
 ### 10.3 Development evaluation
 
-Every Phase 1-eligible resampling mode runs the exact development set through
-the unchanged threshold and pipeline. The study evaluates only the frozen
-performance/separability gates whose denominators are present in the 120-row
-development artifact, without changing thresholds or denominator semantics:
+Every Phase 1-eligible resampling mode binds the exact 120-member development
+set. The 114 clean, nuisance, and defect image members run through the unchanged
+threshold and pipeline. The six trust-boundary members are retained as
+binding/integrity entries with explicit identity-correction records; they are
+not inferred, do not enter the four performance denominators, and make no new
+trust-boundary outcome claim. This preserves the existing dedicated-executor
+boundary instead of treating identity images as adversarial trust stimuli. The
+study evaluates only the frozen performance/separability gates whose
+denominators are present in that 120-row artifact, without changing thresholds
+or denominator semantics:
 
 - medium/high defect recall `>= 0.90`;
 - nuisance-only false-positive rate `<= 0.05`;
@@ -402,6 +453,12 @@ second full-run determinism check, or marks a resampling mode as selectable.
 No best mode is selected. The result records the set of fixed modes that pass
 all gates.
 
+Phase 2 uses the same immutable execution-claim rule as Phase 1, binding 120
+members, 114 inference rows per eligible mode, six binding-only trust rows, and
+the exact eligible-mode set before the first performance inference. An
+incomplete claimed Phase 2 is `STUDY_INVALID` and cannot be retried under the
+same protocol/artifact root.
+
 ## 11. Terminal decision table
 
 | Condition | Terminal decision | Allowed next action |
@@ -426,8 +483,10 @@ The checked evidence set is separated by responsibility:
 
 - `retention-audit.json`;
 - `scope-audit.json`;
+- `phase-1-execution-claim.json`;
 - `known-transform-diagnostic-108.json`;
 - `feature-ownership-oracle.json`;
+- conditional `phase-2-execution-claim.json`;
 - conditional `known-transform-development-120.json`;
 - `decision.json`;
 - a concise human-readable study report.
