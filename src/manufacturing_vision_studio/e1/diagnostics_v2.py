@@ -88,6 +88,22 @@ _PRESERVED_V2_CONFIG_FILE_SHA256 = (
     "1cb3f58c6b743d48aa1f2fd8e294d899dcf3e1a8c9022646d011b8c2b657ae68"
 )
 
+_MAX_SELECTION_FILE_BYTES = 4_000_000
+_MAX_EMBEDDED_RAW_BYTES = 2_000_000
+_MAX_EMBEDDED_COMPRESSED_BYTES = 500_000
+_MAX_EMBEDDED_BASE64_LENGTH = 4 * ((_MAX_EMBEDDED_COMPRESSED_BYTES + 2) // 3)
+_V0_1_BASELINE_INPUT_PATHS = (
+    "configs/evaluation/e1-v1.json",
+    "docs/evaluation/results/v0.1.0-synthetic.json",
+    "docs/releases/v0.1.0/evidence-bundle.zip",
+    "schemas/v1/analysis-result.schema.json",
+    "schemas/v1/evaluation-report.schema.json",
+    "schemas/v1/evidence-bundle-manifest.schema.json",
+    "schemas/v1/human-disposition.schema.json",
+    "schemas/v1/image-input-metadata.schema.json",
+    "schemas/v1/inspection-case.schema.json",
+)
+
 _SCALE_DELTAS = (-0.020, -0.015, -0.010, -0.005, 0.005, 0.010, 0.015, 0.020)
 _ENDPOINT_DELTAS = (-0.020, 0.020)
 
@@ -297,14 +313,27 @@ class CandidateSelectionRecord:
     implementation_projection_sha256: str = ""
     configuration_sha256: str = ""
     audit_evidence: dict[str, Any] = field(default_factory=dict)
+    audit_evidence_status: Literal["UNVERIFIED"] = "UNVERIFIED"
+    audit_verification_status: Literal["UNVERIFIED", "VERIFIED"] = field(
+        default="UNVERIFIED",
+        compare=False,
+        repr=False,
+    )
     schema_version: str = "2.0.0"
     record_sha256: str = ""
+
+    def __post_init__(self) -> None:
+        if self.audit_evidence_status != "UNVERIFIED":
+            raise ValueError("persisted audit evidence status must be UNVERIFIED")
+        if self.audit_verification_status not in {"UNVERIFIED", "VERIFIED"}:
+            raise ValueError("runtime audit verification status is invalid")
 
     def as_record(self, *, include_self_hash: bool = True) -> dict[str, object]:
         record: dict[str, object] = {
             "schema_version": self.schema_version,
             "record_type": "e1_candidate_selection_v2",
             "configuration_sha256": self.configuration_sha256,
+            "audit_evidence_status": self.audit_evidence_status,
             "audit_evidence": self.audit_evidence,
             "implementation_projection": [
                 {"path": path, "sha256": digest} for path, digest in self.implementation_projection
@@ -1303,6 +1332,81 @@ def _recorded_objective_components(
     }
 
 
+def _verify_recorded_diagnostic_geometry(
+    inference: E1V2InferenceInput,
+    inference_trace: Mapping[str, Any],
+    recorded: Mapping[str, Any],
+    *,
+    diagnostic_id: str,
+    silhouette_cache: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]],
+) -> None:
+    geometry_trace = _object_value(inference_trace, "geometry_trace")
+    expected = {
+        "diagnostic_id": diagnostic_id,
+        **_recorded_objective_components(
+            inference,
+            geometry_trace,
+            silhouette_cache,
+        ),
+        "identity_truth_pixel_recall": float(
+            inference_trace["identity_truth_pixel_recall"]
+        ),
+        "selected_truth_pixel_recall": float(
+            inference_trace["selected_truth_pixel_recall"]
+        ),
+        "identity_dice": float(inference_trace["identity_dice"]),
+        "selected_dice": float(inference_trace["selected_dice"]),
+    }
+    if recorded != expected:
+        raise ValueError(f"diagnostic replay evidence changed: {diagnostic_id}")
+
+
+def _verify_candidate_replay_evidence(
+    evidence: Mapping[str, Any],
+    embedded: Mapping[str, Mapping[str, Any]],
+    protocol: E1V2Protocol,
+) -> None:
+    diagnostic_plans = build_scale_diagnostic_matrix(protocol)
+    _inputs, rendered = _audit_diagnostic_inputs(
+        diagnostic_plans,
+        protocol,
+        embedded,
+    )
+    summaries = _object_value(evidence, "candidate_evidence")
+    silhouette_cache: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
+    for candidate_id in ("A", "B"):
+        summary = _object_value(summaries, candidate_id)
+        artifact_rows = _list_value(embedded[candidate_id], "diagnostics")
+        recorded_geometry = (
+            _list_value(summary, "diagnostic_geometry")
+            if "diagnostic_geometry" in summary
+            else None
+        )
+        if recorded_geometry is not None and len(recorded_geometry) != len(
+            diagnostic_plans
+        ):
+            raise ValueError("candidate diagnostic replay count changed")
+        for index, (plan, artifact_row) in enumerate(
+            zip(diagnostic_plans, artifact_rows, strict=True)
+        ):
+            inference_trace = _object_value(artifact_row, "inference_trace")
+            inference = rendered[plan.diagnostic_id][0]
+            if recorded_geometry is None:
+                _recorded_objective_components(
+                    inference,
+                    _object_value(inference_trace, "geometry_trace"),
+                    silhouette_cache,
+                )
+                continue
+            _verify_recorded_diagnostic_geometry(
+                inference,
+                inference_trace,
+                recorded_geometry[index],
+                diagnostic_id=plan.diagnostic_id,
+                silhouette_cache=silhouette_cache,
+            )
+
+
 def _restore_exact_frozen_bound(
     serialized_value: float,
     *,
@@ -1417,17 +1521,7 @@ def run_v0_1_baseline_audit() -> dict[str, object]:
             path,
             sha256_bytes((PROJECT_ROOT / path).read_bytes()),
         )
-        for path in (
-            "configs/evaluation/e1-v1.json",
-            "docs/evaluation/results/v0.1.0-synthetic.json",
-            "docs/releases/v0.1.0/evidence-bundle.zip",
-            "schemas/v1/analysis-result.schema.json",
-            "schemas/v1/evaluation-report.schema.json",
-            "schemas/v1/evidence-bundle-manifest.schema.json",
-            "schemas/v1/human-disposition.schema.json",
-            "schemas/v1/image-input-metadata.schema.json",
-            "schemas/v1/inspection-case.schema.json",
-        )
+        for path in _V0_1_BASELINE_INPUT_PATHS
     )
     result = evaluate_v0_1_baseline(load_e1_protocol()).as_record()
     return result | {
@@ -1443,12 +1537,21 @@ def run_v0_1_baseline_audit() -> dict[str, object]:
     }
 
 
+def _verify_current_baseline_audit(recorded: Mapping[str, Any]) -> None:
+    bindings = _list_value(recorded, "input_bindings")
+    recorded_paths = tuple(str(binding["path"]) for binding in bindings)
+    if recorded_paths != _V0_1_BASELINE_INPUT_PATHS:
+        raise ValueError("current baseline audit changed: input binding paths")
+    expected = run_v0_1_baseline_audit()
+    if recorded != expected:
+        raise ValueError("current baseline audit changed")
+
+
 def _encode_embedded_candidate_artifact(document: Mapping[str, Any]) -> dict[str, object]:
     raw = canonical_json_bytes(document) + b"\n"
     compressed = zlib.compress(raw, level=9)
     return {
         "encoding_protocol": "rfc1950_zlib_level_9_then_rfc4648_base64_v1",
-        "zlib_runtime_version": zlib.ZLIB_RUNTIME_VERSION,
         "uncompressed_bytes": len(raw),
         "compressed_bytes": len(compressed),
         "uncompressed_sha256": sha256_bytes(raw),
@@ -1468,11 +1571,19 @@ def _decode_embedded_candidate_artifact(
         raise ValueError("embedded candidate encoding protocol is invalid")
     expected_raw_length = int(envelope["uncompressed_bytes"])
     expected_compressed_length = int(envelope["compressed_bytes"])
-    if not 1 <= expected_raw_length <= 2_000_000 or not 1 <= expected_compressed_length <= 500_000:
+    if not 1 <= expected_raw_length <= _MAX_EMBEDDED_RAW_BYTES or not (
+        1 <= expected_compressed_length <= _MAX_EMBEDDED_COMPRESSED_BYTES
+    ):
         raise ValueError("embedded candidate lengths exceed the audit cap")
     encoded = envelope.get("payload_base64")
     if not isinstance(encoded, str):
         raise ValueError("embedded candidate payload is invalid")
+    expected_encoded_length = 4 * ((expected_compressed_length + 2) // 3)
+    if (
+        len(encoded) > _MAX_EMBEDDED_BASE64_LENGTH
+        or len(encoded) != expected_encoded_length
+    ):
+        raise ValueError("embedded candidate exceeds the encoded-length cap")
     try:
         compressed = base64.b64decode(encoded, validate=True)
     except (ValueError, binascii.Error) as exc:
@@ -1500,7 +1611,137 @@ def _decode_embedded_candidate_artifact(
     return _canonical_json_object(raw, "embedded candidate artifact")
 
 
-def _validate_selection_audit_evidence(
+def _validate_selection_audit_bindings(
+    evidence: Mapping[str, Any],
+    *,
+    candidates: Sequence[CandidateEvaluationRecord],
+    current_entries: Sequence[tuple[str, str]],
+) -> None:
+    """Validate portable bindings without treating audit claims as verified."""
+
+    provenance = _object_value(evidence, "provenance")
+    if provenance.get("method") == "fresh_one_run_comparison_fail_closed":
+        if (
+            provenance.get("candidate_comparison_executed") is not True
+            or provenance.get("current_execution_projection_sha256")
+            != projection_digest(current_entries)
+        ):
+            raise ValueError("fresh comparison provenance changed")
+        artifact_hashes = _object_value(provenance, "candidate_artifact_sha256")
+        envelopes = _object_value(provenance, "embedded_candidate_artifacts")
+        embedded: dict[str, dict[str, Any]] = {}
+        for candidate_id in ("A", "B"):
+            expected_hash = artifact_hashes.get(candidate_id)
+            if not isinstance(expected_hash, str):
+                raise ValueError("fresh candidate artifact hash is invalid")
+            embedded[candidate_id] = _decode_embedded_candidate_artifact(
+                _object_value(envelopes, candidate_id),
+                expected_sha256=expected_hash,
+            )
+        outer_by_id = {candidate.candidate_id: candidate for candidate in candidates}
+        summaries = _object_value(evidence, "candidate_evidence")
+        for candidate_id in ("A", "B"):
+            summary = _object_value(summaries, candidate_id)
+            artifact = embedded[candidate_id]
+            artifact_candidate = _object_value(artifact, "candidate")
+            if (
+                summary.get("candidate_artifact_sha256") != artifact_hashes[candidate_id]
+                or _object_value(summary, "candidate_record") != artifact_candidate
+            ):
+                raise ValueError("fresh candidate summary binding changed")
+            outer_record = outer_by_id[candidate_id].as_record()
+            for key, value in artifact_candidate.items():
+                if key != "rejection_reasons" and outer_record.get(key) != value:
+                    raise ValueError("fresh outer candidate metrics changed")
+            development_rows = _list_value(artifact, "development")
+            diagnostic_rows = _list_value(artifact, "diagnostics")
+            development_traces = [
+                _object_value(_object_value(row, "inference_trace"), "geometry_trace")
+                for row in development_rows
+                if "inference_trace" in row
+            ]
+            diagnostic_traces = [
+                _object_value(_object_value(row, "inference_trace"), "geometry_trace")
+                for row in diagnostic_rows
+            ]
+            if _object_value(summary, "operation_counts") != _operation_count_evidence(
+                development_traces,
+                diagnostic_traces,
+            ):
+                raise ValueError("fresh candidate operation counts changed")
+            benchmark = _object_value(summary, "benchmark")
+            observations = _list_value(benchmark, "observations")
+            samples = [
+                _integer_value(item["elapsed_normalization_ns"])
+                for item in observations
+            ]
+            if _nearest_rank_p95(samples) != outer_by_id[candidate_id].runtime_p95_ns:
+                raise ValueError("fresh candidate benchmark changed")
+            determinism = _object_value(summary, "determinism")
+            if (
+                determinism.get("passed") is not False
+                or determinism.get("reason") != "TWO_COMPLETE_RUNS_REQUIRED"
+                or outer_by_id[candidate_id].determinism_verified is not False
+            ):
+                raise ValueError("fresh candidate determinism evidence changed")
+        return
+
+    exact_provenance = {
+        "method": "preserved_one_run_post_run_audit",
+        "comparison_rerun": False,
+        "candidate_search_rerun": False,
+        "candidate_inference_rerun": False,
+        "benchmark_rerun": False,
+        "recorded_transform_replay_only": True,
+        "original_record_sha256": _PRESERVED_RECORD_SHA256,
+        "original_selection_file_sha256": _PRESERVED_SELECTION_FILE_SHA256,
+        "original_execution_projection_sha256": _PRESERVED_EXECUTION_PROJECTION_SHA256,
+        "repository_snapshot_containing_execution_projection": _PRESERVED_SNAPSHOT,
+        "candidate_artifact_sha256": _PRESERVED_CANDIDATE_SHA256,
+        "current_audit_projection_sha256": projection_digest(current_entries),
+    }
+    for key, expected in exact_provenance.items():
+        if provenance.get(key) != expected:
+            raise ValueError(f"selection audit provenance changed: {key}")
+    original_projection = _list_value(provenance, "original_execution_projection")
+    original_entries = tuple(
+        (str(item["path"]), str(item["sha256"])) for item in original_projection
+    )
+    if projection_digest(original_entries) != _PRESERVED_EXECUTION_PROJECTION_SHA256:
+        raise ValueError("original execution projection digest changed")
+    execution_guard = _object_value(evidence, "execution_dependency_guard")
+    supplied_paths = {path for path, _digest in original_entries}
+    required_paths = set(implementation_projection_paths())
+    if (
+        execution_guard.get("passed") is not False
+        or execution_guard.get("reason") != "INCOMPLETE_DEPENDENCY_CLOSURE"
+        or execution_guard.get("snapshot_entry_verification_passed") is not True
+        or execution_guard.get("required_path_count") != len(required_paths)
+        or execution_guard.get("supplied_path_count") != len(original_entries)
+        or execution_guard.get("missing_paths")
+        != sorted(required_paths - supplied_paths)
+        or execution_guard.get("extra_paths")
+        != sorted(supplied_paths - required_paths)
+    ):
+        raise ValueError("execution dependency-guard evidence changed")
+    embedded_envelopes = _object_value(provenance, "embedded_candidate_artifacts")
+    embedded = {
+        candidate_id: _decode_embedded_candidate_artifact(
+            _object_value(embedded_envelopes, candidate_id),
+            expected_sha256=_PRESERVED_CANDIDATE_SHA256[candidate_id],
+        )
+        for candidate_id in ("A", "B")
+    }
+    candidate_evidence = _object_value(evidence, "candidate_evidence")
+    outer_by_id = {candidate.candidate_id: candidate for candidate in candidates}
+    for candidate_id in ("A", "B"):
+        _validate_candidate_audit_evidence(
+            candidate_id,
+            _object_value(candidate_evidence, candidate_id),
+            embedded[candidate_id],
+            outer_by_id[candidate_id],
+        )
+def _verify_selection_audit_evidence(
     evidence: Mapping[str, Any],
     *,
     candidates: Sequence[CandidateEvaluationRecord],
@@ -1572,6 +1813,7 @@ def _validate_selection_audit_evidence(
         current_entries
     ):
         raise ValueError("current dependency-guard evidence changed")
+    _verify_current_baseline_audit(_object_value(current_audits, "baseline"))
     trust = _object_value(current_audits, "trust")
     development = E1V2Generator(protocol).plan_cases(EvaluationScope.DEVELOPMENT)
     with tempfile.TemporaryDirectory(prefix="mvs-e1-v2-selection-load-trust-") as temporary:
@@ -1596,19 +1838,6 @@ def _validate_selection_audit_evidence(
         or not all(result.get("passed") is True for result in trust_results)
     ):
         raise ValueError("current trust audit is not a proved pass")
-    baseline = _object_value(current_audits, "baseline")
-    if (
-        baseline.get("bundle_successes") != 1
-        or baseline.get("v0_1_regression") is not True
-        or _object_value(baseline, "environment_boundary").get("observed") != []
-    ):
-        raise ValueError("current baseline audit is not a proved pass")
-    for binding in _list_value(baseline, "input_bindings"):
-        from manufacturing_vision_studio.e1.protocol_v2 import PROJECT_ROOT
-
-        path = str(binding["path"])
-        if sha256_bytes((PROJECT_ROOT / path).read_bytes()) != binding["sha256"]:
-            raise ValueError(f"baseline audit input changed: {path}")
     history = _object_value(current_audits, "history")
     expected_history = {"passed": True} | verify_e1_v1_history()
     if history != expected_history:
@@ -1637,6 +1866,7 @@ def _validate_selection_audit_evidence(
             embedded[candidate_id],
             outer_by_id[candidate_id],
         )
+    _verify_candidate_replay_evidence(evidence, embedded, protocol)
 
 
 def _validate_fresh_comparison_audit_evidence(
@@ -1669,6 +1899,7 @@ def _validate_fresh_comparison_audit_evidence(
         current_entries
     ):
         raise ValueError("fresh comparison dependency audit changed")
+    _verify_current_baseline_audit(_object_value(current_audits, "baseline"))
     trust = _object_value(current_audits, "trust")
     development = E1V2Generator(protocol).plan_cases(EvaluationScope.DEVELOPMENT)
     with tempfile.TemporaryDirectory(prefix="mvs-e1-v2-selection-load-trust-") as temporary:
@@ -1679,7 +1910,6 @@ def _validate_fresh_comparison_audit_evidence(
     if trust != expected_trust:
         raise ValueError("current trust audit changed")
     trust_results = _list_value(trust, "results")
-    baseline = _object_value(current_audits, "baseline")
     history = _object_value(current_audits, "history")
     expected_history = {"passed": True} | verify_e1_v1_history()
     if history != expected_history:
@@ -1687,7 +1917,6 @@ def _validate_fresh_comparison_audit_evidence(
     if (
         trust.get("all_passed") is not True
         or trust.get("publication_count") != 0
-        or baseline.get("v0_1_regression") is not True
         or history.get("passed") is not True
     ):
         raise ValueError("fresh comparison prerequisite audit did not pass")
@@ -1740,6 +1969,7 @@ def _validate_fresh_comparison_audit_evidence(
             or outer_by_id[candidate_id].determinism_verified is not False
         ):
             raise ValueError("fresh candidate determinism evidence changed")
+    _verify_candidate_replay_evidence(evidence, embedded, protocol)
 
 
 def _validate_comparison_input_evidence(
@@ -2094,22 +2324,17 @@ def write_candidate_selection(
 
 
 def load_candidate_selection(path: Path | str) -> CandidateSelectionRecord:
+    """Load portable selection semantics without executing audit verification."""
+
     source = Path(path)
-
-    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        document: dict[str, object] = {}
-        for key, value in pairs:
-            if key in document:
-                raise ValueError(f"duplicate selection-record key: {key}")
-            document[key] = value
-        return document
-
     try:
-        document = json.loads(source.read_text(), object_pairs_hook=reject_duplicates)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        with source.open("rb") as stream:
+            payload = stream.read(_MAX_SELECTION_FILE_BYTES + 1)
+    except OSError as exc:
         raise ValueError("candidate selection could not be loaded") from exc
-    if not isinstance(document, dict):
-        raise ValueError("candidate selection must be an object")
+    if len(payload) > _MAX_SELECTION_FILE_BYTES:
+        raise ValueError("candidate selection exceeds the file-size cap")
+    document = _canonical_json_object(payload, "candidate selection")
     from manufacturing_vision_studio.e1.protocol_v2 import PROJECT_ROOT, load_e1_v2_protocol
 
     schema = json.loads((PROJECT_ROOT / "schemas/e1-candidate-selection.v2.json").read_text())
@@ -2135,6 +2360,8 @@ def load_candidate_selection(path: Path | str) -> CandidateSelectionRecord:
     protocol = load_e1_v2_protocol()
     if document["configuration_sha256"] != protocol.configuration_sha256:
         raise ValueError("candidate selection configuration binding changed")
+    if document["audit_evidence_status"] != "UNVERIFIED":
+        raise ValueError("candidate selection audit evidence status changed")
     supplied_candidates = tuple(
         CandidateEvaluationRecord.from_record(item)
         for item in document["candidates"]
@@ -2142,11 +2369,10 @@ def load_candidate_selection(path: Path | str) -> CandidateSelectionRecord:
     audit_evidence = document["audit_evidence"]
     if not isinstance(audit_evidence, dict):
         raise ValueError("candidate selection audit evidence is invalid")
-    _validate_selection_audit_evidence(
+    _validate_selection_audit_bindings(
         audit_evidence,
         candidates=supplied_candidates,
         current_entries=current_entries,
-        protocol=protocol,
     )
     semantic = select_candidate(supplied_candidates)
     if (
@@ -2163,9 +2389,26 @@ def load_candidate_selection(path: Path | str) -> CandidateSelectionRecord:
         implementation_projection_sha256=current_projection_hash,
         configuration_sha256=protocol.configuration_sha256,
         audit_evidence=audit_evidence,
+        audit_evidence_status="UNVERIFIED",
+        audit_verification_status="UNVERIFIED",
         schema_version=document["schema_version"],
         record_sha256=supplied_hash,
     )
+
+
+def verify_candidate_selection_audit(path: Path | str) -> CandidateSelectionRecord:
+    """Explicitly re-execute non-runtime audit verification for a loaded selection."""
+
+    record = load_candidate_selection(path)
+    protocol = load_e1_v2_protocol()
+    current_entries = implementation_projection()
+    _verify_selection_audit_evidence(
+        record.audit_evidence,
+        candidates=record.candidates,
+        current_entries=current_entries,
+        protocol=protocol,
+    )
+    return replace(record, audit_verification_status="VERIFIED")
 
 
 def compare_candidates(

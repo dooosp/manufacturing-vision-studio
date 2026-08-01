@@ -7,6 +7,7 @@
     "schema_version",
     "record_type",
     "configuration_sha256",
+    "audit_evidence_status",
     "audit_evidence",
     "implementation_projection",
     "implementation_projection_sha256",
@@ -19,6 +20,7 @@
     "schema_version": {"const": "2.0.0"},
     "record_type": {"const": "e1_candidate_selection_v2"},
     "configuration_sha256": {"$ref": "#/$defs/sha256"},
+    "audit_evidence_status": {"const": "UNVERIFIED"},
     "audit_evidence": {
       "oneOf": [
         {"$ref": "#/$defs/auditEvidence"},
@@ -160,7 +162,6 @@
       "additionalProperties": false,
       "required": [
         "encoding_protocol",
-        "zlib_runtime_version",
         "uncompressed_bytes",
         "compressed_bytes",
         "uncompressed_sha256",
@@ -169,12 +170,11 @@
       ],
       "properties": {
         "encoding_protocol": {"const": "rfc1950_zlib_level_9_then_rfc4648_base64_v1"},
-        "zlib_runtime_version": {"type": "string", "minLength": 1},
         "uncompressed_bytes": {"type": "integer", "minimum": 1, "maximum": 2000000},
         "compressed_bytes": {"type": "integer", "minimum": 1, "maximum": 500000},
         "uncompressed_sha256": {"$ref": "#/$defs/sha256"},
         "compressed_sha256": {"$ref": "#/$defs/sha256"},
-        "payload_base64": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9+/]*={0,2}$"}
+        "payload_base64": {"type": "string", "minLength": 1, "maxLength": 666668, "pattern": "^[A-Za-z0-9+/]*={0,2}$"}
       }
     },
     "auditEvidence": {

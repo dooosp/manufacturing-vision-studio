@@ -49,6 +49,28 @@ def test_runtime_input_has_no_diagnostic_truth_field() -> None:
     }
 
 
+def test_default_policy_selection_loading_does_not_enter_explicit_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import manufacturing_vision_studio.e1.diagnostics_v2 as diagnostics
+
+    def unexpected_audit(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("runtime policy entered explicit audit verification")
+
+    monkeypatch.setattr(diagnostics, "_git_snapshot_blob", unexpected_audit)
+    monkeypatch.setattr(diagnostics.subprocess, "run", unexpected_audit)
+    monkeypatch.setattr(diagnostics.tempfile, "TemporaryDirectory", unexpected_audit)
+    monkeypatch.setattr(diagnostics, "run_development_trust_audit", unexpected_audit)
+    monkeypatch.setattr(diagnostics, "run_v0_1_baseline_audit", unexpected_audit)
+    monkeypatch.setattr(diagnostics, "verify_e1_v1_history", unexpected_audit)
+    monkeypatch.setattr(diagnostics, "_recorded_objective_components", unexpected_audit)
+    monkeypatch.setattr(diagnostics, "_validate_comparison_input_evidence", unexpected_audit)
+    monkeypatch.setattr(diagnostics.E1V2Generator, "plan_cases", unexpected_audit)
+
+    with pytest.raises(ValueError, match="candidate selection is HOLD"):
+        E1V2InferencePolicy()
+
+
 def test_projection_validates_hashes_and_canonical_rgb_bytes() -> None:
     generated = _generated("e1-v2-development-clean-000")
     inference = E1V2InferenceInput.from_generated(generated)

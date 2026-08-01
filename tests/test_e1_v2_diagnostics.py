@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import json
 from collections import Counter
 from pathlib import Path
 
@@ -17,6 +19,7 @@ from manufacturing_vision_studio.e1.diagnostics_v2 import (
     run_development_trust_audit,
     run_v0_1_baseline_audit,
     select_candidate,
+    verify_candidate_selection_audit,
     verify_dependency_guard,
     verify_determinism_evidence,
     write_candidate_selection,
@@ -25,6 +28,14 @@ from manufacturing_vision_studio.e1.domain import CadRevision, ViewId
 from manufacturing_vision_studio.e1.domain_v2 import EvaluationScope
 from manufacturing_vision_studio.e1.generator_v2 import E1V2Generator
 from manufacturing_vision_studio.e1.protocol_v2 import load_e1_v2_protocol
+
+
+def _write_rehashed_selection(tmp_path: Path, name: str, document: dict) -> Path:
+    selfless = {key: value for key, value in document.items() if key != "record_sha256"}
+    document["record_sha256"] = canonical_json_hash(selfless)
+    path = tmp_path / name
+    path.write_bytes(canonical_json_bytes(document) + b"\n")
+    return path
 
 
 def test_scale_matrix_covers_revisions_views_and_preregistered_scales() -> None:
@@ -226,8 +237,161 @@ def test_baseline_audit_rejects_path_overrides(monkeypatch, variable) -> None:
         run_v0_1_baseline_audit()
 
 
-def test_checked_hold_record_contains_fresh_checkout_audit_evidence() -> None:
-    record = load_candidate_selection("configs/evaluation/e1-v2-candidate-selection.json")
+@pytest.mark.parametrize(
+    "mutation",
+    ["reimport_rate", "check", "reordered_paths", "missing_path", "extra_path"],
+)
+def test_explicit_baseline_verification_requires_the_complete_exact_report(mutation) -> None:
+    import manufacturing_vision_studio.e1.diagnostics_v2 as diagnostics
+
+    document = json.loads(Path("configs/evaluation/e1-v2-candidate-selection.json").read_text())
+    baseline = copy.deepcopy(document["audit_evidence"]["current_audits"]["baseline"])
+    if mutation == "reimport_rate":
+        baseline["bundle_verify_reimport_rate"] = 0.0
+    elif mutation == "check":
+        baseline["checks"][0]["passed"] = False
+    elif mutation == "reordered_paths":
+        baseline["input_bindings"] = list(reversed(baseline["input_bindings"]))
+    elif mutation == "missing_path":
+        baseline["input_bindings"] = baseline["input_bindings"][:-1]
+    else:
+        baseline["input_bindings"].append(
+            {"path": "configs/evaluation/e1-v2.json", "sha256": "0" * 64}
+        )
+
+    with pytest.raises(ValueError, match="current baseline audit changed"):
+        diagnostics._verify_current_baseline_audit(baseline)
+
+
+@pytest.mark.parametrize("variable", ["MVS_DATA_DIR", "MVS_SCHEMA_DIR"])
+def test_explicit_baseline_verification_enforces_environment_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    variable: str,
+) -> None:
+    import manufacturing_vision_studio.e1.diagnostics_v2 as diagnostics
+
+    document = json.loads(Path("configs/evaluation/e1-v2-candidate-selection.json").read_text())
+    baseline = document["audit_evidence"]["current_audits"]["baseline"]
+    monkeypatch.setenv(variable, "/tmp/untrusted-audit-override")
+    with pytest.raises(ValueError, match="rejects environment overrides"):
+        diagnostics._verify_current_baseline_audit(baseline)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["reimport_rate", "check", "reordered_paths", "missing_and_extra_path"],
+)
+def test_explicit_verifier_rejects_rehashed_baseline_tampering(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    document = json.loads(Path("configs/evaluation/e1-v2-candidate-selection.json").read_text())
+    baseline = document["audit_evidence"]["current_audits"]["baseline"]
+    if mutation == "reimport_rate":
+        baseline["bundle_verify_reimport_rate"] = 0.0
+    elif mutation == "check":
+        baseline["checks"][0]["passed"] = False
+    elif mutation == "reordered_paths":
+        baseline["input_bindings"] = list(reversed(baseline["input_bindings"]))
+    else:
+        baseline["input_bindings"][-1] = {
+            "path": "configs/evaluation/e1-v2.json",
+            "sha256": "0" * 64,
+        }
+    path = _write_rehashed_selection(tmp_path, f"baseline-{mutation}.json", document)
+
+    assert load_candidate_selection(path).audit_verification_status == "UNVERIFIED"
+    with pytest.raises(ValueError, match="current baseline audit changed"):
+        verify_candidate_selection_audit(path)
+
+
+@pytest.mark.parametrize("variable", ["MVS_DATA_DIR", "MVS_SCHEMA_DIR"])
+def test_pure_load_ignores_but_explicit_verifier_rejects_baseline_path_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    variable: str,
+) -> None:
+    path = "configs/evaluation/e1-v2-candidate-selection.json"
+    monkeypatch.setenv(variable, "/tmp/untrusted-audit-override")
+    assert load_candidate_selection(path).audit_verification_status == "UNVERIFIED"
+    with pytest.raises(ValueError, match="rejects environment overrides"):
+        verify_candidate_selection_audit(path)
+
+
+@pytest.mark.parametrize("mutation", ["compensating_components", "foreground_iou"])
+def test_explicit_replay_verification_reconstructs_every_geometry_field(mutation) -> None:
+    import manufacturing_vision_studio.e1.diagnostics_v2 as diagnostics
+
+    protocol = load_e1_v2_protocol()
+    plan = build_scale_diagnostic_matrix(protocol)[0]
+    inference, _truth, _truth_bytes = diagnostics._render_diagnostic(plan, protocol)
+    artifact = json.loads(Path("data/e1-v2-development/candidate-a.json").read_text())
+    trace = artifact["diagnostics"][0]["inference_trace"]
+    selection = json.loads(
+        Path("configs/evaluation/e1-v2-candidate-selection.json").read_text()
+    )
+    recorded = copy.deepcopy(
+        selection["audit_evidence"]["candidate_evidence"]["A"][
+            "diagnostic_geometry"
+        ][0]
+    )
+    if mutation == "compensating_components":
+        objective = recorded["replayed_objective_before"]
+        recorded["silhouette_xor_rate_before"] += 0.001
+        recorded["normalized_edge_mae_before"] = (
+            objective - 0.70 * recorded["silhouette_xor_rate_before"]
+        ) / 0.30
+    else:
+        recorded["foreground_iou_before"] += 0.001
+
+    with pytest.raises(ValueError, match="diagnostic replay evidence changed"):
+        diagnostics._verify_recorded_diagnostic_geometry(
+            inference,
+            trace,
+            recorded,
+            diagnostic_id=plan.diagnostic_id,
+            silhouette_cache={},
+        )
+
+
+@pytest.mark.parametrize("mutation", ["compensating_components", "foreground_iou"])
+def test_explicit_verifier_rejects_rehashed_replay_tampering(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    document = json.loads(Path("configs/evaluation/e1-v2-candidate-selection.json").read_text())
+    recorded = document["audit_evidence"]["candidate_evidence"]["A"][
+        "diagnostic_geometry"
+    ][0]
+    if mutation == "compensating_components":
+        objective = recorded["replayed_objective_before"]
+        recorded["silhouette_xor_rate_before"] += 0.001
+        recorded["normalized_edge_mae_before"] = (
+            objective - 0.70 * recorded["silhouette_xor_rate_before"]
+        ) / 0.30
+    else:
+        recorded["foreground_iou_before"] += 0.001
+    path = _write_rehashed_selection(tmp_path, f"replay-{mutation}.json", document)
+
+    assert load_candidate_selection(path).audit_verification_status == "UNVERIFIED"
+    with pytest.raises(ValueError, match="diagnostic replay evidence changed"):
+        verify_candidate_selection_audit(path)
+
+
+def test_explicit_verification_preserves_selection_bytes_and_marks_runtime_verified() -> None:
+    path = "configs/evaluation/e1-v2-candidate-selection.json"
+    loaded = load_candidate_selection(path)
+    assert loaded.audit_evidence_status == "UNVERIFIED"
+    assert loaded.audit_verification_status == "UNVERIFIED"
+
+    record = verify_candidate_selection_audit(path)
+    assert record.audit_evidence_status == "UNVERIFIED"
+    assert record.audit_verification_status == "VERIFIED"
+    assert record == loaded
+    assert record.as_record() == loaded.as_record()
+    assert record.record_sha256 == loaded.record_sha256
+    assert record.candidates == loaded.candidates
+    assert record.selected_candidate_id == loaded.selected_candidate_id
+    assert record.outcome == loaded.outcome
     evidence = record.audit_evidence
     assert evidence["provenance"]["comparison_rerun"] is False
     assert evidence["provenance"]["original_record_sha256"] == (
@@ -293,6 +457,77 @@ def test_selection_loader_recomputes_hash_projection_and_semantics(tmp_path) -> 
     assert loaded.implementation_projection_sha256
 
 
+def test_selection_loader_is_runtime_pure_and_marks_audit_unverified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import manufacturing_vision_studio.e1.diagnostics_v2 as diagnostics
+
+    def unexpected_audit(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("pure selection loading entered explicit audit verification")
+
+    monkeypatch.setattr(diagnostics, "_git_snapshot_blob", unexpected_audit)
+    monkeypatch.setattr(diagnostics.subprocess, "run", unexpected_audit)
+    monkeypatch.setattr(diagnostics.tempfile, "TemporaryDirectory", unexpected_audit)
+    monkeypatch.setattr(diagnostics, "run_development_trust_audit", unexpected_audit)
+    monkeypatch.setattr(diagnostics, "run_v0_1_baseline_audit", unexpected_audit)
+    monkeypatch.setattr(diagnostics, "verify_e1_v1_history", unexpected_audit)
+    monkeypatch.setattr(diagnostics, "_recorded_objective_components", unexpected_audit)
+    monkeypatch.setattr(diagnostics, "_validate_comparison_input_evidence", unexpected_audit)
+    monkeypatch.setattr(diagnostics.E1V2Generator, "plan_cases", unexpected_audit)
+
+    record = load_candidate_selection("configs/evaluation/e1-v2-candidate-selection.json")
+    assert record.audit_verification_status == "UNVERIFIED"
+
+
+def test_selection_loader_rejects_oversized_file_before_json_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import manufacturing_vision_studio.e1.diagnostics_v2 as diagnostics
+
+    path = tmp_path / "oversized-selection.json"
+    path.write_bytes(b" " * (diagnostics._MAX_SELECTION_FILE_BYTES + 1))
+
+    def unexpected_json(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("oversized selection reached JSON parsing")
+
+    monkeypatch.setattr(diagnostics, "_canonical_json_object", unexpected_json)
+    with pytest.raises(ValueError, match="file-size cap"):
+        load_candidate_selection(path)
+
+
+def test_embedded_payload_rejects_encoded_overflow_before_decode_or_decompress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import manufacturing_vision_studio.e1.diagnostics_v2 as diagnostics
+
+    def unexpected_allocation(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("oversized payload reached decoder or decompressor")
+
+    monkeypatch.setattr(diagnostics.base64, "b64decode", unexpected_allocation)
+    monkeypatch.setattr(diagnostics.zlib, "decompressobj", unexpected_allocation)
+    envelope = {
+        "encoding_protocol": "rfc1950_zlib_level_9_then_rfc4648_base64_v1",
+        "uncompressed_bytes": 1,
+        "compressed_bytes": diagnostics._MAX_EMBEDDED_COMPRESSED_BYTES,
+        "uncompressed_sha256": "0" * 64,
+        "compressed_sha256": "0" * 64,
+        "payload_base64": "A" * (diagnostics._MAX_EMBEDDED_BASE64_LENGTH + 1),
+    }
+    with pytest.raises(ValueError, match="encoded-length cap"):
+        diagnostics._decode_embedded_candidate_artifact(
+            envelope,
+            expected_sha256="0" * 64,
+        )
+
+
+def test_embedded_payload_omits_unverified_runtime_version_provenance() -> None:
+    import manufacturing_vision_studio.e1.diagnostics_v2 as diagnostics
+
+    envelope = diagnostics._encode_embedded_candidate_artifact({"candidate": "fixture"})
+    assert "zlib_runtime_version" not in envelope
+
+
 def test_selection_loader_rejects_runtime_independent_semantic_tampering(tmp_path) -> None:
     import json
 
@@ -345,8 +580,9 @@ def test_selection_loader_recomputes_current_trust_audit(tmp_path) -> None:
     document["record_sha256"] = canonical_json_hash(selfless)
     path = tmp_path / "trust-tamper.json"
     path.write_bytes(canonical_json_bytes(document) + b"\n")
+    assert load_candidate_selection(path).audit_verification_status == "UNVERIFIED"
     with pytest.raises(ValueError, match="current trust audit changed"):
-        load_candidate_selection(path)
+        verify_candidate_selection_audit(path)
 
 
 def test_selection_loader_recomputes_current_history_audit(tmp_path) -> None:
@@ -359,8 +595,9 @@ def test_selection_loader_recomputes_current_history_audit(tmp_path) -> None:
     document["record_sha256"] = canonical_json_hash(selfless)
     path = tmp_path / "history-tamper.json"
     path.write_bytes(canonical_json_bytes(document) + b"\n")
+    assert load_candidate_selection(path).audit_verification_status == "UNVERIFIED"
     with pytest.raises(ValueError, match="current history audit changed"):
-        load_candidate_selection(path)
+        verify_candidate_selection_audit(path)
 
 
 def test_comparison_plans_only_explicit_development_and_separate_diagnostic(
