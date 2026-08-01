@@ -1,9 +1,13 @@
 # E1 Feasibility and Separability Study Design
 
-**Date:** 2026-08-01  
-**Status:** Pending user review of written specification  
-**Study base:** `9fd6d0c600206083fde4fafc874e0226b5df60b3`  
-**Branch:** `codex/e1-feasibility-separability-study`  
+**Date:** 2026-08-01
+
+**Status:** Pending user review of written specification
+
+**Study base:** `9fd6d0c600206083fde4fafc874e0226b5df60b3`
+
+**Branch:** `codex/e1-feasibility-separability-study`
+
 **Workspace:** `/Users/jangtaeho/manufacturing-vision-studio-e1-feasibility-separability`
 
 ## 1. Decision and purpose
