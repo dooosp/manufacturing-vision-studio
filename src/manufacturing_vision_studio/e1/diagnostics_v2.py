@@ -7,6 +7,7 @@ import binascii
 import hashlib
 import io
 import json
+import math
 import os
 import platform
 import subprocess
@@ -18,6 +19,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from statistics import median
+from types import MappingProxyType
 from typing import Any, Literal, cast
 
 import numpy as np
@@ -304,6 +306,35 @@ class CandidateEvaluationRecord:
         return cls(**parsed)  # type: ignore[arg-type]
 
 
+def _freeze_json_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise TypeError("audit evidence must contain only JSON-compatible values")
+        return value
+    if isinstance(value, Mapping):
+        frozen: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError("audit evidence mappings must use string keys")
+            frozen[key] = _freeze_json_value(item)
+        return MappingProxyType(frozen)
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json_value(item) for item in value)
+    raise TypeError("audit evidence must contain only JSON-compatible values")
+
+
+def _thaw_json_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _thaw_json_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json_value(item) for item in value]
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    raise TypeError("stored audit evidence is not JSON-compatible")
+
+
 @dataclass(frozen=True, slots=True)
 class CandidateSelectionRecord:
     selected_candidate_id: str | None
@@ -312,21 +343,23 @@ class CandidateSelectionRecord:
     implementation_projection: tuple[tuple[str, str], ...] = ()
     implementation_projection_sha256: str = ""
     configuration_sha256: str = ""
-    audit_evidence: dict[str, Any] = field(default_factory=dict)
-    audit_evidence_status: Literal["UNVERIFIED"] = "UNVERIFIED"
-    audit_verification_status: Literal["UNVERIFIED", "VERIFIED"] = field(
-        default="UNVERIFIED",
-        compare=False,
-        repr=False,
-    )
+    audit_evidence: Mapping[str, Any] = field(default_factory=dict)
     schema_version: str = "2.0.0"
     record_sha256: str = ""
 
     def __post_init__(self) -> None:
-        if self.audit_evidence_status != "UNVERIFIED":
-            raise ValueError("persisted audit evidence status must be UNVERIFIED")
-        if self.audit_verification_status not in {"UNVERIFIED", "VERIFIED"}:
-            raise ValueError("runtime audit verification status is invalid")
+        frozen_evidence = _freeze_json_value(self.audit_evidence)
+        if not isinstance(frozen_evidence, Mapping):
+            raise TypeError("audit evidence must be a JSON object")
+        object.__setattr__(self, "audit_evidence", frozen_evidence)
+
+    @property
+    def audit_evidence_status(self) -> Literal["UNVERIFIED"]:
+        return "UNVERIFIED"
+
+    @property
+    def audit_verification_status(self) -> Literal["UNVERIFIED"]:
+        return "UNVERIFIED"
 
     def as_record(self, *, include_self_hash: bool = True) -> dict[str, object]:
         record: dict[str, object] = {
@@ -334,7 +367,7 @@ class CandidateSelectionRecord:
             "record_type": "e1_candidate_selection_v2",
             "configuration_sha256": self.configuration_sha256,
             "audit_evidence_status": self.audit_evidence_status,
-            "audit_evidence": self.audit_evidence,
+            "audit_evidence": _thaw_json_value(self.audit_evidence),
             "implementation_projection": [
                 {"path": path, "sha256": digest} for path, digest in self.implementation_projection
             ],
@@ -1741,6 +1774,8 @@ def _validate_selection_audit_bindings(
             embedded[candidate_id],
             outer_by_id[candidate_id],
         )
+
+
 def _verify_selection_audit_evidence(
     evidence: Mapping[str, Any],
     *,
@@ -2389,26 +2424,26 @@ def load_candidate_selection(path: Path | str) -> CandidateSelectionRecord:
         implementation_projection_sha256=current_projection_hash,
         configuration_sha256=protocol.configuration_sha256,
         audit_evidence=audit_evidence,
-        audit_evidence_status="UNVERIFIED",
-        audit_verification_status="UNVERIFIED",
         schema_version=document["schema_version"],
         record_sha256=supplied_hash,
     )
 
 
-def verify_candidate_selection_audit(path: Path | str) -> CandidateSelectionRecord:
-    """Explicitly re-execute non-runtime audit verification for a loaded selection."""
+def verify_candidate_selection_audit(path: Path | str) -> None:
+    """Re-execute the complete audit, raising on failure and retaining no status."""
 
     record = load_candidate_selection(path)
     protocol = load_e1_v2_protocol()
     current_entries = implementation_projection()
+    mutable_evidence = _thaw_json_value(record.audit_evidence)
+    if not isinstance(mutable_evidence, dict):
+        raise TypeError("stored audit evidence is not a JSON object")
     _verify_selection_audit_evidence(
-        record.audit_evidence,
+        mutable_evidence,
         candidates=record.candidates,
         current_entries=current_entries,
         protocol=protocol,
     )
-    return replace(record, audit_verification_status="VERIFIED")
 
 
 def compare_candidates(

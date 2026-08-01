@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -377,22 +378,169 @@ def test_explicit_verifier_rejects_rehashed_replay_tampering(
         verify_candidate_selection_audit(path)
 
 
+def test_unverified_selection_status_cannot_be_forged_with_replace() -> None:
+    import manufacturing_vision_studio.e1.diagnostics_v2 as diagnostics
+
+    record = select_candidate([_candidate("A"), _candidate("B")])
+
+    with pytest.raises(TypeError, match="audit_verification_status"):
+        replace(record, audit_verification_status="VERIFIED")
+    with pytest.raises(TypeError, match="audit_verification_status"):
+        diagnostics.CandidateSelectionRecord(
+            selected_candidate_id=record.selected_candidate_id,
+            candidates=record.candidates,
+            outcome=record.outcome,
+            audit_verification_status="VERIFIED",
+        )
+    with pytest.raises(TypeError, match="audit_evidence_status"):
+        replace(record, audit_evidence_status="VERIFIED")
+    with pytest.raises(AttributeError):
+        object.__setattr__(record, "audit_evidence_status", "VERIFIED")
+
+    assert record.audit_evidence_status == "UNVERIFIED"
+    assert record.audit_verification_status == "UNVERIFIED"
+
+
+def test_selection_record_freezes_source_evidence_and_defensively_exports() -> None:
+    source = {
+        "current_audits": {
+            "baseline": {
+                "bundle_verify_reimport_rate": 1.0,
+                "checks": [{"name": "fixture", "passed": True}],
+            }
+        }
+    }
+    record = replace(
+        select_candidate([_candidate("A"), _candidate("B")]),
+        audit_evidence=source,
+        record_sha256="1" * 64,
+    )
+    frozen_audits = record.audit_evidence["current_audits"]
+    frozen_baseline = frozen_audits["baseline"]
+    frozen_checks = frozen_baseline["checks"]
+    outcome = record.outcome
+    candidates = record.candidates
+
+    assert record.audit_evidence is not source
+    assert frozen_audits is not source["current_audits"]
+    assert frozen_baseline is not source["current_audits"]["baseline"]
+    assert frozen_checks is not source["current_audits"]["baseline"]["checks"]
+
+    source["current_audits"]["baseline"]["bundle_verify_reimport_rate"] = 0.0
+    source["current_audits"]["baseline"]["checks"][0]["passed"] = False
+    source["current_audits"]["baseline"]["checks"].append(
+        {"name": "late-alias", "passed": False}
+    )
+    assert frozen_baseline["bundle_verify_reimport_rate"] == 1.0
+    assert frozen_checks == ({"name": "fixture", "passed": True},)
+
+    with pytest.raises(TypeError):
+        record.audit_evidence["current_audits"] = {}
+    with pytest.raises(TypeError):
+        frozen_baseline["bundle_verify_reimport_rate"] = 0.0
+    with pytest.raises(TypeError):
+        frozen_checks[0]["passed"] = False
+    with pytest.raises(AttributeError):
+        frozen_checks.append({"name": "direct-mutation", "passed": False})
+
+    first = record.as_record()
+    second = record.as_record()
+    first_evidence = first["audit_evidence"]
+    second_evidence = second["audit_evidence"]
+    assert isinstance(first_evidence, dict)
+    assert isinstance(second_evidence, dict)
+    assert first_evidence is not second_evidence
+    assert first_evidence["current_audits"] is not second_evidence["current_audits"]
+    first_baseline = first_evidence["current_audits"]["baseline"]
+    first_checks = first_baseline["checks"]
+    first_baseline["bundle_verify_reimport_rate"] = 0.0
+    first_checks[0]["passed"] = False
+    first_checks.append({"name": "export-only", "passed": False})
+
+    fresh = record.as_record()
+    assert fresh["audit_evidence"]["current_audits"]["baseline"] == {
+        "bundle_verify_reimport_rate": 1.0,
+        "checks": [{"name": "fixture", "passed": True}],
+    }
+    assert record.record_sha256 == "1" * 64
+    assert record.outcome == outcome
+    assert record.candidates == candidates
+    assert record.audit_verification_status == "UNVERIFIED"
+
+
+def test_selection_record_freeze_is_ordered_and_rejects_non_json_values() -> None:
+    evidence = {
+        "z-last-by-name": [1, {"nested": True}],
+        "a-first-by-name": {"value": None},
+    }
+    first = replace(
+        select_candidate([_candidate("A"), _candidate("B")]),
+        audit_evidence=evidence,
+    )
+    second = replace(
+        select_candidate([_candidate("A"), _candidate("B")]),
+        audit_evidence=copy.deepcopy(evidence),
+    )
+
+    assert first.audit_evidence == second.audit_evidence
+    assert tuple(first.audit_evidence) == ("z-last-by-name", "a-first-by-name")
+    assert first.as_record()["audit_evidence"] == evidence
+
+    for invalid in (object(), {"set-is-not-json"}, float("nan"), float("inf")):
+        with pytest.raises(TypeError, match="JSON-compatible"):
+            replace(first, audit_evidence={"invalid": invalid})
+    with pytest.raises(TypeError, match="string keys"):
+        replace(first, audit_evidence={"invalid": {1: "not-a-json-key"}})
+
+
+def test_explicit_verification_has_no_forgeable_persistent_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import manufacturing_vision_studio.e1.diagnostics_v2 as diagnostics
+
+    unverified = replace(
+        select_candidate([_candidate("A"), _candidate("B")]),
+        audit_evidence={"current_audits": {"baseline": {"bundle_verify_reimport_rate": 1.0}}},
+        record_sha256="2" * 64,
+    )
+    monkeypatch.setattr(diagnostics, "load_candidate_selection", lambda _path: unverified)
+    monkeypatch.setattr(
+        diagnostics,
+        "_verify_selection_audit_evidence",
+        lambda *_args, **_kwargs: None,
+    )
+    before = unverified.as_record()
+    result = diagnostics.verify_candidate_selection_audit(
+        "configs/evaluation/e1-v2-candidate-selection.json"
+    )
+
+    assert result is None
+    assert "VerifiedCandidateSelectionAudit" not in vars(diagnostics)
+    assert "_VERIFIED_AUDIT_CAPABILITY" not in vars(diagnostics)
+    assert unverified.audit_evidence_status == "UNVERIFIED"
+    assert unverified.audit_verification_status == "UNVERIFIED"
+    assert unverified.as_record() == before
+
+
 def test_explicit_verification_preserves_selection_bytes_and_marks_runtime_verified() -> None:
     path = "configs/evaluation/e1-v2-candidate-selection.json"
     loaded = load_candidate_selection(path)
     assert loaded.audit_evidence_status == "UNVERIFIED"
     assert loaded.audit_verification_status == "UNVERIFIED"
 
-    record = verify_candidate_selection_audit(path)
+    assert verify_candidate_selection_audit(path) is None
+    record = load_candidate_selection(path)
     assert record.audit_evidence_status == "UNVERIFIED"
-    assert record.audit_verification_status == "VERIFIED"
+    assert record.audit_verification_status == "UNVERIFIED"
     assert record == loaded
     assert record.as_record() == loaded.as_record()
     assert record.record_sha256 == loaded.record_sha256
     assert record.candidates == loaded.candidates
     assert record.selected_candidate_id == loaded.selected_candidate_id
     assert record.outcome == loaded.outcome
-    evidence = record.audit_evidence
+    serialized = record.as_record()
+    evidence = serialized["audit_evidence"]
+    assert isinstance(evidence, dict)
     assert evidence["provenance"]["comparison_rerun"] is False
     assert evidence["provenance"]["original_record_sha256"] == (
         "f2a257a731d991ceba74f791e24a15e983fd806734af2ea973fc5808daab7280"
