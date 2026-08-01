@@ -237,6 +237,30 @@ def test_all_modes_share_coefficients_and_border_fill(asymmetric_png: bytes) -> 
     assert all(result.trace.applied is False for result in results)
 
 
+def test_normalization_rejects_reference_hash_mismatch(asymmetric_png: bytes) -> None:
+    with pytest.raises(ValueError, match="reference SHA-256 does not match bytes"):
+        normalize_known_transform(
+            asymmetric_png,
+            asymmetric_png,
+            reference_sha256="0" * 64,
+            inspection_sha256=sha256_bytes(asymmetric_png),
+            applied_transform=AppliedAffineTransform(1.0, 0.0, 0.0, 0.0),
+            resampling=ResamplingMode.NEAREST,
+        )
+
+
+def test_normalization_rejects_inspection_hash_mismatch(asymmetric_png: bytes) -> None:
+    with pytest.raises(ValueError, match="inspection SHA-256 does not match bytes"):
+        normalize_known_transform(
+            asymmetric_png,
+            asymmetric_png,
+            reference_sha256=sha256_bytes(asymmetric_png),
+            inspection_sha256="f" * 64,
+            applied_transform=AppliedAffineTransform(1.0, 0.0, 0.0, 0.0),
+            resampling=ResamplingMode.NEAREST,
+        )
+
+
 def test_border_fill_counts_each_corner_once() -> None:
     pixels = np.zeros((384, 512, 3), dtype=np.uint8)
     border_coordinates = [

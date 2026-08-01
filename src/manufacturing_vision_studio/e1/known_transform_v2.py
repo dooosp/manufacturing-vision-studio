@@ -150,6 +150,10 @@ def normalize_known_transform(
 ) -> KnownTransformResult:
     _decode_canonical_rgb(reference_bytes)
     inspection = _decode_canonical_rgb(inspection_bytes)
+    if sha256_bytes(reference_bytes) != reference_sha256:
+        raise ValueError("reference SHA-256 does not match bytes")
+    if sha256_bytes(inspection_bytes) != inspection_sha256:
+        raise ValueError("inspection SHA-256 does not match bytes")
     correction = derive_correction(applied_transform)
     coefficients = pillow_output_to_input_coefficients(inspection.size, correction)
     fill_rgb = _border_median_rgb(np.asarray(inspection, dtype=np.uint8))
