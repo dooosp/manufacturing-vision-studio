@@ -226,11 +226,14 @@ git commit -m "feat(e1): add isolated v2 evaluation corpus"
 **Files:**
 - Create: `src/manufacturing_vision_studio/e1/feature_mapping.py`
 - Create: `tests/test_e1_v2_feature_mapping.py`
+- Modify: `src/manufacturing_vision_studio/e1/domain_v2.py`
+- Modify: `src/manufacturing_vision_studio/e1/protocol_v2.py`
 - Modify: `configs/evaluation/e1-v2.json`
 - Modify: `schemas/e1-evaluation-protocol.v2.json`
 
 **Interfaces:**
-- Consumes: `E1V2Protocol.feature_ownership(cad_revision: CadRevision | str, view_id: ViewId | str) -> FeatureOwnershipConfig` from Task 1.
+- Produces: immutable `FeatureOwnershipConfig` in `domain_v2.py` and `E1V2Protocol.feature_ownership(cad_revision: CadRevision | str, view_id: ViewId | str) -> FeatureOwnershipConfig` in `protocol_v2.py`.
+- Consumes: Task 1's protocol-owned revision/view geometry and v2 renderer/oracle projection; tests reject drift between that geometry and ownership boxes.
 - Produces: `build_ownership_map(config: FeatureOwnershipConfig, image_size: tuple[int, int]) -> FeatureOwnershipMap`.
 - Produces: `map_final_mask(mask_bytes: bytes, ownership: FeatureOwnershipMap, *, minimum_winner_pixels: int = 8, ambiguity_margin: float = 0.10) -> FeatureMappingResult`.
 - `FeatureMappingResult` exposes `predicted_feature_id`, `status`, `reason`, `owner_pixel_counts`, `owned_pixel_count`, `winner_owned_pixel_count`, `final_positive_pixel_count`, `unmapped_pixel_count`, `winner_margin`, `final_mask_sha256`, and `ownership_map_sha256`.
@@ -337,13 +340,13 @@ authoritative mask offline and assert at least 8 target-owned pixels and the
 declared target winner. Task 5 repeats this cross-check inside formal freeze for
 calibration/release without publishing members.
 
-Add a precise v2 metric fixture: one known-feature positive with
-`predicted_feature_id=None` yields numerator 0 and denominator 1 while its pixel
-Dice/IoU denominators remain unchanged.
+Task 4's `metrics_v2.py` test consumes these exact mapping results and proves
+that a null/ambiguous known-feature positive contributes numerator 0 and
+denominator 1 without changing pixel Dice/IoU denominators.
 
 - [ ] **Step 7: Run focused tests and static checks**
 
-Run: `uv run pytest tests/test_e1_v2_feature_mapping.py tests/test_e1_metrics.py -q`
+Run: `uv run pytest tests/test_e1_v2_feature_mapping.py -q`
 Run: `uv run ruff check src/manufacturing_vision_studio/e1/feature_mapping.py tests/test_e1_v2_feature_mapping.py`
 Run: `uv run mypy src/manufacturing_vision_studio/e1/feature_mapping.py`
 Expected: all pass with pristine output.
@@ -351,7 +354,7 @@ Expected: all pass with pristine output.
 - [ ] **Step 8: Commit Task 2**
 
 ```bash
-git add src/manufacturing_vision_studio/e1/feature_mapping.py tests/test_e1_v2_feature_mapping.py configs/evaluation/e1-v2.json schemas/e1-evaluation-protocol.v2.json
+git add src/manufacturing_vision_studio/e1/feature_mapping.py src/manufacturing_vision_studio/e1/domain_v2.py src/manufacturing_vision_studio/e1/protocol_v2.py tests/test_e1_v2_feature_mapping.py configs/evaluation/e1-v2.json schemas/e1-evaluation-protocol.v2.json
 git commit -m "fix(e1): map features from exclusive final-mask owners"
 ```
 
