@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from manufacturing_vision_studio.e1.metrics_v2 import (
     E1V2EvaluationObservation,
     evaluate_v2_metrics,
@@ -69,3 +71,18 @@ def test_supported_medium_defect_abstain_is_a_false_negative() -> None:
     )
     assert metrics.medium_high_defect_false_negatives == 1
     assert metrics.medium_high_defect_denominator == 1
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"truth_positive_pixels": 101},
+        {"predicted_positive_pixels": 101},
+        {"intersection_pixels": 11},
+        {"truth_positive_pixels": 0, "intersection_pixels": 1},
+        {"predicted_positive_pixels": 0, "intersection_pixels": 1},
+    ],
+)
+def test_observation_rejects_impossible_pixel_count_relationships(overrides) -> None:
+    with pytest.raises(ValueError, match="pixel"):
+        _observation(**overrides)

@@ -293,7 +293,15 @@ class E1V2InferencePolicy:
         *,
         alignment: AlignmentResult | None = None,
     ) -> E1V2CaseResult:
-        alignment_trace = AlignmentTrace() if alignment is None else alignment.trace
+        alignment_trace = (
+            AlignmentTrace(
+                normalization_status=AlignmentStatus.ABSTAIN.value,
+                status_reason=reason,
+                abstention_reason=reason,
+            )
+            if alignment is None
+            else alignment.trace
+        )
         return E1V2CaseResult(
             actual_outcome="ABSTAIN",
             anomaly_score=None,

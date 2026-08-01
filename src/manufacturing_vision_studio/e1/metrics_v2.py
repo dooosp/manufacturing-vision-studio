@@ -60,7 +60,9 @@ class E1V2EvaluationObservation:
         if self.intersection_pixels > min(
             self.truth_positive_pixels, self.predicted_positive_pixels
         ):
-            raise ValueError("intersection cannot exceed either positive mask")
+            raise ValueError("intersection pixel count cannot exceed either positive mask")
+        if max(self.truth_positive_pixels, self.predicted_positive_pixels) > self.total_pixels:
+            raise ValueError("positive pixel counts cannot exceed total_pixels")
 
     def as_v1_observation(self) -> EvaluationObservation:
         """Delegate unchanged v1 mathematical primitives through a v2 scope adapter."""
