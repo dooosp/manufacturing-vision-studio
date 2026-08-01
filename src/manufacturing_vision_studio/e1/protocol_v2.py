@@ -14,8 +14,8 @@ from typing import Any, cast
 from jsonschema import Draft202012Validator
 
 from manufacturing_vision_studio.canonical import canonical_json_hash
-from manufacturing_vision_studio.e1.domain import CaseGroup
-from manufacturing_vision_studio.e1.domain_v2 import EvaluationScope
+from manufacturing_vision_studio.e1.domain import CadRevision, CaseGroup, FeatureRegion, ViewId
+from manufacturing_vision_studio.e1.domain_v2 import EvaluationScope, FeatureOwnershipConfig
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_E1_V2_CONFIG_PATH = PROJECT_ROOT / "configs" / "evaluation" / "e1-v2.json"
@@ -133,6 +133,44 @@ class E1V2Protocol:
     @property
     def recipe_version(self) -> str:
         return _string(_object(self._document, "generator"), "recipe_version")
+
+    def feature_ownership(
+        self,
+        cad_revision: CadRevision | str,
+        view_id: ViewId | str,
+    ) -> FeatureOwnershipConfig:
+        """Return the protocol-owned exclusive feature layout for one rendered view."""
+
+        try:
+            revision = CadRevision(cad_revision)
+            view = ViewId(view_id)
+        except ValueError as exc:
+            raise E1V2ProtocolError("feature ownership revision or view is invalid") from exc
+        ownership = _object(self._document, "feature_ownership")
+        feature_ids = tuple(_string_list(ownership, "feature_ids"))
+        priority = tuple(_string_list(ownership, "priority"))
+        raw_boxes = _object(_object(_object(ownership, "by_revision"), revision.value), view.value)
+        boxes: dict[str, FeatureRegion] = {}
+        for feature_id in feature_ids:
+            raw_box = raw_boxes.get(feature_id)
+            if (
+                not isinstance(raw_box, list)
+                or len(raw_box) != 4
+                or any(
+                    isinstance(value, bool) or not isinstance(value, (int, float))
+                    for value in raw_box
+                )
+            ):
+                raise E1V2ProtocolError(f"feature ownership box is invalid for {feature_id!r}")
+            boxes[feature_id] = cast(FeatureRegion, tuple(float(value) for value in raw_box))
+        return FeatureOwnershipConfig(
+            algorithm=_string(ownership, "algorithm"),
+            cad_revision=revision,
+            view_id=view,
+            feature_ids=feature_ids,
+            priority=priority,
+            feature_boxes=boxes,
+        )
 
     def scope_group_count(self, scope: EvaluationScope, group: CaseGroup) -> int:
         return _integer(_object(_object(self._document, "scopes"), scope.value), group.value)
@@ -295,6 +333,7 @@ def _validate_protocol_document(document: Mapping[str, Any]) -> None:
                 raise E1V2ProtocolError(f"v2 seed block is invalid for {scope.value}/{group.value}")
     if _number(_object(document, "threshold_selection"), "locked_image_threshold") != 0.0025:
         raise E1V2ProtocolError("v2 locked image threshold must remain 0.0025")
+    _validate_feature_ownership(_object(document, "feature_ownership"))
     gates = document.get("acceptance_gates")
     if not isinstance(gates, list):
         raise E1V2ProtocolError("v2 acceptance gates are invalid")
@@ -308,6 +347,64 @@ def _validate_protocol_document(document: Mapping[str, Any]) -> None:
     }
     if actual_gates != _EXPECTED_GATES:
         raise E1V2ProtocolError("v2 acceptance gates changed from the v1 HOLD boundary")
+
+
+def _validate_feature_ownership(ownership: Mapping[str, Any]) -> None:
+    expected_ids = ("bottom_edge", "hole_left", "hole_right", "top_edge", "top_face")
+    expected_priority = ("hole_left", "hole_right", "top_edge", "bottom_edge", "top_face")
+    if _string(ownership, "algorithm") != "exclusive-final-mask-owner-v1":
+        raise E1V2ProtocolError("v2 feature ownership algorithm is invalid")
+    if tuple(_string_list(ownership, "feature_ids")) != expected_ids:
+        raise E1V2ProtocolError("v2 feature ownership feature IDs are invalid")
+    if tuple(_string_list(ownership, "priority")) != expected_priority:
+        raise E1V2ProtocolError("v2 feature ownership priority is invalid")
+    by_revision = _object(ownership, "by_revision")
+    configs: dict[tuple[CadRevision, ViewId], FeatureOwnershipConfig] = {}
+    for revision in CadRevision:
+        for view in ViewId:
+            raw_boxes = _object(_object(by_revision, revision.value), view.value)
+            boxes: dict[str, FeatureRegion] = {}
+            for feature_id in expected_ids:
+                raw_box = raw_boxes.get(feature_id)
+                if (
+                    not isinstance(raw_box, list)
+                    or len(raw_box) != 4
+                    or any(
+                        isinstance(value, bool) or not isinstance(value, (int, float))
+                        for value in raw_box
+                    )
+                ):
+                    raise E1V2ProtocolError(
+                        f"v2 feature ownership box is invalid for {feature_id!r}"
+                    )
+                boxes[feature_id] = cast(FeatureRegion, tuple(float(value) for value in raw_box))
+            try:
+                configs[(revision, view)] = FeatureOwnershipConfig(
+                    algorithm=_string(ownership, "algorithm"),
+                    cad_revision=revision,
+                    view_id=view,
+                    feature_ids=expected_ids,
+                    priority=expected_priority,
+                    feature_boxes=boxes,
+                )
+            except ValueError as exc:
+                raise E1V2ProtocolError("v2 feature ownership layout is invalid") from exc
+    for view in ViewId:
+        rev_a = configs[(CadRevision.REV_A, view)].feature_boxes
+        rev_b = configs[(CadRevision.REV_B, view)].feature_boxes
+        for feature_id in expected_ids:
+            expected = (
+                tuple(
+                    value + (4 / 512 if index in {0, 2} else 0)
+                    for index, value in enumerate(rev_a[feature_id])
+                )
+                if feature_id == "hole_right"
+                else rev_a[feature_id]
+            )
+            if rev_b[feature_id] != expected:
+                raise E1V2ProtocolError(
+                    "v2 revision geometry does not match the declared +4 px delta"
+                )
 
 
 def _validate_retired_members(members: Sequence[dict[str, object]]) -> None:
@@ -393,6 +490,17 @@ def _integer(value: Mapping[str, Any], key: str) -> int:
     if isinstance(item, bool) or not isinstance(item, int):
         raise E1V2ProtocolError(f"{key} must be an integer")
     return item
+
+
+def _string_list(value: Mapping[str, Any], key: str) -> list[str]:
+    item = value.get(key)
+    if (
+        not isinstance(item, list)
+        or not item
+        or not all(isinstance(entry, str) and entry for entry in item)
+    ):
+        raise E1V2ProtocolError(f"{key} must be a non-empty string array")
+    return cast(list[str], item)
 
 
 def _number(value: Mapping[str, Any], key: str) -> float:

@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from types import MappingProxyType
 
-from manufacturing_vision_studio.e1.domain import CaseGroup, E1CasePlan, ExpectedOutcome
+from manufacturing_vision_studio.e1.domain import (
+    CadRevision,
+    CaseGroup,
+    E1CasePlan,
+    ExpectedOutcome,
+    FeatureRegion,
+    ViewId,
+)
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -16,6 +25,35 @@ class EvaluationScope(StrEnum):
     SMOKE = "smoke"
     CALIBRATION = "calibration"
     RELEASE_TEST = "release_test"
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureOwnershipConfig:
+    """One revision/view's immutable final-mask feature ownership layout."""
+
+    algorithm: str
+    cad_revision: CadRevision
+    view_id: ViewId
+    feature_ids: tuple[str, ...]
+    priority: tuple[str, ...]
+    feature_boxes: Mapping[str, FeatureRegion]
+
+    def __post_init__(self) -> None:
+        if not self.algorithm:
+            raise ValueError("feature ownership algorithm must be non-empty")
+        if not self.feature_ids or self.feature_ids != tuple(sorted(set(self.feature_ids))):
+            raise ValueError("feature ownership IDs must be sorted and unique")
+        if set(self.priority) != set(self.feature_ids) or len(self.priority) != len(
+            self.feature_ids
+        ):
+            raise ValueError("feature ownership priority must contain every feature exactly once")
+        boxes = dict(self.feature_boxes)
+        if set(boxes) != set(self.feature_ids):
+            raise ValueError("feature ownership boxes must match feature IDs")
+        for feature_id, box in boxes.items():
+            if len(box) != 4 or not (0 <= box[0] < box[2] <= 1 and 0 <= box[1] < box[3] <= 1):
+                raise ValueError(f"feature ownership box is invalid for {feature_id!r}")
+        object.__setattr__(self, "feature_boxes", MappingProxyType(boxes))
 
 
 @dataclass(frozen=True, slots=True)

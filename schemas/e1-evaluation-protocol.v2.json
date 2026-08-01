@@ -3,7 +3,7 @@
   "$id": "https://manufacturing-vision-studio.local/schemas/e1-evaluation-protocol.v2.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["$schema", "schema_version", "protocol_id", "protocol_version", "dataset_version", "evaluation_pipeline", "generator", "scopes", "threshold_selection", "acceptance_gates"],
+  "required": ["$schema", "schema_version", "protocol_id", "protocol_version", "dataset_version", "evaluation_pipeline", "generator", "scopes", "feature_ownership", "threshold_selection", "acceptance_gates"],
   "properties": {
     "$schema": {"const": "../../schemas/e1-evaluation-protocol.v2.json"},
     "schema_version": {"const": "2.0.0"},
@@ -13,6 +13,7 @@
     "evaluation_pipeline": {"$ref": "#/$defs/pipeline"},
     "generator": {"$ref": "#/$defs/generator"},
     "scopes": {"$ref": "#/$defs/scopes"},
+    "feature_ownership": {"$ref": "#/$defs/feature_ownership"},
     "threshold_selection": {"$ref": "#/$defs/thresholds"},
     "acceptance_gates": {"type": "array", "minItems": 10, "items": {"$ref": "#/$defs/gate"}}
   },
@@ -24,6 +25,10 @@
     "block": {"type": "object", "additionalProperties": false, "required": ["seed_family", "start", "count"], "properties": {"seed_family": {"type": "string", "pattern": "-v2$"}, "start": {"type": "integer", "minimum": 0, "maximum": 4294967295}, "count": {"type": "integer", "minimum": 1}}},
     "scopes": {"type": "object", "additionalProperties": false, "required": ["development", "smoke", "calibration", "release_test"], "properties": {"development": {"$ref": "#/$defs/scope_counts"}, "smoke": {"$ref": "#/$defs/scope_counts"}, "calibration": {"$ref": "#/$defs/scope_counts"}, "release_test": {"$ref": "#/$defs/scope_counts"}}},
     "scope_counts": {"type": "object", "additionalProperties": false, "required": ["clean", "nuisance", "defect", "trust_boundary", "case_count"], "properties": {"clean": {"type": "integer"}, "nuisance": {"type": "integer"}, "defect": {"type": "integer"}, "trust_boundary": {"type": "integer"}, "case_count": {"type": "integer"}}},
+    "feature_ownership": {"type": "object", "additionalProperties": false, "required": ["algorithm", "feature_ids", "priority", "by_revision"], "properties": {"algorithm": {"const": "exclusive-final-mask-owner-v1"}, "feature_ids": {"const": ["bottom_edge", "hole_left", "hole_right", "top_edge", "top_face"]}, "priority": {"const": ["hole_left", "hole_right", "top_edge", "bottom_edge", "top_face"]}, "by_revision": {"type": "object", "additionalProperties": false, "required": ["rev-A", "rev-B"], "properties": {"rev-A": {"$ref": "#/$defs/ownership_views"}, "rev-B": {"$ref": "#/$defs/ownership_views"}}}}},
+    "ownership_views": {"type": "object", "additionalProperties": false, "required": ["front", "oblique_left", "oblique_right"], "properties": {"front": {"$ref": "#/$defs/ownership_boxes"}, "oblique_left": {"$ref": "#/$defs/ownership_boxes"}, "oblique_right": {"$ref": "#/$defs/ownership_boxes"}}},
+    "ownership_boxes": {"type": "object", "additionalProperties": false, "required": ["bottom_edge", "hole_left", "hole_right", "top_edge", "top_face"], "properties": {"bottom_edge": {"$ref": "#/$defs/normalized_box"}, "hole_left": {"$ref": "#/$defs/normalized_box"}, "hole_right": {"$ref": "#/$defs/normalized_box"}, "top_edge": {"$ref": "#/$defs/normalized_box"}, "top_face": {"$ref": "#/$defs/normalized_box"}}},
+    "normalized_box": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1}, "minItems": 4, "maxItems": 4},
     "thresholds": {"type": "object", "additionalProperties": false, "required": ["locked_image_threshold"], "properties": {"locked_image_threshold": {"const": 0.0025}}},
     "gate": {"type": "object", "additionalProperties": false, "required": ["gate_id", "operator", "threshold"], "properties": {"gate_id": {"type": "string"}, "operator": {"type": "string"}, "threshold": {}}}
   }

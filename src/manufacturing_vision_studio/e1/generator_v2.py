@@ -52,7 +52,9 @@ class E1V2Generator:
             render_plan.cad_revision,
             render_plan.view_id,
             image_size=(width, height),
-            feature_regions=v1_protocol.feature_regions_for_view(render_plan.view_id),
+            feature_regions=self.protocol.feature_ownership(
+                render_plan.cad_revision, render_plan.view_id
+            ).feature_boxes,
         )
         reference = _render_pristine(render_plan, geometry)
         mask = Image.new("L", (width, height), 0)

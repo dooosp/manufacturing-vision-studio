@@ -22,6 +22,23 @@
     "calibration": {"clean": 24, "nuisance": 30, "defect": 60, "trust_boundary": 6, "case_count": 120},
     "release_test": {"clean": 48, "nuisance": 60, "defect": 120, "trust_boundary": 12, "case_count": 240}
   },
+  "feature_ownership": {
+    "algorithm": "exclusive-final-mask-owner-v1",
+    "feature_ids": ["bottom_edge", "hole_left", "hole_right", "top_edge", "top_face"],
+    "priority": ["hole_left", "hole_right", "top_edge", "bottom_edge", "top_face"],
+    "by_revision": {
+      "rev-A": {
+        "front": {"bottom_edge": [0.1, 0.75, 0.9, 0.88], "hole_left": [0.2, 0.32, 0.39, 0.68], "hole_right": [0.61, 0.32, 0.8, 0.68], "top_edge": [0.1, 0.12, 0.9, 0.25], "top_face": [0.1, 0.14, 0.9, 0.86]},
+        "oblique_left": {"bottom_edge": [0.12, 0.73, 0.88, 0.86], "hole_left": [0.24, 0.34, 0.43, 0.68], "hole_right": [0.6, 0.32, 0.77, 0.65], "top_edge": [0.12, 0.14, 0.88, 0.27], "top_face": [0.12, 0.16, 0.88, 0.84]},
+        "oblique_right": {"bottom_edge": [0.12, 0.73, 0.88, 0.86], "hole_left": [0.23, 0.32, 0.4, 0.65], "hole_right": [0.57, 0.34, 0.76, 0.68], "top_edge": [0.12, 0.14, 0.88, 0.27], "top_face": [0.12, 0.16, 0.88, 0.84]}
+      },
+      "rev-B": {
+        "front": {"bottom_edge": [0.1, 0.75, 0.9, 0.88], "hole_left": [0.2, 0.32, 0.39, 0.68], "hole_right": [0.6178125, 0.32, 0.8078125, 0.68], "top_edge": [0.1, 0.12, 0.9, 0.25], "top_face": [0.1, 0.14, 0.9, 0.86]},
+        "oblique_left": {"bottom_edge": [0.12, 0.73, 0.88, 0.86], "hole_left": [0.24, 0.34, 0.43, 0.68], "hole_right": [0.6078125, 0.32, 0.7778125, 0.65], "top_edge": [0.12, 0.14, 0.88, 0.27], "top_face": [0.12, 0.16, 0.88, 0.84]},
+        "oblique_right": {"bottom_edge": [0.12, 0.73, 0.88, 0.86], "hole_left": [0.23, 0.32, 0.4, 0.65], "hole_right": [0.5778125, 0.34, 0.7678125, 0.68], "top_edge": [0.12, 0.14, 0.88, 0.27], "top_face": [0.12, 0.16, 0.88, 0.84]}
+      }
+    }
+  },
   "threshold_selection": {"locked_image_threshold": 0.0025},
   "acceptance_gates": [
     {"gate_id": "medium_high_defect_recall", "operator": "gte", "threshold": 0.9},
