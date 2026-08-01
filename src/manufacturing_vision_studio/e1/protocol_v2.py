@@ -352,7 +352,7 @@ def _validate_protocol_document(document: Mapping[str, Any]) -> None:
 def _validate_feature_ownership(ownership: Mapping[str, Any]) -> None:
     expected_ids = ("bottom_edge", "hole_left", "hole_right", "top_edge", "top_face")
     expected_priority = ("hole_left", "hole_right", "top_edge", "bottom_edge", "top_face")
-    if _string(ownership, "algorithm") != "exclusive-final-mask-owner-v1":
+    if _string(ownership, "algorithm") != "exclusive_half_open_boxes_v2":
         raise E1V2ProtocolError("v2 feature ownership algorithm is invalid")
     if tuple(_string_list(ownership, "feature_ids")) != expected_ids:
         raise E1V2ProtocolError("v2 feature ownership feature IDs are invalid")

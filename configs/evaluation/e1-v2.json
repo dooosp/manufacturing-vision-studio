@@ -23,7 +23,7 @@
     "release_test": {"clean": 48, "nuisance": 60, "defect": 120, "trust_boundary": 12, "case_count": 240}
   },
   "feature_ownership": {
-    "algorithm": "exclusive-final-mask-owner-v1",
+    "algorithm": "exclusive_half_open_boxes_v2",
     "feature_ids": ["bottom_edge", "hole_left", "hole_right", "top_edge", "top_face"],
     "priority": ["hole_left", "hole_right", "top_edge", "bottom_edge", "top_face"],
     "by_revision": {

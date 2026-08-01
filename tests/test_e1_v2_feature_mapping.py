@@ -21,28 +21,36 @@ EXPECTED_OWNERSHIP_HASHES = {
     (
         CadRevision.REV_A,
         ViewId.FRONT,
-    ): "7ddf6856ad491c7829de2bb5844a64b8ab4a39a639c03fa4498c48f5928a2d6d",
+    ): "eadc490b04f8240e8356b3e20e75db08d79dfc5e27af180574d707836b3b776f",
     (
         CadRevision.REV_A,
         ViewId.OBLIQUE_LEFT,
-    ): "2026211daac28184efe141aac11f4399d0f66d7d4b2f2d319a15cbee0a15d3b7",
+    ): "2d2a52ecae44ccae98455180211aaf528078707948dbf83f792223c550d3a074",
     (
         CadRevision.REV_A,
         ViewId.OBLIQUE_RIGHT,
-    ): "7a51d4bf06ada7d78cc8eb3c78009bb678c714a4f4185170080164006580aa58",
+    ): "8c42a88c3ffdf3dda10b073665b6d7a565ddde54a7a7450ba3c0f4782be14477",
     (
         CadRevision.REV_B,
         ViewId.FRONT,
-    ): "8d215ceee748ce22ca7b083b60c25ea9e7d1db75a8e848319365d580c9afab5c",
+    ): "5f69348a9ce7b646054dce02f95a0ff8ebd420c641ab40f414b0afa645ef49bc",
     (
         CadRevision.REV_B,
         ViewId.OBLIQUE_LEFT,
-    ): "bc3bac7f4957d0a55b95da35adcedfa6490428ee89f4ab359eccaf610a4e18ef",
+    ): "1fb2f752d738a7bf595f8cae97860452a3a8628ea5cb3eec4347d1f42fe43b8b",
     (
         CadRevision.REV_B,
         ViewId.OBLIQUE_RIGHT,
-    ): "cb2f2ff047cadd514fc8bacce56f8d6527a51a24acd5def29b6f56ee8e6adcc2",
+    ): "373337ec46da320dbbcdf0ffa14c22794db05208cd9491e5b272e0d34169830d",
 }
+
+
+def test_protocol_uses_the_preregistered_ownership_hash_algorithm() -> None:
+    """Changing the hash header algorithm would invalidate independent verification."""
+
+    config = load_e1_v2_protocol().feature_ownership(CadRevision.REV_A, ViewId.FRONT)
+
+    assert config.algorithm == "exclusive_half_open_boxes_v2"
 
 
 def hole_over_face_coordinate(revision: CadRevision, view: ViewId) -> tuple[int, int]:
