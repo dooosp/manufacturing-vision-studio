@@ -1,9 +1,11 @@
 import type {
   Decision,
   E1EvaluationSnapshot,
+  EvaluationConfusionMatrix,
   EvaluationGate,
   EvaluationGalleryItem,
   EvaluationMetric,
+  EvaluationPositiveCase,
   EvaluationProfile,
   EvaluationSlice,
   EvaluationTrustCase,
@@ -579,34 +581,144 @@ function normalizeGates(
   return normalized;
 }
 
-function validatePixelDistribution(value: unknown): void {
-  boundedArray(value, "metrics.pixel_level.positive_case_distribution", 120).forEach(
-    (rawCase, index) => {
-      const field = `metrics.pixel_level.positive_case_distribution.${index}`;
-      const pixelCase = requiredObject(rawCase, field);
-      requiredIdentifier(pixelCase.case_id, `${field}.case_id`);
-      if (pixelCase.defect_type !== null) {
-        requiredEnum(
-          pixelCase.defect_type,
-          ["scratch", "stain", "edge_chip", "burr", "blocked_hole", "hole_geometry_deviation"] as const,
-          `${field}.defect_type`,
-        );
-      }
-      if (pixelCase.severity !== null) {
-        requiredEnum(pixelCase.severity, ["LOW", "MEDIUM", "HIGH"] as const, `${field}.severity`);
-      }
-      boundedNumber(pixelCase.iou, `${field}.iou`, 0, 1);
-      boundedNumber(pixelCase.dice, `${field}.dice`, 0, 1);
-      nonNegativeInteger(pixelCase.truth_positive_pixels, `${field}.truth_positive_pixels`);
-      nonNegativeInteger(pixelCase.predicted_positive_pixels, `${field}.predicted_positive_pixels`);
-      nonNegativeInteger(pixelCase.intersection_pixels, `${field}.intersection_pixels`);
-    },
+function requireEvidenceCounts(
+  evidence: MetricEvidence,
+  expectedNumerator: number,
+  expectedDenominator: number,
+  field: string,
+): void {
+  if (
+    evidence.numerator !== expectedNumerator
+    || evidence.denominator !== expectedDenominator
+  ) {
+    throw malformedEvaluation(field);
+  }
+}
+
+function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const midpoint = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) return sorted[midpoint] ?? null;
+  const left = sorted[midpoint - 1];
+  const right = sorted[midpoint];
+  return left === undefined || right === undefined ? null : (left + right) / 2;
+}
+
+function valuesMatch(left: number | null, right: number | null): boolean {
+  return left === null || right === null
+    ? left === right
+    : Math.abs(left - right) <= 1e-12;
+}
+
+function normalizePixelDistribution(
+  value: unknown,
+  expectedPositiveCount: number,
+  medianDice: MetricEvidence,
+  medianIou: MetricEvidence,
+  maskPrecision: MetricEvidence,
+  maskRecall: MetricEvidence,
+): EvaluationPositiveCase[] {
+  const field = "metrics.pixel_level.positive_case_distribution";
+  const seenCaseIds = new Set<string>();
+  const distribution = boundedArray(value, field, 120).map((rawCase, index) => {
+    const caseField = `${field}.${index}`;
+    const pixelCase = requiredObject(rawCase, caseField);
+    const caseId = requiredIdentifier(pixelCase.case_id, `${caseField}.case_id`);
+    if (seenCaseIds.has(caseId)) throw malformedEvaluation(`${caseField}.case_id`);
+    seenCaseIds.add(caseId);
+    const truthPositivePixels = nonNegativeInteger(
+      pixelCase.truth_positive_pixels,
+      `${caseField}.truth_positive_pixels`,
+    );
+    if (truthPositivePixels === 0) throw malformedEvaluation(`${caseField}.truth_positive_pixels`);
+    const predictedPositivePixels = nonNegativeInteger(
+      pixelCase.predicted_positive_pixels,
+      `${caseField}.predicted_positive_pixels`,
+    );
+    const intersectionPixels = nonNegativeInteger(
+      pixelCase.intersection_pixels,
+      `${caseField}.intersection_pixels`,
+    );
+    if (
+      intersectionPixels > truthPositivePixels
+      || intersectionPixels > predictedPositivePixels
+    ) {
+      throw malformedEvaluation(`${caseField}.intersection_pixels`);
+    }
+    const dice = boundedNumber(pixelCase.dice, `${caseField}.dice`, 0, 1);
+    const iou = boundedNumber(pixelCase.iou, `${caseField}.iou`, 0, 1);
+    const diceDenominator = truthPositivePixels + predictedPositivePixels;
+    const unionPixels = diceDenominator - intersectionPixels;
+    const expectedDice = diceDenominator === 0 ? 1 : 2 * intersectionPixels / diceDenominator;
+    const expectedIou = unionPixels === 0 ? 1 : intersectionPixels / unionPixels;
+    if (Math.abs(dice - expectedDice) > 1e-12) throw malformedEvaluation(`${caseField}.dice`);
+    if (Math.abs(iou - expectedIou) > 1e-12) throw malformedEvaluation(`${caseField}.iou`);
+    return {
+      case_id: caseId,
+      defect_type: pixelCase.defect_type === null
+        ? null
+        : requiredEnum(
+            pixelCase.defect_type,
+            ["scratch", "stain", "edge_chip", "burr", "blocked_hole", "hole_geometry_deviation"] as const,
+            `${caseField}.defect_type`,
+          ),
+      severity: pixelCase.severity === null
+        ? null
+        : requiredEnum(
+            pixelCase.severity,
+            ["LOW", "MEDIUM", "HIGH"] as const,
+            `${caseField}.severity`,
+          ),
+      iou,
+      dice,
+      truth_positive_pixels: truthPositivePixels,
+      predicted_positive_pixels: predictedPositivePixels,
+      intersection_pixels: intersectionPixels,
+    } satisfies EvaluationPositiveCase;
+  });
+  if (distribution.length !== expectedPositiveCount) throw malformedEvaluation(field);
+
+  const observedMedianDice = median(distribution.map((entry) => entry.dice));
+  const observedMedianIou = median(distribution.map((entry) => entry.iou));
+  if (!valuesMatch(medianDice.value, observedMedianDice)) {
+    throw malformedEvaluation("metrics.pixel_level.positive_case_median_dice.value");
+  }
+  if (!valuesMatch(medianIou.value, observedMedianIou)) {
+    throw malformedEvaluation("metrics.pixel_level.positive_case_median_iou.value");
+  }
+
+  const pixelTotals = distribution.reduce(
+    (totals, entry) => ({
+      truth: totals.truth + entry.truth_positive_pixels,
+      predicted: totals.predicted + entry.predicted_positive_pixels,
+      intersection: totals.intersection + entry.intersection_pixels,
+    }),
+    { truth: 0, predicted: 0, intersection: 0 },
   );
+  requireEvidenceCounts(
+    maskPrecision,
+    pixelTotals.intersection,
+    pixelTotals.predicted,
+    "metrics.pixel_level.mask_precision",
+  );
+  requireEvidenceCounts(
+    maskRecall,
+    pixelTotals.intersection,
+    pixelTotals.truth,
+    "metrics.pixel_level.mask_recall",
+  );
+  return distribution;
 }
 
 function normalizeMetrics(value: unknown, verdict: EvaluationVerdict): Pick<
   E1EvaluationSnapshot,
-  "gates" | "metrics" | "slices" | "trust_boundary"
+  | "gates"
+  | "metrics"
+  | "slices"
+  | "trust_boundary"
+  | "confusion_matrix"
+  | "positive_case_distribution"
 > {
   const metrics = requiredObject(value, "metrics");
   requireExact(metrics.evaluation_split, "test", "metrics.evaluation_split");
@@ -614,15 +726,58 @@ function normalizeMetrics(value: unknown, verdict: EvaluationVerdict): Pick<
 
   const image = requiredObject(metrics.image_level, "metrics.image_level");
   const confusion = requiredObject(image.confusion, "metrics.image_level.confusion");
-  const confusionCounts = ["true_positive", "true_negative", "false_positive", "false_negative"]
-    .map((key) => nonNegativeInteger(confusion[key], `metrics.image_level.confusion.${key}`));
-  const sampleCount = nonNegativeInteger(confusion.sample_count, "metrics.image_level.confusion.sample_count");
-  if (confusionCounts.reduce((sum, count) => sum + count, 0) !== sampleCount) {
+  const confusionMatrix: EvaluationConfusionMatrix = {
+    true_positive: nonNegativeInteger(
+      confusion.true_positive,
+      "metrics.image_level.confusion.true_positive",
+    ),
+    true_negative: nonNegativeInteger(
+      confusion.true_negative,
+      "metrics.image_level.confusion.true_negative",
+    ),
+    false_positive: nonNegativeInteger(
+      confusion.false_positive,
+      "metrics.image_level.confusion.false_positive",
+    ),
+    false_negative: nonNegativeInteger(
+      confusion.false_negative,
+      "metrics.image_level.confusion.false_negative",
+    ),
+    sample_count: nonNegativeInteger(
+      confusion.sample_count,
+      "metrics.image_level.confusion.sample_count",
+    ),
+  };
+  if (
+    confusionMatrix.true_positive
+      + confusionMatrix.true_negative
+      + confusionMatrix.false_positive
+      + confusionMatrix.false_negative
+    !== confusionMatrix.sample_count
+  ) {
     throw malformedEvaluation("metrics.image_level.confusion.sample_count");
   }
   const imagePrecision = readProportion(image.precision, "metrics.image_level.precision");
   const imageRecall = readProportion(image.recall, "metrics.image_level.recall");
-  readProportion(image.specificity, "metrics.image_level.specificity");
+  const specificity = readProportion(image.specificity, "metrics.image_level.specificity");
+  requireEvidenceCounts(
+    imagePrecision,
+    confusionMatrix.true_positive,
+    confusionMatrix.true_positive + confusionMatrix.false_positive,
+    "metrics.image_level.precision",
+  );
+  requireEvidenceCounts(
+    imageRecall,
+    confusionMatrix.true_positive,
+    confusionMatrix.true_positive + confusionMatrix.false_negative,
+    "metrics.image_level.recall",
+  );
+  requireEvidenceCounts(
+    specificity,
+    confusionMatrix.true_negative,
+    confusionMatrix.true_negative + confusionMatrix.false_positive,
+    "metrics.image_level.specificity",
+  );
   readScalar(image.f1, "metrics.image_level.f1");
   validateRanking(image.average_precision, "metrics.image_level.average_precision");
   validateRanking(image.auroc, "metrics.image_level.auroc");
@@ -641,11 +796,21 @@ function normalizeMetrics(value: unknown, verdict: EvaluationVerdict): Pick<
     pixel.positive_case_median_dice,
     "metrics.pixel_level.positive_case_median_dice",
   );
-  readScalar(pixel.positive_case_median_iou, "metrics.pixel_level.positive_case_median_iou");
+  const medianIou = readScalar(
+    pixel.positive_case_median_iou,
+    "metrics.pixel_level.positive_case_median_iou",
+  );
   const maskPrecision = readProportion(pixel.mask_precision, "metrics.pixel_level.mask_precision");
   const maskRecall = readProportion(pixel.mask_recall, "metrics.pixel_level.mask_recall");
   readProportion(pixel.empty_mask_accuracy, "metrics.pixel_level.empty_mask_accuracy");
-  validatePixelDistribution(pixel.positive_case_distribution);
+  const positiveCaseDistribution = normalizePixelDistribution(
+    pixel.positive_case_distribution,
+    confusionMatrix.true_positive + confusionMatrix.false_negative,
+    medianDice,
+    medianIou,
+    maskPrecision,
+    maskRecall,
+  );
 
   const engineering = requiredObject(metrics.engineering_level, "metrics.engineering_level");
   const featureMapping = readProportion(
@@ -763,6 +928,8 @@ function normalizeMetrics(value: unknown, verdict: EvaluationVerdict): Pick<
     ],
     slices,
     trust_boundary: trustBoundary,
+    confusion_matrix: confusionMatrix,
+    positive_case_distribution: positiveCaseDistribution,
   };
 }
 
@@ -792,7 +959,27 @@ function normalizeNullableAssetUrl(value: unknown, field: string): string | null
   return value === null ? null : normalizeAssetUrl(value, field);
 }
 
-function normalizeGalleryItem(value: unknown, index: number): EvaluationGalleryItem | null {
+function normalizeExpectedAssetUrl(value: unknown, expected: string, field: string): string {
+  const url = normalizeAssetUrl(value, field);
+  if (url !== expected) throw malformedEvaluation(field);
+  return url;
+}
+
+function normalizeExpectedNullableAssetUrl(
+  value: unknown,
+  expected: string,
+  field: string,
+): string | null {
+  const url = normalizeNullableAssetUrl(value, field);
+  if (url !== null && url !== expected) throw malformedEvaluation(field);
+  return url;
+}
+
+function normalizeGalleryItem(
+  value: unknown,
+  index: number,
+  profile: EvaluationProfile,
+): EvaluationGalleryItem {
   const field = `error_gallery.${index}`;
   const item = requiredObject(value, field);
   const caseId = requiredIdentifier(item.case_id, `${field}.case_id`);
@@ -800,38 +987,63 @@ function normalizeGalleryItem(value: unknown, index: number): EvaluationGalleryI
   requireExact(identity.part_id, "MVS-E1-PLATE-001", `${field}.part_identity.part_id`);
   const revision = requiredEnum(identity.cad_revision, ["rev-A", "rev-B"] as const, `${field}.part_identity.cad_revision`);
   const sourceHashes = requiredObject(item.source_hashes, `${field}.source_hashes`);
-  requiredSha256(sourceHashes.reference_sha256, `${field}.source_hashes.reference_sha256`);
-  requiredSha256(sourceHashes.inspection_sha256, `${field}.source_hashes.inspection_sha256`);
-  requiredSha256(
+  const referenceSha256 = requiredSha256(
+    sourceHashes.reference_sha256,
+    `${field}.source_hashes.reference_sha256`,
+  );
+  const inspectionSha256 = requiredSha256(
+    sourceHashes.inspection_sha256,
+    `${field}.source_hashes.inspection_sha256`,
+  );
+  const authoritativeMaskSha256 = requiredSha256(
     sourceHashes.authoritative_mask_sha256,
     `${field}.source_hashes.authoritative_mask_sha256`,
   );
-  if (sourceHashes.predicted_mask_sha256 !== null) {
-    requiredSha256(
+  const predictedMaskSha256 = sourceHashes.predicted_mask_sha256 === null
+    ? null
+    : requiredSha256(
       sourceHashes.predicted_mask_sha256,
       `${field}.source_hashes.predicted_mask_sha256`,
     );
-  }
   const assets = requiredObject(item.assets, `${field}.assets`);
-  const referenceUrl = normalizeNullableAssetUrl(
+  const assetRoot = `/api/v1/e1/evaluation/assets/${profile}/${caseId}`;
+  const referenceUrl = normalizeExpectedAssetUrl(
     assets.reference_image_url,
+    `${assetRoot}/reference.png`,
     `${field}.assets.reference_image_url`,
   );
-  const inspectionUrl = normalizeNullableAssetUrl(
+  const inspectionUrl = normalizeExpectedAssetUrl(
     assets.inspection_image_url,
+    `${assetRoot}/inspection.png`,
     `${field}.assets.inspection_image_url`,
   );
-  const authoritativeMaskUrl = normalizeNullableAssetUrl(
+  const authoritativeMaskUrl = normalizeExpectedAssetUrl(
     assets.authoritative_mask_url,
+    `${assetRoot}/authoritative-mask.png`,
     `${field}.assets.authoritative_mask_url`,
   );
-  const predictedMaskUrl = normalizeNullableAssetUrl(
+  const predictedMaskUrl = normalizeExpectedNullableAssetUrl(
     assets.predicted_mask_url,
+    `${assetRoot}/predicted-mask.png`,
     `${field}.assets.predicted_mask_url`,
   );
-  const overlayUrl = normalizeNullableAssetUrl(assets.overlay_url, `${field}.assets.overlay_url`);
-  const assetUrl = overlayUrl ?? inspectionUrl ?? referenceUrl;
-  if (!assetUrl) return null;
+  const overlayUrl = normalizeExpectedNullableAssetUrl(
+    assets.overlay_url,
+    `${assetRoot}/overlay.png`,
+    `${field}.assets.overlay_url`,
+  );
+  if (predictedMaskSha256 === null && predictedMaskUrl !== null) {
+    throw malformedEvaluation(`${field}.assets.predicted_mask_url`);
+  }
+  if (predictedMaskSha256 === null && overlayUrl !== null) {
+    throw malformedEvaluation(`${field}.assets.overlay_url`);
+  }
+  if (predictedMaskSha256 !== null && predictedMaskUrl === null) {
+    throw malformedEvaluation(`${field}.assets.predicted_mask_url`);
+  }
+  if (predictedMaskSha256 !== null && overlayUrl === null) {
+    throw malformedEvaluation(`${field}.assets.overlay_url`);
+  }
   return {
     gallery_item_id: `${caseId}:${index}`,
     case_id: caseId,
@@ -850,8 +1062,19 @@ function normalizeGalleryItem(value: unknown, index: number): EvaluationGalleryI
     ),
     part_id: "MVS-E1-PLATE-001",
     cad_revision: revision,
-    asset_url: assetUrl,
-    mask_url: overlayUrl ? null : predictedMaskUrl ?? authoritativeMaskUrl,
+    source_hashes: {
+      reference_sha256: referenceSha256,
+      inspection_sha256: inspectionSha256,
+      authoritative_mask_sha256: authoritativeMaskSha256,
+      predicted_mask_sha256: predictedMaskSha256,
+    },
+    assets: {
+      reference_image_url: referenceUrl,
+      inspection_image_url: inspectionUrl,
+      authoritative_mask_url: authoritativeMaskUrl,
+      predicted_mask_url: predictedMaskUrl,
+      overlay_url: overlayUrl,
+    },
     expected_feature_id: requiredNullableString(
       item.expected_feature_id,
       `${field}.expected_feature_id`,
@@ -984,11 +1207,16 @@ function normalizeEvaluation(
   }
   const reproducibilityEquivalent = validateReproducibility(evaluation.reproducibility);
   const rawGallery = boundedArray(evaluation.error_gallery, "error_gallery", 12);
-  const gallery = rawGallery
-    .map(normalizeGalleryItem)
-    .filter((item): item is EvaluationGalleryItem => item !== null);
+  const gallery = rawGallery.map((item, index) => normalizeGalleryItem(item, index, profile));
   const metrics = evaluation.metrics === null
-    ? { gates: [], metrics: [], slices: [], trust_boundary: [] }
+    ? {
+        gates: [],
+        metrics: [],
+        slices: [],
+        trust_boundary: [],
+        confusion_matrix: null,
+        positive_case_distribution: [],
+      }
     : normalizeMetrics(evaluation.metrics, verdict);
   if (evaluation.metrics !== null) {
     const rawMetrics = requiredObject(evaluation.metrics, "metrics");

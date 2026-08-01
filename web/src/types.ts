@@ -70,6 +70,50 @@ export interface EvaluationTrustCase {
   published_artifact_count: number;
 }
 
+export interface EvaluationConfusionMatrix {
+  true_positive: number;
+  true_negative: number;
+  false_positive: number;
+  false_negative: number;
+  sample_count: number;
+}
+
+export type EvaluationDefectType =
+  | "scratch"
+  | "stain"
+  | "edge_chip"
+  | "burr"
+  | "blocked_hole"
+  | "hole_geometry_deviation";
+
+export type EvaluationSeverity = "LOW" | "MEDIUM" | "HIGH";
+
+export interface EvaluationPositiveCase {
+  case_id: string;
+  defect_type: EvaluationDefectType | null;
+  severity: EvaluationSeverity | null;
+  iou: number;
+  dice: number;
+  truth_positive_pixels: number;
+  predicted_positive_pixels: number;
+  intersection_pixels: number;
+}
+
+export interface EvaluationGallerySourceHashes {
+  reference_sha256: string;
+  inspection_sha256: string;
+  authoritative_mask_sha256: string;
+  predicted_mask_sha256: string | null;
+}
+
+export interface EvaluationGalleryAssets {
+  reference_image_url: string;
+  inspection_image_url: string;
+  authoritative_mask_url: string;
+  predicted_mask_url: string | null;
+  overlay_url: string | null;
+}
+
 export interface EvaluationGalleryItem {
   gallery_item_id: string;
   case_id: string;
@@ -83,8 +127,8 @@ export interface EvaluationGalleryItem {
     | "bundle_verification_failure";
   part_id: string;
   cad_revision: "rev-A" | "rev-B";
-  asset_url: string;
-  mask_url: string | null;
+  source_hashes: EvaluationGallerySourceHashes;
+  assets: EvaluationGalleryAssets;
   expected_feature_id: string | null;
   predicted_feature_id: string | null;
   failure_reason: string | null;
@@ -133,6 +177,8 @@ export interface E1EvaluationSnapshot {
   metrics: EvaluationMetric[];
   slices: EvaluationSlice[];
   trust_boundary: EvaluationTrustCase[];
+  confusion_matrix: EvaluationConfusionMatrix | null;
+  positive_case_distribution: EvaluationPositiveCase[];
   gallery: EvaluationGalleryItem[];
   gallery_total: number;
   exclusions: string[];

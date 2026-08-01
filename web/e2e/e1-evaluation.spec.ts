@@ -54,6 +54,34 @@ function ranking(value: number, positiveCount: number, negativeCount: number) {
   };
 }
 
+const PIXEL_INTERSECTION = 92;
+const PIXEL_TRUTH = 100;
+const PIXEL_PREDICTED = 100;
+const PIXEL_DICE = (2 * PIXEL_INTERSECTION) / (PIXEL_TRUTH + PIXEL_PREDICTED);
+const PIXEL_IOU = PIXEL_INTERSECTION / (PIXEL_TRUTH + PIXEL_PREDICTED - PIXEL_INTERSECTION);
+
+function positiveCaseDistribution() {
+  const defectTypes = [
+    "scratch",
+    "stain",
+    "edge_chip",
+    "burr",
+    "blocked_hole",
+    "hole_geometry_deviation",
+  ] as const;
+  const severities = ["LOW", "MEDIUM", "HIGH"] as const;
+  return Array.from({ length: 12 }, (_, index) => ({
+    case_id: `e1-positive-${String(index + 1).padStart(2, "0")}`,
+    defect_type: defectTypes[index % defectTypes.length],
+    severity: severities[index % severities.length],
+    dice: PIXEL_DICE,
+    iou: PIXEL_IOU,
+    truth_positive_pixels: PIXEL_TRUTH,
+    predicted_positive_pixels: PIXEL_PREDICTED,
+    intersection_pixels: PIXEL_INTERSECTION,
+  }));
+}
+
 function evaluationResult(profile: "mini" | "full") {
   const counts = profile === "mini"
     ? { total: 48, inference: 44, trust: 4 }
@@ -139,12 +167,12 @@ function evaluationResult(profile: "mini" | "full") {
         nuisance_only_false_positive_rate: proportion(0, 0, 6),
       },
       pixel_level: {
-        positive_case_median_dice: scalar(0.92),
-        positive_case_median_iou: scalar(0.86),
-        mask_precision: proportion(0.94, 94, 100),
-        mask_recall: proportion(0.91, 91, 100),
+        positive_case_median_dice: scalar(PIXEL_DICE),
+        positive_case_median_iou: scalar(PIXEL_IOU),
+        mask_precision: proportion(PIXEL_DICE, 12 * PIXEL_INTERSECTION, 12 * PIXEL_PREDICTED),
+        mask_recall: proportion(PIXEL_DICE, 12 * PIXEL_INTERSECTION, 12 * PIXEL_TRUTH),
         empty_mask_accuracy: proportion(1, 20, 20),
-        positive_case_distribution: [],
+        positive_case_distribution: positiveCaseDistribution(),
       },
       engineering_level: {
         affected_feature_mapping_accuracy: proportion(1, 12, 12),
@@ -206,32 +234,43 @@ function evaluationResult(profile: "mini" | "full") {
         "local_absolute_paths",
       ],
     },
-    error_gallery: Array.from({ length: 9 }, (_, index) => ({
-      case_id: `e1-case-${String(index + 1).padStart(2, "0")}`,
-      category: index % 2 === 0 ? "low_dice" : "wrong_feature_mapping",
-      part_identity: {
-        part_id: "MVS-E1-PLATE-001",
-        cad_revision: index % 2 === 0 ? "rev-A" : "rev-B",
-      },
-      score: index % 2 === 0 ? 0.042 : 0.0004,
-      threshold: 0.0025,
-      expected_feature_id: "top_face",
-      predicted_feature_id: index % 2 === 0 ? "top_face" : "edge_feature",
-      failure_reason: index % 2 === 0 ? "Dice below review target." : "Feature binding differs.",
-      source_hashes: {
-        reference_sha256: SHA.sourceReference,
-        inspection_sha256: SHA.sourceInspection,
-        authoritative_mask_sha256: SHA.sourceTruth,
-        predicted_mask_sha256: SHA.sourcePrediction,
-      },
-      assets: {
-        reference_image_url: `/api/v1/e1/gallery/e1-case-${index + 1}-reference.png`,
-        inspection_image_url: `/api/v1/e1/gallery/e1-case-${index + 1}-inspection.png`,
-        authoritative_mask_url: `/api/v1/e1/gallery/e1-case-${index + 1}-truth.png`,
-        predicted_mask_url: `/api/v1/e1/gallery/e1-case-${index + 1}-prediction.png`,
-        overlay_url: `/api/v1/e1/gallery/e1-case-${index + 1}-overlay.png`,
-      },
-    })),
+    error_gallery: Array.from({ length: 9 }, (_, index) => {
+      const trustCase = index === 0;
+      const caseId = `e1-case-${String(index + 1).padStart(2, "0")}`;
+      const assetRoot = `/api/v1/e1/evaluation/assets/${profile}/${caseId}`;
+      return {
+        case_id: caseId,
+        category: trustCase
+          ? "revision_mismatch"
+          : index % 2 === 0 ? "low_dice" : "wrong_feature_mapping",
+        part_identity: {
+          part_id: "MVS-E1-PLATE-001",
+          cad_revision: index % 2 === 0 ? "rev-A" : "rev-B",
+        },
+        score: trustCase ? null : index % 2 === 0 ? 0.042 : 0.0004,
+        threshold: 0.0025,
+        expected_feature_id: trustCase ? null : "top_face",
+        predicted_feature_id: trustCase ? null : index % 2 === 0 ? "top_face" : "edge_feature",
+        failure_reason: trustCase
+          ? "REVISION_MISMATCH"
+          : index % 2 === 0 ? "Dice below review target." : "Feature binding differs.",
+        source_hashes: {
+          reference_sha256: SHA.sourceReference,
+          inspection_sha256: SHA.sourceInspection,
+          authoritative_mask_sha256: SHA.sourceTruth,
+          predicted_mask_sha256: trustCase ? null : SHA.sourcePrediction,
+        },
+        assets: {
+          reference_image_url: `${assetRoot}/reference.png`,
+          inspection_image_url: `${assetRoot}/inspection.png`,
+          authoritative_mask_url: `${assetRoot}/authoritative-mask.png`,
+          predicted_mask_url: trustCase
+            ? null
+            : `${assetRoot}/predicted-mask.png`,
+          overlay_url: trustCase ? null : `${assetRoot}/overlay.png`,
+        },
+      };
+    }),
     exclusions: ["No real camera imagery is in scope."],
     limitations: [
       "Synthetic evidence only; no field-performance claim is permitted.",
@@ -297,7 +336,7 @@ async function installApiMocks(
       await latest(route, latestCalls, profile);
       return;
     }
-    if (pathname.startsWith("/api/v1/e1/gallery/")) {
+    if (pathname.startsWith("/api/v1/e1/evaluation/assets/")) {
       await fulfillGallery(route);
       return;
     }
@@ -337,6 +376,21 @@ test("renders the read-only E1 evidence surface with semantic, bounded evidence"
   await expect(gateTable.locator("tbody tr")).toHaveCount(10);
   await expect(gateTable.getByRole("row", { name: /Medium\/high defect recall/ })).toContainText("12 / 12");
 
+  const confusionTable = page.getByRole("table", { name: "E1 held-out image confusion matrix" });
+  await expect(confusionTable.getByLabel("True positive (TP): 12")).toBeVisible();
+  await expect(confusionTable.getByLabel("True negative (TN): 20")).toBeVisible();
+  await expect(confusionTable.getByLabel("False positive (FP): 0")).toBeVisible();
+  await expect(confusionTable.getByLabel("False negative (FN): 0")).toBeVisible();
+  await expect(confusionTable.locator("tfoot tr")).toContainText("32");
+
+  const distributionTable = page.getByRole("table", {
+    name: "E1 positive-case Dice and IoU distribution",
+  });
+  await expect(distributionTable.locator("tbody tr")).toHaveCount(12);
+  await expect(distributionTable.getByRole("row", { name: /e1-positive-01/ })).toContainText("0.9200");
+  await expect(distributionTable.getByRole("row", { name: /e1-positive-01/ })).toContainText("0.8519");
+  await expect(page.getByText("Showing all 12 positive cases", { exact: true })).toBeVisible();
+
   const sliceTable = page.getByRole("table", { name: "E1 metric results by evaluation slice" });
   await expect(sliceTable.getByText("Recall by severity · MEDIUM", { exact: true })).toBeVisible();
   const trustTable = page.getByRole("table", { name: "E1 trust-boundary results" });
@@ -344,10 +398,32 @@ test("renders the read-only E1 evidence surface with semantic, bounded evidence"
 
   await expect(page.locator(".evaluation-gallery figure")).toHaveCount(8);
   await expect(page.getByText("Showing 8 of 9 gallery items", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Error explorer" })).toBeVisible();
+  const trustGalleryCase = page.locator(".evaluation-gallery figure").first();
+  await expect(trustGalleryCase.locator("img")).toHaveCount(3);
+  await expect(trustGalleryCase.locator(".evaluation-gallery-asset-missing")).toHaveCount(2);
+  await expect(trustGalleryCase).toContainText(SHA.sourceReference);
+  await expect(trustGalleryCase).toContainText(SHA.sourceInspection);
+  await expect(trustGalleryCase).toContainText(SHA.sourceTruth);
+  await expect(trustGalleryCase).toContainText("REVISION_MISMATCH");
+  await expect(page.locator('img[src="null"], img[src="undefined"], img[src=""]')).toHaveCount(0);
+  const fullyVisualGalleryCase = page.locator(".evaluation-gallery figure").nth(1);
+  const fullyVisualAssets = fullyVisualGalleryCase.locator("img");
+  await expect(fullyVisualAssets).toHaveCount(5);
+  await fullyVisualAssets.last().scrollIntoViewIfNeeded();
+  await expect.poll(() => fullyVisualAssets.evaluateAll((images) =>
+    images.every((image) => image.complete && image.naturalWidth > 0),
+  )).toBe(true);
+  await expect(fullyVisualGalleryCase).toContainText(SHA.sourcePrediction);
+  await expect(fullyVisualGalleryCase).toContainText("0.0004");
+  await expect(fullyVisualGalleryCase).toContainText("0.0025");
   const firstGalleryImage = page.locator(".evaluation-gallery img").first();
   await firstGalleryImage.scrollIntoViewIfNeeded();
   await expect(firstGalleryImage).toHaveJSProperty("complete", true);
   expect(await firstGalleryImage.evaluate((image) => image.naturalWidth)).toBeGreaterThan(0);
+  await expect(page.getByText("make evaluate-e1-mini", { exact: true })).toBeVisible();
+  await expect(page.getByText("make evaluate-e1-full", { exact: true })).toBeVisible();
+  await expect(page.getByText("make verify-e1-results", { exact: true })).toBeVisible();
   expect(mocks.getLatestCalls()).toBe(1);
   expect(mocks.getRequestedProfiles()).toEqual(["mini"]);
   expect(mocks.getE1Methods()).not.toContain("POST");
@@ -380,6 +456,10 @@ test("renders the read-only E1 evidence surface with semantic, bounded evidence"
   const koreanGateTable = page.getByRole("table", { name: "E1 수락 게이트 결과" });
   await expect(koreanGateTable).toBeVisible();
   await expect(koreanGateTable.getByText("중간/높음 결함 재현율", { exact: true })).toBeVisible();
+  await expect(page.getByRole("table", { name: "E1 보류 이미지 혼동행렬" })).toBeVisible();
+  await expect(page.getByRole("table", { name: "E1 양성 케이스 Dice 및 IoU 분포" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "오류 탐색기" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "정확한 재현 명령" })).toBeVisible();
 
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByRole("heading", { name: "합성 강건성 평가" })).toBeVisible();
@@ -450,6 +530,9 @@ test("renders calibration HOLD without inventing zero-valued test metrics", asyn
     { exact: true },
   )).toBeVisible();
   await expect(page.getByRole("table", { name: "E1 acceptance gate results" })).toHaveCount(0);
+  await expect(page.getByRole("table", { name: "E1 held-out image confusion matrix" })).toHaveCount(0);
+  await expect(page.getByRole("table", { name: "E1 positive-case Dice and IoU distribution" })).toHaveCount(0);
+  await expect(page.getByText("make verify-e1-results", { exact: true })).toBeVisible();
   expect(mocks.getRequestedProfiles()).toEqual(["mini"]);
   expect(mocks.getE1Methods()).not.toContain("POST");
   expect(mocks.getWriteRequests()).toEqual([]);
@@ -457,7 +540,8 @@ test("renders calibration HOLD without inventing zero-valued test metrics", asyn
 
 test("rejects an error-gallery URL that escapes the E1 asset namespace", async ({ page }) => {
   const escapedResult = evaluationResult("mini");
-  escapedResult.error_gallery[0]!.assets.overlay_url = "/api/v1/e1/%2e%2e/%2e%2e/health";
+  escapedResult.error_gallery[0]!.assets.overlay_url =
+    "/api/v1/e1/evaluation/assets/mini/e1-case-01/%2e%2e/%2e%2e/health";
   const mocks = await installApiMocks(page, async (route) => {
     await route.fulfill({ json: escapedResult });
   });
@@ -468,6 +552,103 @@ test("rejects an error-gallery URL that escapes the E1 asset namespace", async (
   await expect(page.getByRole("heading", { name: "Evaluation evidence is unavailable" })).toBeVisible();
   await expect(page.getByRole("alert")).toContainText(
     "Malformed E1 evaluation response: error_gallery.0.assets.overlay_url",
+  );
+  expect(mocks.getE1Methods()).toEqual(["GET"]);
+});
+
+test("rejects an absolute error-gallery asset URL", async ({ page }) => {
+  const escapedResult = evaluationResult("mini");
+  escapedResult.error_gallery[1]!.assets.reference_image_url = "https://example.invalid/reference.png";
+  const mocks = await installApiMocks(page, async (route) => {
+    await route.fulfill({ json: escapedResult });
+  });
+
+  await page.goto("/");
+  await page.getByRole("tab", { name: "E1 Evaluation" }).click();
+
+  await expect(page.getByRole("heading", { name: "Evaluation evidence is unavailable" })).toBeVisible();
+  await expect(page.getByRole("alert")).toContainText(
+    "Malformed E1 evaluation response: error_gallery.1.assets.reference_image_url",
+  );
+  expect(mocks.getE1Methods()).toEqual(["GET"]);
+});
+
+test("rejects a predicted-mask URL without its source hash", async ({ page }) => {
+  const malformedResult = evaluationResult("mini");
+  malformedResult.error_gallery[0]!.assets.predicted_mask_url =
+    "/api/v1/e1/evaluation/assets/mini/e1-case-01/predicted-mask.png";
+  const mocks = await installApiMocks(page, async (route) => {
+    await route.fulfill({ json: malformedResult });
+  });
+
+  await page.goto("/");
+  await page.getByRole("tab", { name: "E1 Evaluation" }).click();
+
+  await expect(page.getByRole("heading", { name: "Evaluation evidence is unavailable" })).toBeVisible();
+  await expect(page.getByRole("alert")).toContainText(
+    "Malformed E1 evaluation response: error_gallery.0.assets.predicted_mask_url",
+  );
+  expect(mocks.getE1Methods()).toEqual(["GET"]);
+});
+
+test("rejects an in-namespace URL that is not the declared asset route", async ({ page }) => {
+  const malformedResult = evaluationResult("mini");
+  malformedResult.error_gallery[1]!.assets.reference_image_url =
+    "/api/v1/e1/gallery/e1-case-02/reference.png";
+  const mocks = await installApiMocks(page, async (route) => {
+    await route.fulfill({ json: malformedResult });
+  });
+
+  await page.goto("/");
+  await page.getByRole("tab", { name: "E1 Evaluation" }).click();
+
+  await expect(page.getByRole("heading", { name: "Evaluation evidence is unavailable" })).toBeVisible();
+  await expect(page.getByRole("alert")).toContainText(
+    "Malformed E1 evaluation response: error_gallery.1.assets.reference_image_url",
+  );
+  expect(mocks.getE1Methods()).toEqual(["GET"]);
+});
+
+const REQUIRED_GALLERY_ASSETS = [
+  "reference_image_url",
+  "inspection_image_url",
+  "authoritative_mask_url",
+] as const;
+
+for (const assetField of REQUIRED_GALLERY_ASSETS) {
+  test(`rejects a missing core gallery asset: ${assetField}`, async ({ page }) => {
+    const malformedResult = evaluationResult("mini");
+    const assets: Record<(typeof REQUIRED_GALLERY_ASSETS)[number], string | null> =
+      malformedResult.error_gallery[1]!.assets;
+    assets[assetField] = null;
+    const mocks = await installApiMocks(page, async (route) => {
+      await route.fulfill({ json: malformedResult });
+    });
+
+    await page.goto("/");
+    await page.getByRole("tab", { name: "E1 Evaluation" }).click();
+
+    await expect(page.getByRole("heading", { name: "Evaluation evidence is unavailable" })).toBeVisible();
+    await expect(page.getByRole("alert")).toContainText(
+      `Malformed E1 evaluation response: error_gallery.1.assets.${assetField}`,
+    );
+    expect(mocks.getE1Methods()).toEqual(["GET"]);
+  });
+}
+
+test("rejects a Dice value that disagrees with the retained pixel evidence", async ({ page }) => {
+  const malformedResult = evaluationResult("mini");
+  malformedResult.metrics.pixel_level.positive_case_distribution[0]!.dice = 0.99;
+  const mocks = await installApiMocks(page, async (route) => {
+    await route.fulfill({ json: malformedResult });
+  });
+
+  await page.goto("/");
+  await page.getByRole("tab", { name: "E1 Evaluation" }).click();
+
+  await expect(page.getByRole("heading", { name: "Evaluation evidence is unavailable" })).toBeVisible();
+  await expect(page.getByRole("alert")).toContainText(
+    "Malformed E1 evaluation response: metrics.pixel_level.positive_case_distribution.0.dice",
   );
   expect(mocks.getE1Methods()).toEqual(["GET"]);
 });

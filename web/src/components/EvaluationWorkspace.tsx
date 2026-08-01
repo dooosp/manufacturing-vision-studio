@@ -2,6 +2,7 @@ import type { Copy } from "../copy";
 import type {
   E1EvaluationSnapshot,
   EvaluationGateStatus,
+  EvaluationGalleryItem,
   EvaluationMetric,
   EvaluationProfile,
   EvaluationSlice,
@@ -27,6 +28,11 @@ const PROFILE_CASE_COUNTS = {
 } as const;
 
 const GALLERY_LIMIT = 8;
+const REPRODUCTION_COMMANDS = [
+  "make evaluate-e1-mini",
+  "make evaluate-e1-full",
+  "make verify-e1-results",
+] as const;
 
 function formatDate(value: string, locale: Locale): string {
   const timestamp = Date.parse(value);
@@ -115,6 +121,112 @@ function SectionTitle({
       <h3 id={id}>{title}</h3>
       <p>{hint}</p>
     </div>
+  );
+}
+
+function GalleryAsset({
+  caseId,
+  label,
+  unavailable,
+  url,
+}: {
+  caseId: string;
+  label: string;
+  unavailable: string;
+  url: string | null;
+}) {
+  return (
+    <div className="evaluation-gallery-asset">
+      <span>{label}</span>
+      {url ? (
+        <img
+          src={url}
+          alt={`${caseId} — ${label}`}
+          loading="lazy"
+          decoding="async"
+        />
+      ) : (
+        <div className="evaluation-gallery-asset-missing" role="img" aria-label={`${label}: ${unavailable}`}>
+          <span aria-hidden="true">∅</span>
+          <small>{unavailable}</small>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GalleryCase({ item, copy }: { item: EvaluationGalleryItem; copy: Copy }) {
+  const evaluationCopy = copy.evaluation;
+  const assets = [
+    [evaluationCopy.referenceAsset, item.assets.reference_image_url],
+    [evaluationCopy.inspectionAsset, item.assets.inspection_image_url],
+    [evaluationCopy.authoritativeMaskAsset, item.assets.authoritative_mask_url],
+    [evaluationCopy.predictedMaskAsset, item.assets.predicted_mask_url],
+    [evaluationCopy.overlayAsset, item.assets.overlay_url],
+  ] as const;
+  const hashes = [
+    [evaluationCopy.sourceReferenceHash, item.source_hashes.reference_sha256],
+    [evaluationCopy.sourceInspectionHash, item.source_hashes.inspection_sha256],
+    [evaluationCopy.sourceAuthoritativeMaskHash, item.source_hashes.authoritative_mask_sha256],
+    [evaluationCopy.sourcePredictedMaskHash, item.source_hashes.predicted_mask_sha256],
+  ] as const;
+
+  return (
+    <figure>
+      <figcaption>
+        <div className="evaluation-gallery-heading">
+          <strong>{item.case_id}</strong>
+          <span>{formatIdentifierLabel(item.category)}</span>
+        </div>
+      </figcaption>
+      <div
+        className="evaluation-gallery-assets"
+        role="group"
+        aria-label={`${item.case_id}: ${evaluationCopy.galleryTitle}`}
+      >
+        {assets.map(([label, url]) => (
+          <GalleryAsset
+            caseId={item.case_id}
+            key={label}
+            label={label}
+            unavailable={evaluationCopy.assetUnavailable}
+            url={url}
+          />
+        ))}
+      </div>
+      <div className="evaluation-gallery-evidence">
+        <dl className="evaluation-gallery-metadata">
+          <div><dt>{evaluationCopy.category}</dt><dd>{formatIdentifierLabel(item.category)}</dd></div>
+          <div><dt>{evaluationCopy.part}</dt><dd>{item.part_id}</dd></div>
+          <div><dt>{evaluationCopy.cadRevision}</dt><dd>{item.cad_revision}</dd></div>
+          <div>
+            <dt>{evaluationCopy.expectedFeature}</dt>
+            <dd>{item.expected_feature_id ?? evaluationCopy.notRecorded}</dd>
+          </div>
+          <div>
+            <dt>{evaluationCopy.predictedFeature}</dt>
+            <dd>{item.predicted_feature_id ?? evaluationCopy.notRecorded}</dd>
+          </div>
+          <div><dt>{evaluationCopy.score}</dt><dd>{item.score === null ? "—" : String(item.score)}</dd></div>
+          <div><dt>{evaluationCopy.galleryThreshold}</dt><dd>{item.threshold.toFixed(4)}</dd></div>
+          <div>
+            <dt>{evaluationCopy.failureReason}</dt>
+            <dd>{item.failure_reason ?? evaluationCopy.notRecorded}</dd>
+          </div>
+        </dl>
+        <div className="evaluation-source-hashes">
+          <h4>{evaluationCopy.sourceHashes}</h4>
+          <dl>
+            {hashes.map(([label, digest]) => (
+              <div key={label}>
+                <dt>{label}</dt>
+                <dd>{digest ? <code>{digest}</code> : evaluationCopy.notRecorded}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      </div>
+    </figure>
   );
 }
 
@@ -356,6 +468,136 @@ export function EvaluationWorkspace({
             )}
           </section>
 
+          <section className="evaluation-section" aria-labelledby="evaluation-confusion-title">
+            <SectionTitle
+              id="evaluation-confusion-title"
+              title={evaluationCopy.confusionTitle}
+              hint={evaluationCopy.confusionHint}
+            />
+            {snapshot.confusion_matrix ? (
+              <div
+                className="evaluation-table-scroll"
+                role="region"
+                aria-label={evaluationCopy.confusionTable}
+                tabIndex={0}
+              >
+                <table className="evaluation-confusion-table">
+                  <caption className="sr-only">{evaluationCopy.confusionTable}</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">{evaluationCopy.actualOutcome}</th>
+                      <th scope="col">{evaluationCopy.predictedAnomaly}</th>
+                      <th scope="col">{evaluationCopy.predictedNormal}</th>
+                      <th scope="col">{evaluationCopy.totalEvaluated}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <th scope="row">{evaluationCopy.actualAnomaly}</th>
+                      <td aria-label={`${evaluationCopy.truePositive}: ${snapshot.confusion_matrix.true_positive}`}>
+                        <span>TP</span>
+                        <strong>{snapshot.confusion_matrix.true_positive.toLocaleString()}</strong>
+                      </td>
+                      <td aria-label={`${evaluationCopy.falseNegative}: ${snapshot.confusion_matrix.false_negative}`}>
+                        <span>FN</span>
+                        <strong>{snapshot.confusion_matrix.false_negative.toLocaleString()}</strong>
+                      </td>
+                      <td>{(
+                        snapshot.confusion_matrix.true_positive
+                        + snapshot.confusion_matrix.false_negative
+                      ).toLocaleString()}</td>
+                    </tr>
+                    <tr>
+                      <th scope="row">{evaluationCopy.actualNormal}</th>
+                      <td aria-label={`${evaluationCopy.falsePositive}: ${snapshot.confusion_matrix.false_positive}`}>
+                        <span>FP</span>
+                        <strong>{snapshot.confusion_matrix.false_positive.toLocaleString()}</strong>
+                      </td>
+                      <td aria-label={`${evaluationCopy.trueNegative}: ${snapshot.confusion_matrix.true_negative}`}>
+                        <span>TN</span>
+                        <strong>{snapshot.confusion_matrix.true_negative.toLocaleString()}</strong>
+                      </td>
+                      <td>{(
+                        snapshot.confusion_matrix.false_positive
+                        + snapshot.confusion_matrix.true_negative
+                      ).toLocaleString()}</td>
+                    </tr>
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <th scope="row">{evaluationCopy.totalEvaluated}</th>
+                      <td>{(
+                        snapshot.confusion_matrix.true_positive
+                        + snapshot.confusion_matrix.false_positive
+                      ).toLocaleString()}</td>
+                      <td>{(
+                        snapshot.confusion_matrix.false_negative
+                        + snapshot.confusion_matrix.true_negative
+                      ).toLocaleString()}</td>
+                      <td>{snapshot.confusion_matrix.sample_count.toLocaleString()}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            ) : (
+              <p className="evaluation-section-empty">{evaluationCopy.noConfusion}</p>
+            )}
+          </section>
+
+          <section className="evaluation-section" aria-labelledby="evaluation-distribution-title">
+            <SectionTitle
+              id="evaluation-distribution-title"
+              title={evaluationCopy.distributionTitle}
+              hint={evaluationCopy.distributionHint}
+            />
+            {snapshot.positive_case_distribution.length > 0 ? (
+              <>
+                <p className="gallery-count" role="status">
+                  {evaluationCopy.showingDistribution}
+                  {` ${snapshot.positive_case_distribution.length.toLocaleString()} ${evaluationCopy.positiveCases}`}
+                </p>
+                <div
+                  className="evaluation-table-scroll evaluation-distribution-scroll"
+                  role="region"
+                  aria-label={evaluationCopy.distributionTable}
+                  tabIndex={0}
+                >
+                  <table>
+                    <caption className="sr-only">{evaluationCopy.distributionTable}</caption>
+                    <thead>
+                      <tr>
+                        <th scope="col">{evaluationCopy.caseId}</th>
+                        <th scope="col">{evaluationCopy.defectType}</th>
+                        <th scope="col">{evaluationCopy.severity}</th>
+                        <th scope="col">{evaluationCopy.dice}</th>
+                        <th scope="col">{evaluationCopy.iou}</th>
+                        <th scope="col">{evaluationCopy.truthPixels}</th>
+                        <th scope="col">{evaluationCopy.predictedPixels}</th>
+                        <th scope="col">{evaluationCopy.intersectionPixels}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {snapshot.positive_case_distribution.map((item) => (
+                        <tr key={item.case_id}>
+                          <th scope="row"><code>{item.case_id}</code></th>
+                          <td>{item.defect_type ? formatIdentifierLabel(item.defect_type) : "—"}</td>
+                          <td>{item.severity ?? "—"}</td>
+                          <td>{item.dice.toFixed(4)}</td>
+                          <td>{item.iou.toFixed(4)}</td>
+                          <td>{item.truth_positive_pixels.toLocaleString()}</td>
+                          <td>{item.predicted_positive_pixels.toLocaleString()}</td>
+                          <td>{item.intersection_pixels.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            ) : (
+              <p className="evaluation-section-empty">{evaluationCopy.noDistribution}</p>
+            )}
+          </section>
+
           <section className="evaluation-section" aria-labelledby="evaluation-slices-title">
             <SectionTitle id="evaluation-slices-title" title={evaluationCopy.slicesTitle} hint={evaluationCopy.slicesHint} />
             {snapshot.slices.length > 0 ? (
@@ -452,53 +694,29 @@ export function EvaluationWorkspace({
                 </p>
                 <div className="evaluation-gallery">
                   {snapshot.gallery.slice(0, GALLERY_LIMIT).map((item) => (
-                    <figure key={item.gallery_item_id}>
-                      <div className="evaluation-gallery-image">
-                        <img
-                          src={item.asset_url}
-                          alt={`${item.case_id}; ${formatIdentifierLabel(item.category)}`}
-                          loading="lazy"
-                          decoding="async"
-                        />
-                        {item.mask_url ? (
-                          <img className="evaluation-gallery-mask" src={item.mask_url} alt="" aria-hidden="true" loading="lazy" decoding="async" />
-                        ) : null}
-                      </div>
-                      <figcaption>
-                        <div>
-                          <strong>{item.case_id}</strong>
-                          <span>{formatIdentifierLabel(item.category)}</span>
-                        </div>
-                        <dl>
-                          <div>
-                            <dt>{evaluationCopy.part}</dt>
-                            <dd>{item.part_id}@{item.cad_revision}</dd>
-                          </div>
-                          <div>
-                            <dt>{evaluationCopy.expectedFeature}</dt>
-                            <dd>{item.expected_feature_id ?? evaluationCopy.notRecorded}</dd>
-                          </div>
-                          <div>
-                            <dt>{evaluationCopy.predictedFeature}</dt>
-                            <dd>{item.predicted_feature_id ?? evaluationCopy.notRecorded}</dd>
-                          </div>
-                          <div>
-                            <dt>{evaluationCopy.score}</dt>
-                            <dd>{item.score === null ? "—" : item.score.toFixed(4)}</dd>
-                          </div>
-                          <div><dt>{evaluationCopy.galleryThreshold}</dt><dd>{item.threshold.toFixed(4)}</dd></div>
-                          {item.failure_reason ? (
-                            <div><dt>{evaluationCopy.failureReason}</dt><dd>{item.failure_reason}</dd></div>
-                          ) : null}
-                        </dl>
-                      </figcaption>
-                    </figure>
+                    <GalleryCase key={item.gallery_item_id} item={item} copy={copy} />
                   ))}
                 </div>
               </>
             ) : (
               <p className="evaluation-section-empty">{evaluationCopy.noGallery}</p>
             )}
+          </section>
+
+          <section className="evaluation-section" aria-labelledby="evaluation-reproduction-title">
+            <SectionTitle
+              id="evaluation-reproduction-title"
+              title={evaluationCopy.reproductionTitle}
+              hint={evaluationCopy.reproductionHint}
+            />
+            <ol
+              className="evaluation-reproduction-commands"
+              aria-label={evaluationCopy.reproductionCommands}
+            >
+              {REPRODUCTION_COMMANDS.map((command) => (
+                <li key={command}><code>{command}</code></li>
+              ))}
+            </ol>
           </section>
 
           <div className="evaluation-bottom-grid">
