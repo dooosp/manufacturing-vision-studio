@@ -48,6 +48,7 @@ class AdapterSpies:
     postfilter_inspection: bytes | None = None
     mapping_mask: bytes | None = None
     normalization_applied: bool | None = None
+    classifier_arguments: tuple[float, float] | None = None
 
 
 def make_source_fixture() -> SourceFixture:
@@ -179,9 +180,10 @@ def adapter_spies(monkeypatch: pytest.MonkeyPatch) -> AdapterSpies:
         events.append("score")
         return real_score(*args, **kwargs)
 
-    def recording_classify(*args, **kwargs):
+    def recording_classify(score: float, threshold: float):
         events.append("threshold")
-        return real_classify(*args, **kwargs)
+        spies.classifier_arguments = (score, threshold)
+        return real_classify(score, threshold)
 
     monkeypatch.setattr(model, "inspect", recording_model)
     monkeypatch.setattr(study_module, "filter_structural_residue", recording_filter)
@@ -333,6 +335,22 @@ def test_adapter_does_not_convert_downstream_failure_into_a_result(
     monkeypatch.setattr(adapter.model, "inspect", fail)
     with pytest.raises(ValueError, match="model integrity failure"):
         adapter.inspect(inference)
+
+
+def test_adapter_uses_the_task_owned_exact_threshold(
+    adapter_spies: AdapterSpies,
+    inference: StudyInferenceInput,
+) -> None:
+    changed_limits = dict(adapter_spies.adapter.study_protocol.phase_1_limits)
+    changed_limits["threshold"] = 0.75
+    adapter_spies.adapter.study_protocol = dataclasses.replace(
+        adapter_spies.adapter.study_protocol,
+        phase_1_limits=changed_limits,
+    )
+
+    result = adapter_spies.adapter.inspect(inference)
+
+    assert adapter_spies.classifier_arguments == (result.anomaly_score, 0.0025)
 
 
 @pytest.mark.parametrize(

@@ -35,6 +35,7 @@ from manufacturing_vision_studio.model import (
 
 _IMAGE_SIZE = (512, 384)
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024
+_STUDY_THRESHOLD = 0.0025
 
 
 def validate_canonical_rgb_png(
@@ -202,13 +203,12 @@ class StudyInferenceAdapter:
         )
         mapping = map_final_mask(postprocessing.mask_bytes, ownership)
         score = localized_anomaly_score(postprocessing.mask_bytes)
-        threshold = float(self.study_protocol.phase_1_limits["threshold"])
         return build_study_result(
             inference=inference,
             model_result=model_result,
             postprocessing=postprocessing,
             feature_mapping=mapping,
-            actual_outcome=classify_study_score(score, threshold),
+            actual_outcome=classify_study_score(score, _STUDY_THRESHOLD),
             anomaly_score=score,
         )
 
