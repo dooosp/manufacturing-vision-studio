@@ -14,6 +14,7 @@ from manufacturing_vision_studio.e1.geometry import (
     _abstain,
     _clamp,
     _component_estimate,
+    _component_median_shift,
     _evaluate_full_candidates,
     _identity,
     _normalized_transform,
@@ -71,6 +72,7 @@ def align_coarse_to_fine(
             pre_shift=(initial_dx, initial_dy),
             observed=(observed_rotation, observed_scale),
             search_size=search_size,
+            post_shift=_component_median_shift(reference_geometry, inspection_geometry),
         )
 
     reference_coarse = _downsample_majority(
@@ -152,6 +154,7 @@ def align_coarse_to_fine(
         ),
         search_size=search_size,
         reference_geometry=reference_geometry,
+        identity_post_shift=_component_median_shift(reference_geometry, inspection_geometry),
     )
 
 

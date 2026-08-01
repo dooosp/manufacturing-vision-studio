@@ -298,6 +298,7 @@ def align_largest_component(
             before,
             pre_shift=(dx, dy),
             observed=(observed_rotation, observed_scale),
+            post_shift=_component_median_shift(reference_geometry, inspection_geometry),
         )
     transforms: set[tuple[float, float, float, float]] = set()
     for rotation_offset in config.candidate_a_rotation_offsets:
@@ -344,6 +345,7 @@ def align_largest_component(
         counts=(len(candidates), 0, 0, pixels),
         search_size=None,
         reference_geometry=reference_geometry,
+        identity_post_shift=_component_median_shift(reference_geometry, inspection_geometry),
     )
 
 
@@ -488,6 +490,7 @@ def _resolve_candidates(
     counts: tuple[int, int, int, int],
     search_size: tuple[int, int] | None,
     reference_geometry: _ComponentGeometry,
+    identity_post_shift: tuple[float, float],
 ) -> AlignmentResult:
     if not candidates:
         return _abstain(
@@ -510,6 +513,7 @@ def _resolve_candidates(
             observed=observed,
             counts=counts,
             search_size=search_size,
+            post_shift=identity_post_shift,
         )
     if len(candidates) < 2:
         gap = 0.0
@@ -646,14 +650,16 @@ def _identity(
     observed: tuple[float, float],
     counts: tuple[int, int, int, int] = (0, 0, 0, 0),
     search_size: tuple[int, int] | None = None,
+    post_shift: tuple[float, float] | None = None,
 ) -> AlignmentResult:
+    measured_post_shift = pre_shift if post_shift is None else post_shift
     trace = AlignmentTrace(
         pre_normalization_shift_x=pre_shift[0],
         pre_normalization_shift_y=pre_shift[1],
         observed_rotation_degrees=observed[0],
         observed_scale_ratio=observed[1],
-        post_normalization_shift_x=pre_shift[0],
-        post_normalization_shift_y=pre_shift[1],
+        post_normalization_shift_x=measured_post_shift[0],
+        post_normalization_shift_y=measured_post_shift[1],
         objective_before=before.value,
         objective_after=before.value,
         foreground_iou_before=before.foreground_iou,
@@ -911,6 +917,12 @@ def _clamp(value: float, minimum: float, maximum: float) -> float:
 
 def _wrap_angle(value: float) -> float:
     return (value + 90.0) % 180.0 - 90.0
+
+
+def _component_median_shift(
+    reference: _ComponentGeometry, inspection: _ComponentGeometry
+) -> tuple[float, float]:
+    return reference.median_x - inspection.median_x, reference.median_y - inspection.median_y
 
 
 def _rounded(value: float) -> float:

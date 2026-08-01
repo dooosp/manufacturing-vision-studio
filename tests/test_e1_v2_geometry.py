@@ -1,18 +1,25 @@
 from __future__ import annotations
 
 import inspect
+import math
 from io import BytesIO
 
 import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
+from manufacturing_vision_studio.canonical import sha256_bytes
 from manufacturing_vision_studio.canonical_png import encode_png
 from manufacturing_vision_studio.e1.domain_v2 import EvaluationScope
 from manufacturing_vision_studio.e1.generator_v2 import E1V2Generator
 from manufacturing_vision_studio.e1.geometry import (
+    AlignmentCandidate,
+    AlignmentObjective,
+    AlignmentResult,
     AlignmentStatus,
     GeometryConfig,
+    _component_geometry,
+    _resolve_candidates,
     align_largest_component,
     alignment_objective,
     apply_correction,
@@ -20,6 +27,12 @@ from manufacturing_vision_studio.e1.geometry import (
     largest_component_silhouette,
 )
 from manufacturing_vision_studio.e1.geometry_search import align_coarse_to_fine
+from manufacturing_vision_studio.e1.model import (
+    filter_structural_residue,
+    localized_anomaly_score,
+)
+from manufacturing_vision_studio.e1.policy import E1InferencePolicy, classify_score
+from manufacturing_vision_studio.e1.protocol import load_e1_protocol
 from manufacturing_vision_studio.e1.protocol_v2 import load_e1_v2_protocol
 
 
@@ -90,6 +103,23 @@ def test_transform_translation_sign_and_border_fill_are_canonical() -> None:
     assert transformed == apply_correction(_png(image), rotation=0.0, scale=1.0, dx=2, dy=-3)
 
 
+def test_asymmetric_rotation_scale_translation_matches_fixed_golden_hash() -> None:
+    image = Image.new("RGB", (512, 384), (3, 5, 7))
+    draw = ImageDraw.Draw(image)
+    draw.polygon(((61, 47), (146, 52), (139, 119), (79, 103)), fill=(241, 31, 17))
+    draw.rectangle((303, 211, 337, 265), fill=(19, 227, 83))
+    draw.ellipse((410, 66, 435, 101), fill=(71, 89, 251))
+    image.putpixel((252, 190), (255, 255, 0))
+
+    transformed = apply_correction(
+        _png(image), rotation=1.0, scale=1.01, dx=2, dy=-3
+    )
+
+    assert sha256_bytes(transformed) == (
+        "4e20f17fb053e70eb44c254f7393e9ade6d39048db7f00b61692ad1d135141d7"
+    )
+
+
 def test_geometry_config_is_strictly_parsed_from_protocol_document() -> None:
     document = load_e1_v2_protocol().document
     config = geometry_config_from_document(document)
@@ -110,10 +140,15 @@ def test_runtime_alignment_signature_has_no_truth_or_case_inputs() -> None:
     assert forbidden.isdisjoint(inspect.signature(align_largest_component).parameters)
 
 
-@pytest.mark.parametrize("observed_scale", [0.98, 0.99, 1.01, 1.02])
+@pytest.mark.parametrize(
+    "observed_scale",
+    [0.98, 0.985, 0.99, 1.005, 1.01, 1.015, 1.02],
+)
 def test_candidate_a_reduces_scale_objective(observed_scale: float) -> None:
     reference = _plate()
-    inspection = _plate(scale=observed_scale)
+    inspection = apply_correction(
+        reference, rotation=0.0, scale=observed_scale, dx=0, dy=0
+    )
     result = align_largest_component(reference, inspection, _config())
     assert result.status is AlignmentStatus.APPLIED
     assert result.trace.candidates_evaluated <= 225
@@ -135,6 +170,33 @@ def test_identity_is_non_abstaining_and_preserves_original_bytes() -> None:
     assert result.trace.status_reason == "IDENTITY_BASELINE"
     assert result.trace.abstention_reason is None
     assert result.inspection_bytes == payload
+
+
+def test_identity_remeasures_post_shift_on_preserved_original_pixels() -> None:
+    generator = E1V2Generator()
+    plan = next(
+        plan
+        for plan in generator.plan_cases(EvaluationScope.DEVELOPMENT)
+        if plan.case_id == "e1-v2-development-defect-002"
+    )
+    case = generator.generate_case(plan)
+    result = align_largest_component(case.reference_bytes, case.inspection_bytes, _config())
+    reference_mask = largest_component_silhouette(
+        _decode_rgb(case.reference_bytes), chebyshev_threshold=18
+    )
+    inspection_mask = largest_component_silhouette(
+        _decode_rgb(case.inspection_bytes), chebyshev_threshold=18
+    )
+    reference_y, reference_x = np.nonzero(reference_mask)
+    inspection_y, inspection_x = np.nonzero(inspection_mask)
+
+    assert result.status is AlignmentStatus.IDENTITY
+    assert result.trace.post_normalization_shift_x == pytest.approx(
+        np.median(reference_x) - np.median(inspection_x)
+    )
+    assert result.trace.post_normalization_shift_y == pytest.approx(
+        np.median(reference_y) - np.median(inspection_y)
+    )
 
 
 def test_candidate_a_rejects_initial_translation_outside_bound() -> None:
@@ -199,6 +261,88 @@ def test_simultaneous_rotation_and_scale_bounds_abstain() -> None:
     assert result.inspection_bytes == inspection
 
 
+@pytest.mark.parametrize(
+    ("confidence_case", "best_value", "expected_status"),
+    [
+        (
+            "below",
+            math.nextafter(0.5347946707193266, math.inf),
+            AlignmentStatus.ABSTAIN,
+        ),
+        ("exact", 0.5347946707193266, AlignmentStatus.APPLIED),
+        (
+            "above",
+            math.nextafter(0.5347946707193266, -math.inf),
+            AlignmentStatus.APPLIED,
+        ),
+    ],
+)
+def test_relative_confidence_gap_boundary_uses_distinct_rendered_runner_up(
+    confidence_case: str,
+    best_value: float,
+    expected_status: AlignmentStatus,
+) -> None:
+    reference_payload = _plate()
+    raw_best = _decode_rgb(reference_payload).tobytes()
+    raw_second = bytearray(raw_best)
+    raw_second[0] ^= 1
+    reference_mask = largest_component_silhouette(
+        _decode_rgb(reference_payload), chebyshev_threshold=18
+    )
+    reference_geometry = _component_geometry(reference_mask, _config())
+    assert reference_geometry is not None
+    second_value = 0.5401966370902289
+    candidates = [
+        AlignmentCandidate(
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            AlignmentObjective(best_value, best_value, 0.0, 1.0),
+            raw_best,
+            sha256_bytes(raw_best),
+        ),
+        AlignmentCandidate(
+            0.0,
+            1.001,
+            0.0,
+            0.0,
+            AlignmentObjective(second_value, second_value, 0.0, 1.0),
+            bytes(raw_second),
+            sha256_bytes(bytes(raw_second)),
+        ),
+    ]
+    assert candidates[0].inspection_sha256 != candidates[1].inspection_sha256
+    expected_gap = (second_value - best_value) / second_value
+    if confidence_case == "below":
+        assert expected_gap < 0.01
+    elif confidence_case == "exact":
+        assert expected_gap == 0.01
+    else:
+        assert expected_gap > 0.01
+
+    result = _resolve_candidates(
+        reference_payload,
+        candidates,
+        AlignmentObjective(1.0, 1.0, 0.0, 0.0),
+        _config(),
+        pre_shift=(0.0, 0.0),
+        observed=(0.0, 1.0),
+        counts=(2, 0, 0, 2 * 512 * 384),
+        search_size=None,
+        reference_geometry=reference_geometry,
+        identity_post_shift=(0.0, 0.0),
+    )
+
+    assert result.status is expected_status
+    assert result.trace.confidence_gap == expected_gap
+    if expected_status is AlignmentStatus.ABSTAIN:
+        assert result.trace.abstention_reason == "AMBIGUOUS_ALIGNMENT"
+        assert result.inspection_bytes == reference_payload
+    else:
+        assert result.trace.abstention_reason is None
+
+
 def test_post_normalization_shift_is_remeasured_from_corrected_pixels() -> None:
     reference = _plate()
     result = align_largest_component(reference, _plate(scale=0.98, dx=1, dy=1), _config())
@@ -220,6 +364,7 @@ def test_post_normalization_shift_is_remeasured_from_corrected_pixels() -> None:
 
 def test_development_diagnostic_defects_are_preserved_after_image_only_alignment() -> None:
     generator = E1V2Generator()
+    downstream = E1InferencePolicy(load_e1_protocol())
     plans = generator.plan_cases(EvaluationScope.DEVELOPMENT)
     # Fixed medium/high scratch, stain, edge-chip, burr, blocked-hole, and
     # hole-deviation diagnostics spanning both revisions and all views.
@@ -250,7 +395,14 @@ def test_development_diagnostic_defects_are_preserved_after_image_only_alignment
             dice_drops.append(
                 _dice(identity_difference, truth) - _dice(corrected_difference, truth)
             )
-            classified += corrected_recall > 0.0 and result.status is not AlignmentStatus.ABSTAIN
+            classified += (
+                _classify_with_downstream_model(
+                    downstream,
+                    case.reference_bytes,
+                    result,
+                )
+                == "ANOMALY"
+            )
         candidate_metrics.append((recall_drops, dice_drops, classified))
     for recall_drops, dice_drops, classified in candidate_metrics:
         assert max(recall_drops) <= 0.05
@@ -275,3 +427,47 @@ def _recall(predicted: np.ndarray, truth: np.ndarray) -> float:
 def _dice(predicted: np.ndarray, truth: np.ndarray) -> float:
     denominator = np.count_nonzero(predicted) + np.count_nonzero(truth)
     return float(2 * np.count_nonzero(predicted & truth) / denominator)
+
+
+def _classify_with_downstream_model(
+    policy: E1InferencePolicy,
+    reference_bytes: bytes,
+    alignment_result: AlignmentResult,
+) -> str:
+    inspection_bytes = alignment_result.inspection_bytes
+    reference = policy.ingestor.ingest_bytes(
+        reference_bytes,
+        filename="diagnostic-reference.png",
+        declared_media_type="image/png",
+    )
+    inspection = policy.ingestor.ingest_bytes(
+        inspection_bytes,
+        filename="diagnostic-inspection.png",
+        declared_media_type="image/png",
+    )
+    model_result = policy.model.inspect(reference, inspection)
+    contract = policy.evaluation_configuration["mask_postprocessing"]
+    postprocessing = filter_structural_residue(
+        model_result.mask_bytes,
+        reference_bytes=reference_bytes,
+        inspection_bytes=inspection_bytes,
+        normalization_applied=alignment_result.status is AlignmentStatus.APPLIED,
+        long_thin_min_major_px=int(contract["long_thin_min_major_px"]),
+        long_thin_max_minor_px=int(contract["long_thin_max_minor_px"]),
+        affine_neutral_min_pixels=int(contract["affine_neutral_min_pixels"]),
+        affine_neutral_max_abs_luminance_delta=float(
+            contract["affine_neutral_max_abs_luminance_delta"]
+        ),
+        boundary_horizontal_min_width_px=int(contract["boundary_horizontal_min_width_px"]),
+        boundary_horizontal_max_height_px=int(contract["boundary_horizontal_max_height_px"]),
+        top_boundary_max_y_px=int(contract["top_boundary_max_y_px"]),
+        bottom_boundary_min_y_px=int(contract["bottom_boundary_min_y_px"]),
+        dark_fixture_max_luminance_delta=float(contract["dark_fixture_max_luminance_delta"]),
+    )
+    scoring = policy.evaluation_configuration["scoring"]
+    score = localized_anomaly_score(
+        postprocessing.mask_bytes,
+        window_size_px=int(scoring["local_window_size_px"]),
+        minimum_component_pixels=int(scoring["minimum_connected_component_pixels"]),
+    )
+    return classify_score(score, policy.image_threshold)
