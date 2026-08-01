@@ -195,6 +195,8 @@ def load_retired_v1_release_membership(
     projection = {key: value for key, value in document.items() if key != "membership_sha256"}
     if canonical_json_hash(projection) != claimed_hash:
         raise E1V2ProtocolError("retired v1 membership self hash does not match")
+    if document.get("v1_protocol_id") != "mvs-e1":
+        raise E1V2ProtocolError("retired v1 membership protocol ID binding is invalid")
     if document.get("v1_protocol_version") != "1.3.0":
         raise E1V2ProtocolError("retired v1 membership protocol binding is invalid")
     if document.get("v1_configuration_sha256") != (

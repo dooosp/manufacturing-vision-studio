@@ -64,7 +64,13 @@ def build_overlap_proof(
         "all_pairwise_zero": all_pairwise_zero,
         "retired_v1_release_overlap_count": sum(_total_overlap(pair) for pair in retired_pairs),
         "raw_empty_authoritative_mask_duplicates": raw_empty_duplicates,
+        "trust_authoritative_mask_not_applicable_category": "non_evaluable",
+        "trust_authoritative_mask_not_applicable_count": _trust_mask_not_applicable_count(
+            normalized
+        ),
     }
+    if not all_pairwise_zero:
+        raise E1V2ProtocolError("overlap proof found a non-zero leak")
     document["proof_sha256"] = canonical_json_hash(document)
     return document
 
@@ -117,11 +123,18 @@ def verify_overlap_proof(document: Mapping[str, object]) -> None:
     expected_empty_duplicates = _raw_empty_duplicate_count(all_members)
     if document.get("raw_empty_authoritative_mask_duplicates") != expected_empty_duplicates:
         raise E1V2ProtocolError("overlap proof empty-mask count does not recompute")
+    if document.get("trust_authoritative_mask_not_applicable_category") != "non_evaluable":
+        raise E1V2ProtocolError("overlap proof trust-mask category is invalid")
+    expected_trust_mask_count = _trust_mask_not_applicable_count(all_members)
+    if document.get("trust_authoritative_mask_not_applicable_count") != expected_trust_mask_count:
+        raise E1V2ProtocolError("overlap proof trust-mask count does not recompute")
     expected_all_zero = all(_pair_is_zero(pair) for pair in recomputed_pairs) and all(
         _pair_is_zero(pair) for pair in recomputed_retired
     )
     if document.get("all_pairwise_zero") is not expected_all_zero:
         raise E1V2ProtocolError("overlap proof zero claim does not recompute")
+    if not expected_all_zero:
+        raise E1V2ProtocolError("overlap proof found a non-zero leak")
     expected_retired_count = sum(_total_overlap(pair) for pair in recomputed_retired)
     if document.get("retired_v1_release_overlap_count") != expected_retired_count:
         raise E1V2ProtocolError("overlap proof retired count does not recompute")
@@ -203,22 +216,23 @@ def _normalize_members(
 
 
 def _validate_empty_mask_policy(member: Mapping[str, object]) -> None:
-    # A raw digest alone cannot prove emptiness. Empty-mask sharing is therefore
-    # counted only among the two explicitly negative groups; non-empty masks are
-    # enforced as a leak key below.
-    if member.get("defect_id") is None and member.get("group") not in {
-        "clean",
-        "nuisance",
-        "trust_boundary",
-    }:
+    group = member.get("group")
+    outcome = member.get("expected_outcome")
+    if group == "trust_boundary":
+        if member.get("defect_id") is not None or outcome != "ABSTAIN":
+            raise E1V2ProtocolError("overlap trust member has invalid truth declaration")
+        return
+    if member.get("defect_id") is None and group not in {"clean", "nuisance"}:
         raise E1V2ProtocolError("overlap member has invalid negative mask declaration")
+    if member.get("defect_id") is None and outcome != "NORMAL":
+        raise E1V2ProtocolError("overlap negative member has invalid truth declaration")
 
 
 def _member_identity(member: Mapping[str, object], key: str) -> object | None:
     if key == "seed_family_seed":
         return member["seed_family"], member["seed"]
     if key == "nonempty_authoritative_mask_sha256":
-        if member.get("group") in {"clean", "nuisance"} and member.get("defect_id") is None:
+        if _mask_category(member) != "nonempty":
             return None
         return member.get("authoritative_mask_sha256")
     return member.get(key)
@@ -254,11 +268,29 @@ def _raw_empty_duplicate_count(
     masks: list[str] = []
     for members in scope_members.values():
         for member in members:
-            if member.get("group") in {"clean", "nuisance"} and member.get("defect_id") is None:
+            if _mask_category(member) == "raw_empty_negative":
                 digest = member.get("authoritative_mask_sha256")
                 if isinstance(digest, str):
                     masks.append(digest)
     return len(masks) - len(set(masks))
+
+
+def _trust_mask_not_applicable_count(
+    scope_members: Mapping[EvaluationScope, Sequence[Mapping[str, object]]],
+) -> int:
+    return sum(
+        _mask_category(member) == "not_applicable"
+        for members in scope_members.values()
+        for member in members
+    )
+
+
+def _mask_category(member: Mapping[str, object]) -> str:
+    if member.get("group") == "trust_boundary":
+        return "not_applicable"
+    if member.get("group") in {"clean", "nuisance"} and member.get("defect_id") is None:
+        return "raw_empty_negative"
+    return "nonempty"
 
 
 def _require_pair_equal(actual: Mapping[str, object], expected: Mapping[str, object]) -> None:

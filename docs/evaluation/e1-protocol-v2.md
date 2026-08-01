@@ -18,7 +18,9 @@ Each v2 plan has a scope-specific case ID, recipe ID, seed family, and contiguou
 seed. Rendered records bind both source-image hashes, the authoritative-mask hash,
 expected outcome, defect ID, and the v2 case-binding hash. The overlap proof is
 recomputed from its declared membership and allows repeated raw empty masks only
-for declared clean or nuisance negatives; non-empty mask hashes are leak keys.
+for declared clean or nuisance negatives. Trust-boundary masks are reported as
+non-evaluable/not-applicable rather than as negative or positive pixel truth;
+non-empty evaluable mask hashes are leak keys.
 
 The checked-in retired-v1 membership is self-hashed and binds the v1.3 canonical
 config and historical mini/full manifests. `python scripts/verify_e1_v1_history.py`
