@@ -145,7 +145,9 @@ A standalone study module will:
 - validate canonical `512x384` RGB inputs;
 - derive the fixed correction parameters;
 - use identical inverse coefficients and median-border fill for all three
-  resampling modes;
+  resampling modes; the fill is the final inspection's one-pixel border with
+  corners included once, reduced by NumPy channel-wise median and converted to
+  `uint8` by truncation;
 - canonicalize output PNG bytes;
 - return immutable normalized bytes and a complete transform trace.
 
@@ -286,13 +288,17 @@ Each mode records:
 - residual pixels overall and in the fixed reference-boundary band.
 
 The reference-boundary band is frozen as follows: compute the median RGB of the
-one-pixel image border with each corner included once; mark foreground where the
-maximum absolute channel distance from that median is greater than `18`; retain
-the largest 8-connected component using `(-area, min_y, min_x, max_y, max_x)`
-ordering; mark its pixels that touch background in any 8-neighbor direction;
-and Chebyshev-dilate that boundary by exactly 3 pixels. The boundary residual is
-the count of final predicted-mask positives inside this band. The artifact also
-records total positives and `outside_boundary_residual = total - boundary`.
+one-pixel image border with each corner included once, using NumPy channel-wise
+median converted to `uint8` by truncation; mark foreground where the maximum
+absolute channel distance from that median is greater than `18`; retain the
+largest 8-connected component using
+`(-area, min_y, min_x, max_y, max_x)` ordering; mark its pixels that touch
+background in any 8-neighbor direction, treating pixels outside the image as
+background; and Chebyshev-dilate that boundary by exactly 3 pixels while
+clipping to image bounds. A missing foreground component invalidates the row.
+The boundary residual is the count of final predicted-mask positives inside
+this band. The artifact also records total positives and
+`outside_boundary_residual = total - boundary`.
 
 The three modes are ablations, not candidates. They are not ranked or selected.
 
