@@ -121,6 +121,47 @@ def test_truth_layer_direct_import_allowlist_is_complete_and_sorted() -> None:
     )
 
 
+def test_protocol_rejects_missing_ownership_map_key(tmp_path: Path) -> None:
+    """Catch a schema mutation that stops requiring one frozen ownership layout."""
+
+    fixture_dir, config_path, document = _project_local_protocol_copy(tmp_path)
+    try:
+        del document["ownership_map_hashes"]["rev-B/oblique_right"]
+        config_path.write_text(json.dumps(document))
+        with pytest.raises(StudyProtocolError):
+            load_study_protocol_v2(config_path)
+    finally:
+        shutil.rmtree(fixture_dir)
+
+
+def test_protocol_rejects_wrong_valid_format_ownership_map_hash(tmp_path: Path) -> None:
+    """Catch removal of semantic equality checking for frozen ownership-map hashes."""
+
+    fixture_dir, config_path, document = _project_local_protocol_copy(tmp_path)
+    try:
+        document["ownership_map_hashes"]["rev-B/oblique_right"] = "0" * 64
+        config_path.write_text(json.dumps(document))
+        with pytest.raises(StudyProtocolError, match="ownership-map hashes changed"):
+            load_study_protocol_v2(config_path)
+    finally:
+        shutil.rmtree(fixture_dir)
+
+
+def test_schema_requires_exactly_the_six_frozen_ownership_map_keys() -> None:
+    """Catch schema drift that adds, drops, or renames a frozen ownership layout key."""
+
+    schema = json.loads(STUDY_SCHEMA_PATH.read_text())
+    ownership_schema = schema["properties"]["ownership_map_hashes"]
+    assert set(ownership_schema["required"]) == {
+        "rev-A/front",
+        "rev-A/oblique_left",
+        "rev-A/oblique_right",
+        "rev-B/front",
+        "rev-B/oblique_left",
+        "rev-B/oblique_right",
+    }
+
+
 def test_frozen_diagnostic_matrix_has_exact_ids_and_seed_block() -> None:
     """Catch an incomplete, reordered, or colliding diagnostic snapshot."""
 
@@ -231,3 +272,14 @@ def _project_local_fixture_dir(tmp_path: Path) -> Path:
     fixture_dir = STUDY_PROJECT_ROOT / "tmp" / "e1-protocol-tests" / tmp_path.name
     fixture_dir.mkdir(parents=True)
     return fixture_dir
+
+
+def _project_local_protocol_copy(tmp_path: Path) -> tuple[Path, Path, dict[str, object]]:
+    fixture_dir = _project_local_fixture_dir(tmp_path)
+    config_path = fixture_dir / "config.json"
+    schema_path = fixture_dir / "schema.json"
+    document: dict[str, object] = json.loads(DEFAULT_STUDY_PROTOCOL_PATH.read_text())
+    document["$schema"] = "schema.json"
+    config_path.write_text(json.dumps(document))
+    schema_path.write_bytes(STUDY_SCHEMA_PATH.read_bytes())
+    return fixture_dir, config_path, document
