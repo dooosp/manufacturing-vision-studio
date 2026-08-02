@@ -898,6 +898,12 @@ def scan_study_dependencies(
         raise StudyRetentionError(
             f"forbidden direct import: {first.source} -> {first.target}"
         )
+    runtime_cycle = _study_owned_runtime_cycle(runtime_graph, study_owned)
+    if runtime_cycle:
+        raise StudyRetentionError(
+            "runtime cycle among study-owned modules: "
+            + " -> ".join(runtime_cycle)
+        )
     for name, expected in protocol.direct_import_allowlist().items():
         actual = tuple(sorted(direct_actual[name]))
         if actual != expected:
@@ -1423,6 +1429,39 @@ def _edge_key(edge: DependencyEdge) -> tuple[str, str, str]:
     return edge.source, edge.target, edge.kind
 
 
+def _study_owned_runtime_cycle(
+    graph: Mapping[str, set[str]],
+    study_owned: frozenset[str],
+) -> tuple[str, ...]:
+    state: dict[str, int] = {}
+    stack: list[str] = []
+    stack_positions: dict[str, int] = {}
+
+    def visit(source: str) -> tuple[str, ...]:
+        state[source] = 1
+        stack_positions[source] = len(stack)
+        stack.append(source)
+        for target in sorted(graph.get(source, set()).intersection(study_owned)):
+            target_state = state.get(target, 0)
+            if target_state == 0:
+                cycle = visit(target)
+                if cycle:
+                    return cycle
+            elif target_state == 1:
+                return tuple((*stack[stack_positions[target] :], target))
+        stack.pop()
+        stack_positions.pop(source)
+        state[source] = 2
+        return ()
+
+    for source in sorted(study_owned):
+        if state.get(source, 0) == 0:
+            cycle = visit(source)
+            if cycle:
+                return cycle
+    return ()
+
+
 def _forbidden_runtime_reachability(graph: Mapping[str, set[str]]) -> tuple[str, ...]:
     forbidden: set[str] = set()
     queue = deque(PERFORMANCE_ROOTS)
@@ -1867,23 +1906,59 @@ def _under_artifact_root(path: str, artifact_relative: str) -> bool:
 
 
 def _git_changed_paths(root: Path, older: str, newer: str) -> tuple[str, ...]:
-    output = _run_git(root, "diff", "--name-only", "--diff-filter=ACDMRTUXB", older, newer)
-    return tuple(sorted(line for line in output.splitlines() if line))
+    output = _run_git_bytes(
+        root,
+        "diff",
+        "--name-only",
+        "-z",
+        "--no-renames",
+        "--diff-filter=ACDMRTUXB",
+        older,
+        newer,
+    )
+    return tuple(
+        sorted(os.fsdecode(field) for field in _nul_fields(output, label="git diff"))
+    )
 
 
 def _git_status_paths(root: Path) -> tuple[str, ...]:
-    output = _run_git(root, "status", "--porcelain=v1", "--untracked-files=all")
+    output = _run_git_bytes(
+        root,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+    )
+    fields = _nul_fields(output, label="git status")
     paths: set[str] = set()
-    for line in output.splitlines():
-        if len(line) < 4:
+    index = 0
+    while index < len(fields):
+        record = fields[index]
+        if len(record) < 4 or record[2:3] != b" ":
             raise StudyRetentionError("git status output is malformed")
-        path = line[3:]
-        if " -> " in path:
-            path = path.split(" -> ", 1)[1]
-        if path.startswith('"'):
-            raise StudyRetentionError("quoted git status paths are unsupported")
-        paths.add(path)
+        status = record[:2]
+        path = record[3:]
+        if not path:
+            raise StudyRetentionError("git status output is malformed")
+        paths.add(os.fsdecode(path))
+        if b"R" in status or b"C" in status:
+            index += 1
+            if index >= len(fields) or not fields[index]:
+                raise StudyRetentionError("git status rename/copy output is malformed")
+            paths.add(os.fsdecode(fields[index]))
+        index += 1
     return tuple(sorted(paths))
+
+
+def _nul_fields(payload: bytes, *, label: str) -> tuple[bytes, ...]:
+    if not payload:
+        return ()
+    if not payload.endswith(b"\0"):
+        raise StudyRetentionError(f"{label} NUL-delimited output is malformed")
+    fields = tuple(payload[:-1].split(b"\0"))
+    if any(not field for field in fields):
+        raise StudyRetentionError(f"{label} NUL-delimited output is malformed")
+    return fields
 
 
 def _require_ancestor(root: Path, older: str, newer: str) -> None:
@@ -1918,6 +1993,21 @@ def _run_git(root: Path, *args: str) -> str:
         detail = completed.stderr.strip() or completed.stdout.strip()
         raise StudyRetentionError(f"git command failed: {' '.join(args)}: {detail}")
     return completed.stdout.strip()
+
+
+def _run_git_bytes(root: Path, *args: str) -> bytes:
+    try:
+        completed = subprocess.run(
+            ("git", "-C", os.fspath(root), *args),
+            check=False,
+            capture_output=True,
+        )
+    except OSError as exc:
+        raise StudyRetentionError(f"git command could not run: {exc}") from exc
+    if completed.returncode != 0:
+        detail = os.fsdecode(completed.stderr.strip() or completed.stdout.strip())
+        raise StudyRetentionError(f"git command failed: {' '.join(args)}: {detail}")
+    return completed.stdout
 
 
 def _require_store_root(protocol: StudyProtocolV2, store: StudyArtifactStore) -> None:

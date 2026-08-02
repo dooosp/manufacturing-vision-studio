@@ -128,8 +128,10 @@ _EXPECTED_DIRECT_IMPORT_ALLOWLIST = {
         "manufacturing_vision_studio.e1.protocol_v2",
     ),
     "study_runner_v2": (
+        "manufacturing_vision_studio.canonical_png",
         "manufacturing_vision_studio.e1.feature_mapping",
         "manufacturing_vision_studio.e1.metrics_v2",
+        "manufacturing_vision_studio.e1.protocol_v2",
     ),
     "study_truth_v2": (
         "manufacturing_vision_studio.canonical",

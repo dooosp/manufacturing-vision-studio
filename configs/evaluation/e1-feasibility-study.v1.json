@@ -38,7 +38,7 @@
     "study_truth_v2": ["manufacturing_vision_studio.canonical", "manufacturing_vision_studio.canonical_png", "manufacturing_vision_studio.e1.domain", "manufacturing_vision_studio.e1.domain_v2", "manufacturing_vision_studio.e1.feature_mapping", "manufacturing_vision_studio.e1.generator", "manufacturing_vision_studio.e1.generator_v2", "manufacturing_vision_studio.e1.metrics_v2", "manufacturing_vision_studio.e1.oracle", "manufacturing_vision_studio.e1.protocol_v2"],
     "study_artifacts_v2": ["manufacturing_vision_studio.canonical"],
     "study_retention_v2": ["manufacturing_vision_studio.canonical", "manufacturing_vision_studio.e1.protocol_v2"],
-    "study_runner_v2": ["manufacturing_vision_studio.e1.feature_mapping", "manufacturing_vision_studio.e1.metrics_v2"],
+    "study_runner_v2": ["manufacturing_vision_studio.canonical_png", "manufacturing_vision_studio.e1.feature_mapping", "manufacturing_vision_studio.e1.metrics_v2", "manufacturing_vision_studio.e1.protocol_v2"],
     "study_cli_v2": []
   }
 }

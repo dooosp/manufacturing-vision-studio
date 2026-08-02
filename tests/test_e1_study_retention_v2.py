@@ -111,10 +111,12 @@ def _write(path: Path, payload: bytes) -> None:
 
 def _copy_projection(repo_root: Path, protocol: StudyProtocolV2) -> None:
     runner = (
-        b"from manufacturing_vision_studio.e1.feature_mapping import FeatureMappingResult\n"
-        b"from manufacturing_vision_studio.e1.metrics_v2 import E1V2MetricSummary\n"
+        b"import manufacturing_vision_studio.canonical_png as canonical_png, "
+        b"manufacturing_vision_studio.e1.feature_mapping as feature_mapping, "
+        b"manufacturing_vision_studio.e1.metrics_v2 as metrics_v2, "
+        b"manufacturing_vision_studio.e1.protocol_v2 as protocol_v2\n"
         b"from manufacturing_vision_studio.e1.study_retention_v2 import RetentionAudit\n"
-        b"MARKER = (FeatureMappingResult, E1V2MetricSummary, RetentionAudit)\n"
+        b"MARKER = (canonical_png, feature_mapping, metrics_v2, protocol_v2, RetentionAudit)\n"
     )
     cli = (
         b"from manufacturing_vision_studio.e1.study_runner_v2 import MARKER\n"
@@ -265,6 +267,7 @@ def _build_retention_fixture(
         / "docs/evaluation/negative-results/e1-v2-task4-progress-ledger.raw.txt",
         source_payloads["sdd_progress"],
     )
+    _write(repo_root / "lineage-source.txt", b"tracked before execution\n")
     _git(repo_root, "add", ".")
     _git(repo_root, "commit", "-m", "implementation")
     execution_commit = _git(repo_root, "rev-parse", "HEAD")
@@ -560,6 +563,86 @@ def test_run_retention_rejects_non_evidence_git_lineage(
             retention_fixture.protocol,
             retention_fixture.store,
             execution_commit=retention_fixture.execution_commit,
+            repo_root=retention_fixture.repo_root,
+        )
+
+
+def test_run_retention_preserves_committed_rename_source_identity(
+    retention_fixture: RetentionFixture,
+) -> None:
+    """Catch a rename whose non-artifact source is hidden by its artifact destination."""
+
+    destination = "artifacts/renamed-lineage-source.txt"
+    _git(
+        retention_fixture.repo_root,
+        "mv",
+        "lineage-source.txt",
+        destination,
+    )
+    _git(retention_fixture.repo_root, "commit", "-m", "rename source into evidence")
+
+    with pytest.raises(StudyRetentionError, match="non-artifact paths"):
+        run_retention_audit(
+            retention_fixture.protocol,
+            retention_fixture.store,
+            execution_commit=retention_fixture.execution_commit,
+            repo_root=retention_fixture.repo_root,
+        )
+
+
+def test_verify_retention_preserves_dirty_rename_source_identity(
+    retention_fixture: RetentionFixture,
+) -> None:
+    """Catch porcelain parsing that keeps only the destination of a staged rename."""
+
+    run_retention_audit(
+        retention_fixture.protocol,
+        retention_fixture.store,
+        execution_commit=retention_fixture.execution_commit,
+        repo_root=retention_fixture.repo_root,
+    )
+    _git(
+        retention_fixture.repo_root,
+        "mv",
+        "lineage-source.txt",
+        "artifacts/renamed-lineage-source.txt",
+    )
+
+    with pytest.raises(StudyRetentionError, match="dirty non-artifact paths"):
+        verify_retention_audit(
+            retention_fixture.protocol,
+            retention_fixture.store,
+            repo_root=retention_fixture.repo_root,
+        )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "outside -> artifacts/forged.json",
+        'outside"quote.txt',
+        "outside\ttab.txt",
+        "outside\nnewline.txt",
+    ),
+)
+def test_verify_retention_rejects_dirty_special_non_artifact_paths(
+    retention_fixture: RetentionFixture,
+    relative: str,
+) -> None:
+    """Catch human-oriented Git parsing that quotes, splits, or redirects a path."""
+
+    run_retention_audit(
+        retention_fixture.protocol,
+        retention_fixture.store,
+        execution_commit=retention_fixture.execution_commit,
+        repo_root=retention_fixture.repo_root,
+    )
+    _write(retention_fixture.repo_root / relative, b"dirty outside evidence root\n")
+
+    with pytest.raises(StudyRetentionError, match="dirty non-artifact paths"):
+        verify_retention_audit(
+            retention_fixture.protocol,
+            retention_fixture.store,
             repo_root=retention_fixture.repo_root,
         )
 

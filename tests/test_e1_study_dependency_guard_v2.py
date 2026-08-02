@@ -26,11 +26,12 @@ ORACLE_PATH = Path("src/manufacturing_vision_studio/e1/oracle.py")
 DIAGNOSTICS_PATH = Path("src/manufacturing_vision_studio/e1/diagnostics_v2.py")
 
 SYNTHETIC_RUNNER = (
-    b"from manufacturing_vision_studio.e1.feature_mapping "
-    b"import FeatureMappingResult\n"
-    b"from manufacturing_vision_studio.e1.metrics_v2 import E1V2MetricSummary\n"
+    b"import manufacturing_vision_studio.canonical_png as canonical_png, "
+    b"manufacturing_vision_studio.e1.feature_mapping as feature_mapping, "
+    b"manufacturing_vision_studio.e1.metrics_v2 as metrics_v2, "
+    b"manufacturing_vision_studio.e1.protocol_v2 as protocol_v2\n"
     b"from manufacturing_vision_studio.e1.study_retention_v2 import RetentionAudit\n"
-    b"\nMARKER = (FeatureMappingResult, E1V2MetricSummary, RetentionAudit)\n"
+    b"MARKER = (canonical_png, feature_mapping, metrics_v2, protocol_v2, RetentionAudit)\n"
 )
 SYNTHETIC_CLI = b"""from manufacturing_vision_studio.e1.study_runner_v2 import MARKER
 
@@ -137,6 +138,49 @@ def test_dependency_scan_classifies_edges_by_responsibility(tmp_path: Path) -> N
     assert any(
         edge.source.endswith("metrics_v2")
         and edge.target.endswith("policy_v2")
+        and edge.kind == "type_checking"
+        for edge in report.edges
+    )
+
+
+def test_runtime_cycle_between_study_owned_modules_is_rejected(tmp_path: Path) -> None:
+    """Catch a runtime back-edge that makes study orchestration import-order dependent."""
+
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RETENTION_PATH,
+        "\nfrom manufacturing_vision_studio.e1.study_runner_v2 import MARKER\n",
+    )
+
+    with pytest.raises(
+        StudyRetentionError,
+        match=r"runtime cycle among study-owned modules:.*study_retention_v2.*study_runner_v2",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_type_checking_cycle_between_study_owned_modules_is_allowed(
+    tmp_path: Path,
+) -> None:
+    """Catch cycle detection that mistakes a type-only edge for runtime execution."""
+
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RETENTION_PATH,
+        "\nfrom typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    from manufacturing_vision_studio.e1.study_runner_v2 import MARKER\n",
+    )
+
+    report = scan_study_dependencies(protocol, repo_root=repo_root)
+
+    assert any(
+        edge.source == "manufacturing_vision_studio.e1.study_retention_v2"
+        and edge.target == "manufacturing_vision_studio.e1.study_runner_v2"
         and edge.kind == "type_checking"
         for edge in report.edges
     )
