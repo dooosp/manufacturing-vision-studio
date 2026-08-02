@@ -47,6 +47,7 @@ from manufacturing_vision_studio.e1.known_transform_v2 import (
     KnownTransformResult,
     ReferenceBoundaryBand,
     ResamplingMode,
+    reference_boundary_band,
 )
 from manufacturing_vision_studio.e1.metrics_v2 import (
     E1V2EvaluationObservation,
@@ -458,6 +459,12 @@ def diagnostic_observation(
     """Join diagnostic truth only after a completed truth-free inference."""
 
     _validate_result_binding(case, result)
+    expected_identity_mask_bytes = raw_identity_difference_mask(case)
+    if identity_mask_bytes != expected_identity_mask_bytes:
+        raise ValueError("identity mask is not bound to the diagnostic case")
+    expected_boundary = reference_boundary_band(case.reference_bytes)
+    if boundary != expected_boundary:
+        raise ValueError("reference boundary is not bound to the diagnostic reference")
     truth = _decode_mask(case.authoritative_mask_bytes)
     predicted = _decode_mask(result.predicted_mask_bytes)
     identity = _decode_mask(identity_mask_bytes)

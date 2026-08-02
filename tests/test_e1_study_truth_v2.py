@@ -119,6 +119,15 @@ def diagnostic_case() -> StudyTruthCase:
 
 
 @pytest.fixture(scope="module")
+def other_diagnostic_case() -> StudyTruthCase:
+    return render_diagnostic(
+        load_frozen_diagnostic_matrix()[8],
+        load_study_protocol_v2(),
+        load_e1_v2_protocol(),
+    )
+
+
+@pytest.fixture(scope="module")
 def diagnostic_result(diagnostic_case: StudyTruthCase) -> StudyInferenceResult:
     normalized = normalize_known_transform(
         diagnostic_case.reference_bytes,
@@ -455,6 +464,42 @@ def test_diagnostic_observation_joins_truth_and_boundary_only_after_inference(
     assert row.boundary_residual == int(np.count_nonzero(predicted & band))
     assert row.outside_boundary_residual == row.total_residual - row.boundary_residual
     assert row.mode is ResamplingMode.NEAREST
+
+
+def test_diagnostic_observation_rejects_identity_mask_from_another_case(
+    diagnostic_case: StudyTruthCase,
+    other_diagnostic_case: StudyTruthCase,
+    diagnostic_result: StudyInferenceResult,
+) -> None:
+    correct_identity = raw_identity_difference_mask(diagnostic_case)
+    cross_case_identity = raw_identity_difference_mask(other_diagnostic_case)
+    assert cross_case_identity != correct_identity
+
+    with pytest.raises(ValueError, match="identity"):
+        diagnostic_observation(
+            diagnostic_case,
+            diagnostic_result,
+            cross_case_identity,
+            reference_boundary_band(diagnostic_case.reference_bytes),
+        )
+
+
+def test_diagnostic_observation_rejects_boundary_from_another_reference(
+    diagnostic_case: StudyTruthCase,
+    other_diagnostic_case: StudyTruthCase,
+    diagnostic_result: StudyInferenceResult,
+) -> None:
+    correct_boundary = reference_boundary_band(diagnostic_case.reference_bytes)
+    cross_case_boundary = reference_boundary_band(other_diagnostic_case.reference_bytes)
+    assert cross_case_boundary.band_mask_bytes != correct_boundary.band_mask_bytes
+
+    with pytest.raises(ValueError, match="boundary"):
+        diagnostic_observation(
+            diagnostic_case,
+            diagnostic_result,
+            raw_identity_difference_mask(diagnostic_case),
+            cross_case_boundary,
+        )
 
 
 def test_diagnostic_observation_rejects_a_drifted_boundary_contract(
