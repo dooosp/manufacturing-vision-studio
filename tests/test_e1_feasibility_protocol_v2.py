@@ -28,6 +28,100 @@ from manufacturing_vision_studio.e1.study_protocol_v2 import (
 
 MAX_STUDY_INPUT_BYTES = 4 * 1024 * 1024
 
+EXPECTED_IMPLEMENTATION_PROJECTION = (
+    "Makefile",
+    "configs/evaluation/e1-feasibility-diagnostic-108.json",
+    "configs/evaluation/e1-feasibility-study.v1.json",
+    "configs/evaluation/e1-v1-history-integrity.json",
+    "configs/evaluation/e1-v1.json",
+    "configs/evaluation/e1-v2-candidate-selection.json",
+    "configs/evaluation/e1-v2.json",
+    "pyproject.toml",
+    "schemas/e1-candidate-selection.v2.json",
+    "schemas/e1-case-manifest.v1.json",
+    "schemas/e1-evaluation-protocol.v1.json",
+    "schemas/e1-evaluation-protocol.v2.json",
+    "schemas/e1-evaluation-result.v1.json",
+    "schemas/e1-feasibility-study-artifact.v1.json",
+    "schemas/e1-feasibility-study-config.v1.json",
+    "schemas/e1-threshold-lock.v1.json",
+    "src/manufacturing_vision_studio/__init__.py",
+    "src/manufacturing_vision_studio/adapters.py",
+    "src/manufacturing_vision_studio/canonical.py",
+    "src/manufacturing_vision_studio/canonical_png.py",
+    "src/manufacturing_vision_studio/config.py",
+    "src/manufacturing_vision_studio/e1/__init__.py",
+    "src/manufacturing_vision_studio/e1/domain.py",
+    "src/manufacturing_vision_studio/e1/domain_v2.py",
+    "src/manufacturing_vision_studio/e1/feature_mapping.py",
+    "src/manufacturing_vision_studio/e1/generator.py",
+    "src/manufacturing_vision_studio/e1/generator_v2.py",
+    "src/manufacturing_vision_studio/e1/known_transform_v2.py",
+    "src/manufacturing_vision_studio/e1/metrics.py",
+    "src/manufacturing_vision_studio/e1/metrics_v2.py",
+    "src/manufacturing_vision_studio/e1/model.py",
+    "src/manufacturing_vision_studio/e1/oracle.py",
+    "src/manufacturing_vision_studio/e1/policy_v2.py",
+    "src/manufacturing_vision_studio/e1/protocol.py",
+    "src/manufacturing_vision_studio/e1/protocol_v2.py",
+    "src/manufacturing_vision_studio/e1/study_artifacts_v2.py",
+    "src/manufacturing_vision_studio/e1/study_cli_v2.py",
+    "src/manufacturing_vision_studio/e1/study_inference_v2.py",
+    "src/manufacturing_vision_studio/e1/study_protocol_v2.py",
+    "src/manufacturing_vision_studio/e1/study_retention_v2.py",
+    "src/manufacturing_vision_studio/e1/study_runner_v2.py",
+    "src/manufacturing_vision_studio/e1/study_truth_v2.py",
+    "src/manufacturing_vision_studio/errors.py",
+    "src/manufacturing_vision_studio/evidence.py",
+    "src/manufacturing_vision_studio/images.py",
+    "src/manufacturing_vision_studio/model.py",
+    "src/manufacturing_vision_studio/registry.py",
+)
+
+EXPECTED_DIRECT_IMPORT_ALLOWLIST = {
+    "known_transform_v2": (
+        "manufacturing_vision_studio.canonical",
+        "manufacturing_vision_studio.canonical_png",
+        "manufacturing_vision_studio.images",
+    ),
+    "study_artifacts_v2": ("manufacturing_vision_studio.canonical",),
+    "study_cli_v2": (),
+    "study_inference_v2": (
+        "manufacturing_vision_studio.canonical",
+        "manufacturing_vision_studio.e1.domain",
+        "manufacturing_vision_studio.e1.feature_mapping",
+        "manufacturing_vision_studio.e1.model",
+        "manufacturing_vision_studio.e1.protocol_v2",
+        "manufacturing_vision_studio.errors",
+        "manufacturing_vision_studio.images",
+        "manufacturing_vision_studio.model",
+    ),
+    "study_protocol_v2": (
+        "manufacturing_vision_studio.canonical",
+        "manufacturing_vision_studio.e1.domain",
+    ),
+    "study_retention_v2": (
+        "manufacturing_vision_studio.canonical",
+        "manufacturing_vision_studio.e1.protocol_v2",
+    ),
+    "study_runner_v2": (
+        "manufacturing_vision_studio.e1.feature_mapping",
+        "manufacturing_vision_studio.e1.metrics_v2",
+    ),
+    "study_truth_v2": (
+        "manufacturing_vision_studio.canonical",
+        "manufacturing_vision_studio.canonical_png",
+        "manufacturing_vision_studio.e1.domain",
+        "manufacturing_vision_studio.e1.domain_v2",
+        "manufacturing_vision_studio.e1.feature_mapping",
+        "manufacturing_vision_studio.e1.generator",
+        "manufacturing_vision_studio.e1.generator_v2",
+        "manufacturing_vision_studio.e1.metrics_v2",
+        "manufacturing_vision_studio.e1.oracle",
+        "manufacturing_vision_studio.e1.protocol_v2",
+    ),
+}
+
 
 def walk_schema_nodes(value: object) -> Iterator[Mapping[str, object]]:
     """Yield each object-shaped schema node, regardless of nesting location."""
@@ -119,6 +213,104 @@ def test_truth_layer_direct_import_allowlist_is_complete_and_sorted() -> None:
         "manufacturing_vision_studio.e1.oracle",
         "manufacturing_vision_studio.e1.protocol_v2",
     )
+
+
+def test_study_protocol_pins_complete_sorted_implementation_projection() -> None:
+    """Catch a dependency audit whose declared repository scope is incomplete or reordered."""
+
+    projection = load_study_protocol_v2().implementation_projection_paths()
+    assert len(projection) == 47
+    assert projection == EXPECTED_IMPLEMENTATION_PROJECTION
+
+
+def test_study_protocol_pins_all_sorted_direct_import_allowlists() -> None:
+    """Catch retained-module permissions that drift from the reviewed dependency boundary."""
+
+    allowlist = load_study_protocol_v2().direct_import_allowlist()
+    assert dict(allowlist) == EXPECTED_DIRECT_IMPORT_ALLOWLIST
+
+
+def test_study_schema_requires_unique_projection_and_allowlist_entries() -> None:
+    """Catch schema rules that admit duplicate dependency declarations."""
+
+    schema = json.loads(STUDY_SCHEMA_PATH.read_text())
+    properties = schema["properties"]
+    assert properties["implementation_projection_paths"]["uniqueItems"] is True
+    allowlist_properties = properties["direct_import_allowlist"]["properties"]
+    assert set(allowlist_properties) == set(EXPECTED_DIRECT_IMPORT_ALLOWLIST)
+    assert all(value["uniqueItems"] is True for value in allowlist_properties.values())
+
+
+@pytest.mark.parametrize("mutation", ["duplicate", "reordered", "missing", "extra"])
+def test_protocol_rejects_implementation_projection_mutations(
+    tmp_path: Path, mutation: str
+) -> None:
+    """Catch dependency projection entries that are duplicated, reordered, removed, or added."""
+
+    fixture_dir, config_path, document = _project_local_protocol_copy(tmp_path)
+    try:
+        projection = document["implementation_projection_paths"]
+        assert isinstance(projection, list)
+        if mutation == "duplicate":
+            projection.insert(1, projection[0])
+        elif mutation == "reordered":
+            projection[0], projection[1] = projection[1], projection[0]
+        elif mutation == "missing":
+            projection.pop()
+        else:
+            projection.append("src/manufacturing_vision_studio/e1/unreviewed.py")
+        config_path.write_text(json.dumps(document))
+        with pytest.raises(StudyProtocolError):
+            load_study_protocol_v2(config_path)
+    finally:
+        shutil.rmtree(fixture_dir)
+
+
+@pytest.mark.parametrize("mutation", ["duplicate", "reordered", "missing", "extra"])
+def test_protocol_rejects_direct_import_allowlist_mutations(
+    tmp_path: Path, mutation: str
+) -> None:
+    """Catch retained imports that are duplicated, reordered, removed, or added."""
+
+    fixture_dir, config_path, document = _project_local_protocol_copy(tmp_path)
+    try:
+        allowlists = document["direct_import_allowlist"]
+        assert isinstance(allowlists, dict)
+        imports = allowlists["study_inference_v2"]
+        assert isinstance(imports, list)
+        if mutation == "duplicate":
+            imports.insert(1, imports[0])
+        elif mutation == "reordered":
+            imports[0], imports[1] = imports[1], imports[0]
+        elif mutation == "missing":
+            imports.pop()
+        else:
+            imports.append("manufacturing_vision_studio.e1.unreviewed")
+        config_path.write_text(json.dumps(document))
+        with pytest.raises(StudyProtocolError):
+            load_study_protocol_v2(config_path)
+    finally:
+        shutil.rmtree(fixture_dir)
+
+
+@pytest.mark.parametrize("allowlist_name", tuple(EXPECTED_DIRECT_IMPORT_ALLOWLIST))
+def test_protocol_rejects_extra_entry_in_every_direct_import_allowlist(
+    tmp_path: Path, allowlist_name: str
+) -> None:
+    """Catch a loader that pins only some retained-module allowlists."""
+
+    fixture_dir, config_path, document = _project_local_protocol_copy(tmp_path)
+    try:
+        allowlists = document["direct_import_allowlist"]
+        assert isinstance(allowlists, dict)
+        imports = allowlists[allowlist_name]
+        assert isinstance(imports, list)
+        imports.append("manufacturing_vision_studio.e1.unreviewed")
+        config_path.write_text(json.dumps(document))
+        with pytest.raises(StudyProtocolError):
+            load_study_protocol_v2(config_path)
+    finally:
+        shutil.rmtree(fixture_dir)
 
 
 def test_protocol_rejects_missing_ownership_map_key(tmp_path: Path) -> None:

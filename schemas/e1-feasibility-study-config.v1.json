@@ -70,12 +70,12 @@
       "type": "object", "additionalProperties": false, "required": ["medium_high_recall", "nuisance_fpr", "median_dice", "feature_accuracy"],
       "properties": {"medium_high_recall": {"type": "number"}, "nuisance_fpr": {"type": "number"}, "median_dice": {"type": "number"}, "feature_accuracy": {"type": "number"}}
     },
-    "implementation_projection_paths": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "implementation_projection_paths": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "direct_import_allowlist": {
       "type": "object", "additionalProperties": false,
       "required": ["study_protocol_v2", "known_transform_v2", "study_inference_v2", "study_truth_v2", "study_artifacts_v2", "study_retention_v2", "study_runner_v2", "study_cli_v2"],
       "properties": {
-        "study_protocol_v2": {"type": "array", "items": {"type": "string"}}, "known_transform_v2": {"type": "array", "items": {"type": "string"}}, "study_inference_v2": {"type": "array", "items": {"type": "string"}}, "study_truth_v2": {"type": "array", "items": {"type": "string"}}, "study_artifacts_v2": {"type": "array", "items": {"type": "string"}}, "study_retention_v2": {"type": "array", "items": {"type": "string"}}, "study_runner_v2": {"type": "array", "items": {"type": "string"}}, "study_cli_v2": {"type": "array", "items": {"type": "string"}}
+        "study_protocol_v2": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}, "known_transform_v2": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}, "study_inference_v2": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}, "study_truth_v2": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}, "study_artifacts_v2": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}, "study_retention_v2": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}, "study_runner_v2": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}, "study_cli_v2": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
       }
     }
   }

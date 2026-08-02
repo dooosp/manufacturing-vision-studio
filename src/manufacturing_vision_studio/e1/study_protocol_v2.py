@@ -53,6 +53,98 @@ _EXPECTED_OWNERSHIP_MAP_HASHES = {
     "rev-B/oblique_left": "1fb2f752d738a7bf595f8cae97860452a3a8628ea5cb3eec4347d1f42fe43b8b",
     "rev-B/oblique_right": "373337ec46da320dbbcdf0ffa14c22794db05208cd9491e5b272e0d34169830d",
 }
+_EXPECTED_IMPLEMENTATION_PROJECTION_PATHS = (
+    "Makefile",
+    "configs/evaluation/e1-feasibility-diagnostic-108.json",
+    "configs/evaluation/e1-feasibility-study.v1.json",
+    "configs/evaluation/e1-v1-history-integrity.json",
+    "configs/evaluation/e1-v1.json",
+    "configs/evaluation/e1-v2-candidate-selection.json",
+    "configs/evaluation/e1-v2.json",
+    "pyproject.toml",
+    "schemas/e1-candidate-selection.v2.json",
+    "schemas/e1-case-manifest.v1.json",
+    "schemas/e1-evaluation-protocol.v1.json",
+    "schemas/e1-evaluation-protocol.v2.json",
+    "schemas/e1-evaluation-result.v1.json",
+    "schemas/e1-feasibility-study-artifact.v1.json",
+    "schemas/e1-feasibility-study-config.v1.json",
+    "schemas/e1-threshold-lock.v1.json",
+    "src/manufacturing_vision_studio/__init__.py",
+    "src/manufacturing_vision_studio/adapters.py",
+    "src/manufacturing_vision_studio/canonical.py",
+    "src/manufacturing_vision_studio/canonical_png.py",
+    "src/manufacturing_vision_studio/config.py",
+    "src/manufacturing_vision_studio/e1/__init__.py",
+    "src/manufacturing_vision_studio/e1/domain.py",
+    "src/manufacturing_vision_studio/e1/domain_v2.py",
+    "src/manufacturing_vision_studio/e1/feature_mapping.py",
+    "src/manufacturing_vision_studio/e1/generator.py",
+    "src/manufacturing_vision_studio/e1/generator_v2.py",
+    "src/manufacturing_vision_studio/e1/known_transform_v2.py",
+    "src/manufacturing_vision_studio/e1/metrics.py",
+    "src/manufacturing_vision_studio/e1/metrics_v2.py",
+    "src/manufacturing_vision_studio/e1/model.py",
+    "src/manufacturing_vision_studio/e1/oracle.py",
+    "src/manufacturing_vision_studio/e1/policy_v2.py",
+    "src/manufacturing_vision_studio/e1/protocol.py",
+    "src/manufacturing_vision_studio/e1/protocol_v2.py",
+    "src/manufacturing_vision_studio/e1/study_artifacts_v2.py",
+    "src/manufacturing_vision_studio/e1/study_cli_v2.py",
+    "src/manufacturing_vision_studio/e1/study_inference_v2.py",
+    "src/manufacturing_vision_studio/e1/study_protocol_v2.py",
+    "src/manufacturing_vision_studio/e1/study_retention_v2.py",
+    "src/manufacturing_vision_studio/e1/study_runner_v2.py",
+    "src/manufacturing_vision_studio/e1/study_truth_v2.py",
+    "src/manufacturing_vision_studio/errors.py",
+    "src/manufacturing_vision_studio/evidence.py",
+    "src/manufacturing_vision_studio/images.py",
+    "src/manufacturing_vision_studio/model.py",
+    "src/manufacturing_vision_studio/registry.py",
+)
+_EXPECTED_DIRECT_IMPORT_ALLOWLIST = {
+    "known_transform_v2": (
+        "manufacturing_vision_studio.canonical",
+        "manufacturing_vision_studio.canonical_png",
+        "manufacturing_vision_studio.images",
+    ),
+    "study_artifacts_v2": ("manufacturing_vision_studio.canonical",),
+    "study_cli_v2": (),
+    "study_inference_v2": (
+        "manufacturing_vision_studio.canonical",
+        "manufacturing_vision_studio.e1.domain",
+        "manufacturing_vision_studio.e1.feature_mapping",
+        "manufacturing_vision_studio.e1.model",
+        "manufacturing_vision_studio.e1.protocol_v2",
+        "manufacturing_vision_studio.errors",
+        "manufacturing_vision_studio.images",
+        "manufacturing_vision_studio.model",
+    ),
+    "study_protocol_v2": (
+        "manufacturing_vision_studio.canonical",
+        "manufacturing_vision_studio.e1.domain",
+    ),
+    "study_retention_v2": (
+        "manufacturing_vision_studio.canonical",
+        "manufacturing_vision_studio.e1.protocol_v2",
+    ),
+    "study_runner_v2": (
+        "manufacturing_vision_studio.e1.feature_mapping",
+        "manufacturing_vision_studio.e1.metrics_v2",
+    ),
+    "study_truth_v2": (
+        "manufacturing_vision_studio.canonical",
+        "manufacturing_vision_studio.canonical_png",
+        "manufacturing_vision_studio.e1.domain",
+        "manufacturing_vision_studio.e1.domain_v2",
+        "manufacturing_vision_studio.e1.feature_mapping",
+        "manufacturing_vision_studio.e1.generator",
+        "manufacturing_vision_studio.e1.generator_v2",
+        "manufacturing_vision_studio.e1.metrics_v2",
+        "manufacturing_vision_studio.e1.oracle",
+        "manufacturing_vision_studio.e1.protocol_v2",
+    ),
+}
 
 
 class StudyProtocolError(ValueError):
@@ -248,6 +340,20 @@ def _validate_protocol_document(document: Mapping[str, Any]) -> str:
         raise StudyProtocolError("historical source hashes changed")
     if _string_mapping(_object(document, "ownership_map_hashes")) != _EXPECTED_OWNERSHIP_MAP_HASHES:
         raise StudyProtocolError("ownership-map hashes changed")
+    implementation_projection = tuple(
+        _string_list(document, "implementation_projection_paths")
+    )
+    if implementation_projection != _EXPECTED_IMPLEMENTATION_PROJECTION_PATHS:
+        raise StudyProtocolError(
+            "implementation projection changed or is not sorted and unique"
+        )
+    direct_import_allowlist = _object(document, "direct_import_allowlist")
+    actual_allowlist = {
+        key: tuple(_string_list(direct_import_allowlist, key))
+        for key in sorted(direct_import_allowlist)
+    }
+    if actual_allowlist != _EXPECTED_DIRECT_IMPORT_ALLOWLIST:
+        raise StudyProtocolError("direct import allowlist changed or is not sorted and unique")
     _validate_gates(document)
     _validate_snapshots(document)
     matrix = _object(document, "diagnostic_matrix")
