@@ -325,6 +325,61 @@ def test_root_lazy_export_is_rejected_fail_closed(tmp_path: Path) -> None:
     ("source", "error"),
     [
         (
+            "\nimport manufacturing_vision_studio as mvs\n"
+            "PACKAGE_VALUE = mvs.FreeCADExportAdapter\n",
+            "package attribute.*FreeCADExportAdapter",
+        ),
+        (
+            "\nimport manufacturing_vision_studio\n"
+            "PACKAGE_VALUE = manufacturing_vision_studio.FreeCADExportAdapter\n",
+            "package attribute.*FreeCADExportAdapter",
+        ),
+        (
+            "\nimport manufacturing_vision_studio as mvs\n"
+            "PACKAGE_VALUE = getattr(mvs, 'FreeCADExportAdapter')\n",
+            "package attribute.*FreeCADExportAdapter",
+        ),
+        (
+            "\nimport manufacturing_vision_studio as mvs\n"
+            "package_alias = mvs\n"
+            "PACKAGE_VALUE = package_alias.FreeCADExportAdapter\n",
+            "package attribute.*FreeCADExportAdapter",
+        ),
+        (
+            "\nimport manufacturing_vision_studio.e1 as e1_package\n"
+            "PACKAGE_VALUE = e1_package.render_e1_case\n",
+            "package attribute.*render_e1_case",
+        ),
+        (
+            "\nimport manufacturing_vision_studio as mvs\n"
+            "attribute_name = 'FreeCADExportAdapter'\n"
+            "PACKAGE_VALUE = getattr(mvs, attribute_name)\n",
+            "non-literal package attribute",
+        ),
+        (
+            "\nimport manufacturing_vision_studio as mvs\n"
+            "PACKAGE_VALUE = mvs.adapters\n",
+            "adapters",
+        ),
+    ],
+)
+def test_package_object_attribute_access_is_rejected_fail_closed(
+    tmp_path: Path,
+    source: str,
+    error: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, source)
+
+    with pytest.raises(StudyRetentionError, match=error):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("source", "error"),
+    [
+        (
             "\nimport importlib\n"
             "DYNAMIC_MODULE = importlib.import_module("
             "'manufacturing_vision_studio.adapters')\n",
@@ -376,6 +431,71 @@ def test_nonliteral_dynamic_package_import_is_rejected(tmp_path: Path) -> None:
         StudyRetentionError,
         match="non-literal dynamic package import",
     ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("source", "error"),
+    [
+        (
+            "\nimport importlib\n"
+            "REFLECTED_MODULE = getattr(importlib, 'import_module')("
+            "'manufacturing_vision_studio.adapters')\n",
+            "adapters",
+        ),
+        (
+            "\nimport importlib as import_tools\n"
+            "REFLECTED_MODULE = getattr(import_tools, 'import_module')("
+            "'manufacturing_vision_studio.adapters')\n",
+            "adapters",
+        ),
+        (
+            "\nimport importlib\n"
+            "loader = importlib.import_module\n"
+            "REFLECTED_MODULE = loader('manufacturing_vision_studio.adapters')\n",
+            "adapters",
+        ),
+        (
+            "\nimport importlib\n"
+            "loader = getattr(importlib, 'import_module')\n"
+            "REFLECTED_MODULE = loader('manufacturing_vision_studio.adapters')\n",
+            "adapters",
+        ),
+        (
+            "\nimport importlib\n"
+            "loader = importlib.import_module\n"
+            "loader_alias = loader\n"
+            "REFLECTED_MODULE = loader_alias("
+            "'manufacturing_vision_studio.adapters')\n",
+            "adapters",
+        ),
+        (
+            "\nimport importlib\n"
+            "loader_name = 'import_module'\n"
+            "REFLECTED_MODULE = getattr(importlib, loader_name)("
+            "'manufacturing_vision_studio.adapters')\n",
+            "non-literal reflected import loader",
+        ),
+        (
+            "\nimport importlib\n"
+            "def load_reflected(module_name: str) -> object:\n"
+            "    return getattr(importlib, 'import_module')(module_name)\n"
+            "REFLECTED_MODULE = load_reflected("
+            "'manufacturing_vision_studio.adapters')\n",
+            "non-literal dynamic package import",
+        ),
+    ],
+)
+def test_reflective_import_loader_is_rejected_fail_closed(
+    tmp_path: Path,
+    source: str,
+    error: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, source)
+
+    with pytest.raises(StudyRetentionError, match=error):
         scan_study_dependencies(protocol, repo_root=repo_root)
 
 

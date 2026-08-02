@@ -38,6 +38,7 @@ from manufacturing_vision_studio.e1.study_protocol_v2 import (
 )
 
 EdgeKind = Literal["direct", "runtime_transitive", "type_checking"]
+_DynamicImportLoaderKind = Literal["loader", "nonliteral_reflection"]
 
 _SHA1_LENGTH = 40
 _SHA256_LENGTH = 64
@@ -415,6 +416,7 @@ class _ImportVisitor(ast.NodeVisitor):
         self.function_stack: list[str] = []
         self.importlib_module_names: set[str] = set()
         self.import_module_names: set[str] = set()
+        self.package_object_names: dict[str, str] = {}
 
     def visit_If(self, node: ast.If) -> None:
         if _is_type_checking_test(node.test):
@@ -446,6 +448,10 @@ class _ImportVisitor(ast.NodeVisitor):
         for alias in node.names:
             if alias.name == "importlib":
                 self.importlib_module_names.add(alias.asname or alias.name)
+            if alias.name in _PROJECTED_PACKAGE_ROOTS:
+                bound_name = alias.asname or alias.name.split(".", 1)[0]
+                bound_target = alias.name if alias.asname else "manufacturing_vision_studio"
+                self.package_object_names[bound_name] = bound_target
             target = _nearest_known_module(alias.name, self.known_modules)
             if target is not None:
                 self.references.append(
@@ -480,7 +486,36 @@ class _ImportVisitor(ast.NodeVisitor):
                     _ImportReference(target, self.type_checking_depth > 0)
                 )
 
+    def visit_Assign(self, node: ast.Assign) -> None:
+        loader_kind = _dynamic_import_loader_kind(
+            node.value,
+            importlib_module_names=self.importlib_module_names,
+            import_module_names=self.import_module_names,
+        )
+        if loader_kind == "loader":
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    self.import_module_names.add(target.id)
+        elif loader_kind == "nonliteral_reflection" and self.type_checking_depth == 0:
+            self.closure_errors.append(
+                f"{self.source_module}:{node.lineno}:"
+                "non-literal reflected import loader"
+            )
+        package_target = self._package_object_target(node.value)
+        if package_target is not None:
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    self.package_object_names[target.id] = package_target
+        self.generic_visit(node)
+
     def visit_Attribute(self, node: ast.Attribute) -> None:
+        package_target = self._package_object_target(node.value)
+        if package_target is not None:
+            self._record_package_attribute(
+                package_target,
+                node.attr,
+                lineno=node.lineno,
+            )
         if (
             isinstance(node.value, ast.Name)
             and node.value.id == "EvaluationScope"
@@ -490,12 +525,19 @@ class _ImportVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
-        if _is_dynamic_import_call(
+        self._visit_package_getattr(node)
+        loader_kind = _dynamic_import_loader_kind(
             node.func,
             importlib_module_names=self.importlib_module_names,
             import_module_names=self.import_module_names,
-        ):
+        )
+        if loader_kind == "loader":
             self._visit_dynamic_import(node)
+        elif loader_kind == "nonliteral_reflection" and self.type_checking_depth == 0:
+            self.closure_errors.append(
+                f"{self.source_module}:{node.lineno}:"
+                "non-literal reflected import loader"
+            )
         name = _call_name(node.func)
         if (
             name == "plan_cases"
@@ -540,6 +582,58 @@ class _ImportVisitor(ast.NodeVisitor):
         self.closure_errors.append(
             f"{self.source_module}:{node.lineno}:non-literal dynamic package import"
         )
+
+    def _visit_package_getattr(self, node: ast.Call) -> None:
+        if (
+            not isinstance(node.func, ast.Name)
+            or node.func.id != "getattr"
+            or len(node.args) < 2
+        ):
+            return
+        package_target = self._package_object_target(node.args[0])
+        if package_target is None:
+            return
+        attribute_node = node.args[1]
+        if isinstance(attribute_node, ast.Constant) and isinstance(
+            attribute_node.value, str
+        ):
+            self._record_package_attribute(
+                package_target,
+                attribute_node.value,
+                lineno=node.lineno,
+            )
+            return
+        if self.type_checking_depth == 0:
+            self.closure_errors.append(
+                f"{self.source_module}:{node.lineno}:non-literal package attribute"
+            )
+
+    def _record_package_attribute(
+        self,
+        package_target: str,
+        attribute: str,
+        *,
+        lineno: int,
+    ) -> None:
+        candidate = f"{package_target}.{attribute}"
+        if candidate in self.known_modules:
+            self.references.append(
+                _ImportReference(candidate, self.type_checking_depth > 0)
+            )
+        elif self.type_checking_depth == 0:
+            self.closure_errors.append(
+                f"{self.source_module}:{lineno}:unresolved package attribute: {candidate}"
+            )
+
+    def _package_object_target(self, node: ast.AST) -> str | None:
+        if isinstance(node, ast.Name):
+            return self.package_object_names.get(node.id)
+        if isinstance(node, ast.Attribute):
+            parent = self._package_object_target(node.value)
+            candidate = None if parent is None else f"{parent}.{node.attr}"
+            if candidate in _PROJECTED_PACKAGE_ROOTS:
+                return candidate
+        return None
 
 
 def classify_edge(
@@ -1115,20 +1209,40 @@ def _call_name(node: ast.expr) -> str | None:
     return None
 
 
-def _is_dynamic_import_call(
+def _dynamic_import_loader_kind(
     node: ast.expr,
     *,
     importlib_module_names: set[str],
     import_module_names: set[str],
-) -> bool:
+) -> _DynamicImportLoaderKind | None:
     if isinstance(node, ast.Name):
-        return node.id == "__import__" or node.id in import_module_names
-    return (
+        if node.id == "__import__" or node.id in import_module_names:
+            return "loader"
+        return None
+    if (
         isinstance(node, ast.Attribute)
         and node.attr == "import_module"
         and isinstance(node.value, ast.Name)
         and node.value.id in importlib_module_names
-    )
+    ):
+        return "loader"
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "getattr"
+        and len(node.args) >= 2
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id in importlib_module_names
+    ):
+        reflected_name = node.args[1]
+        if isinstance(reflected_name, ast.Constant) and isinstance(
+            reflected_name.value, str
+        ):
+            if reflected_name.value == "import_module":
+                return "loader"
+            return None
+        return "nonliteral_reflection"
+    return None
 
 
 def _is_package_target(value: str) -> bool:
