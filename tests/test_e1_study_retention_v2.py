@@ -590,6 +590,156 @@ def test_run_retention_preserves_committed_rename_source_identity(
         )
 
 
+def test_run_retention_preserves_committed_copy_source_identity(
+    retention_fixture: RetentionFixture,
+) -> None:
+    """Catch a copy whose non-artifact source is hidden by its artifact destination."""
+
+    source = retention_fixture.repo_root / "lineage-source.txt"
+    destination = retention_fixture.protocol.artifact_root / "copied-lineage-source.txt"
+    _write(destination, source.read_bytes())
+    _git(
+        retention_fixture.repo_root,
+        "add",
+        "artifacts/copied-lineage-source.txt",
+    )
+    _git(retention_fixture.repo_root, "commit", "-m", "copy source into evidence")
+
+    with pytest.raises(StudyRetentionError, match="non-artifact paths"):
+        run_retention_audit(
+            retention_fixture.protocol,
+            retention_fixture.store,
+            execution_commit=retention_fixture.execution_commit,
+            repo_root=retention_fixture.repo_root,
+        )
+
+
+def test_run_retention_rejects_fixed_source_copied_to_wrong_artifact_destination(
+    retention_fixture: RetentionFixture,
+) -> None:
+    """Catch copy authorization that checks a retained source without its destination."""
+
+    source = (
+        retention_fixture.repo_root / "data/e1-v2-development/candidate-a.json"
+    )
+    destination = retention_fixture.protocol.artifact_root / "wrong-candidate-a.json"
+    _write(destination, source.read_bytes())
+    _git(retention_fixture.repo_root, "add", "artifacts/wrong-candidate-a.json")
+    _git(retention_fixture.repo_root, "commit", "-m", "copy fixed source wrongly")
+
+    with pytest.raises(StudyRetentionError, match="non-artifact paths"):
+        retention_module._verify_git_lineage(
+            retention_fixture.protocol,
+            repo_root=retention_fixture.repo_root,
+            execution_commit=retention_fixture.execution_commit,
+            evidence_commit=None,
+            require_clean=True,
+            allow_retained_input_copies=True,
+        )
+
+
+def test_git_lineage_rejects_wrong_source_copied_to_fixed_retained_destination(
+    retention_fixture: RetentionFixture,
+) -> None:
+    """Catch copy authorization that checks a retained destination without its source."""
+
+    source = retention_fixture.repo_root / "lineage-source.txt"
+    destination = (
+        retention_fixture.protocol.artifact_root / "retained-inputs/candidate-a.json"
+    )
+    _write(destination, source.read_bytes())
+    _git(
+        retention_fixture.repo_root,
+        "add",
+        "artifacts/retained-inputs/candidate-a.json",
+    )
+    _git(retention_fixture.repo_root, "commit", "-m", "copy wrong source to fixed path")
+
+    with pytest.raises(StudyRetentionError, match="non-artifact paths"):
+        retention_module._verify_git_lineage(
+            retention_fixture.protocol,
+            repo_root=retention_fixture.repo_root,
+            execution_commit=retention_fixture.execution_commit,
+            evidence_commit=None,
+            require_clean=True,
+            allow_retained_input_copies=True,
+        )
+
+
+def test_git_lineage_never_exempts_fixed_retained_pair_rename(
+    retention_fixture: RetentionFixture,
+) -> None:
+    """Catch retained-copy authorization that accidentally admits an exact rename."""
+
+    source = "data/e1-v2-development/candidate-a.json"
+    destination = "artifacts/retained-inputs/candidate-a.json"
+    (retention_fixture.repo_root / destination).parent.mkdir(parents=True, exist_ok=True)
+    _git(retention_fixture.repo_root, "mv", source, destination)
+    _git(retention_fixture.repo_root, "commit", "-m", "rename fixed retained pair")
+
+    with pytest.raises(StudyRetentionError, match="non-artifact paths"):
+        retention_module._verify_git_lineage(
+            retention_fixture.protocol,
+            repo_root=retention_fixture.repo_root,
+            execution_commit=retention_fixture.execution_commit,
+            evidence_commit=None,
+            require_clean=True,
+            allow_retained_input_copies=True,
+        )
+
+
+@pytest.mark.parametrize("change", ("modified", "deleted"))
+def test_run_retention_rejects_committed_modify_and_delete_statuses(
+    retention_fixture: RetentionFixture,
+    change: str,
+) -> None:
+    """Catch name-status parsing that drops an ordinary modified or deleted path."""
+
+    source = retention_fixture.repo_root / "lineage-source.txt"
+    if change == "modified":
+        source.write_bytes(b"modified outside evidence root\n")
+    else:
+        source.unlink()
+    _git(retention_fixture.repo_root, "add", "-A", "lineage-source.txt")
+    _git(retention_fixture.repo_root, "commit", "-m", f"{change} source")
+
+    with pytest.raises(StudyRetentionError, match="non-artifact paths"):
+        run_retention_audit(
+            retention_fixture.protocol,
+            retention_fixture.store,
+            execution_commit=retention_fixture.execution_commit,
+            repo_root=retention_fixture.repo_root,
+        )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "committed -> artifacts/forged.json",
+        'committed"quote.txt',
+        "committed\ttab.txt",
+        "committed\nnewline.txt",
+    ),
+)
+def test_run_retention_rejects_committed_special_non_artifact_paths(
+    retention_fixture: RetentionFixture,
+    relative: str,
+) -> None:
+    """Catch NUL parsing that alters an added non-artifact path's raw identity."""
+
+    _write(retention_fixture.repo_root / relative, b"committed outside evidence root\n")
+    _git(retention_fixture.repo_root, "add", "--", relative)
+    _git(retention_fixture.repo_root, "commit", "-m", "add special source")
+
+    with pytest.raises(StudyRetentionError, match="non-artifact paths"):
+        run_retention_audit(
+            retention_fixture.protocol,
+            retention_fixture.store,
+            execution_commit=retention_fixture.execution_commit,
+            repo_root=retention_fixture.repo_root,
+        )
+
+
 def test_verify_retention_preserves_dirty_rename_source_identity(
     retention_fixture: RetentionFixture,
 ) -> None:

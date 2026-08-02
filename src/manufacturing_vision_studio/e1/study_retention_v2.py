@@ -402,6 +402,20 @@ class _PreparedInput:
     source_sha256: str
 
 
+@dataclass(frozen=True, slots=True)
+class _GitChangeRecord:
+    status: str
+    score: int | None
+    source: str | None
+    destination: str
+
+    @property
+    def paths(self) -> tuple[str, ...]:
+        if self.source is None:
+            return (self.destination,)
+        return (self.source, self.destination)
+
+
 class _ImportVisitor(ast.NodeVisitor):
     def __init__(self, *, source_module: str, known_modules: frozenset[str]) -> None:
         self.source_module = source_module
@@ -1146,6 +1160,7 @@ def verify_retention_audit(
         execution_commit=execution_commit,
         evidence_commit=evidence_commit,
         require_clean=False,
+        allow_retained_input_copies=True,
     )
     expected = RetentionAudit(
         base_commit=protocol.base_commit,
@@ -1849,6 +1864,7 @@ def _verify_git_lineage(
     execution_commit: str,
     evidence_commit: str | None,
     require_clean: bool,
+    allow_retained_input_copies: bool = False,
 ) -> str:
     _require_git_commit(repo_root, protocol.base_commit, label="study base commit")
     _require_git_commit(repo_root, execution_commit, label="execution commit")
@@ -1871,7 +1887,20 @@ def _verify_git_lineage(
     _require_ancestor(repo_root, execution_commit, evidence)
     _require_ancestor(repo_root, execution_commit, current)
     artifact_relative = _artifact_relative_path(protocol, repo_root)
-    changed = _git_changed_paths(repo_root, execution_commit, current)
+    changes = _git_changed_paths(repo_root, execution_commit, current)
+    changed = tuple(
+        sorted(
+            {
+                path
+                for change in changes
+                for path in _lineage_paths(
+                    change,
+                    artifact_relative=artifact_relative,
+                    allow_retained_input_copies=allow_retained_input_copies,
+                )
+            }
+        )
+    )
     outside = tuple(path for path in changed if not _under_artifact_root(path, artifact_relative))
     if outside:
         raise StudyRetentionError(
@@ -1905,20 +1934,97 @@ def _under_artifact_root(path: str, artifact_relative: str) -> bool:
     return path == artifact_relative or path.startswith(f"{artifact_relative}/")
 
 
-def _git_changed_paths(root: Path, older: str, newer: str) -> tuple[str, ...]:
+def _lineage_paths(
+    change: _GitChangeRecord,
+    *,
+    artifact_relative: str,
+    allow_retained_input_copies: bool,
+) -> tuple[str, ...]:
+    if (
+        allow_retained_input_copies
+        and change.status == "C"
+        and change.score == 100
+        and change.source is not None
+        and (change.source, change.destination)
+        in {
+            (source, f"{artifact_relative}/{destination}")
+            for _, source, destination, _ in RETAINED_INPUTS
+        }
+    ):
+        return (change.destination,)
+    return change.paths
+
+
+def _git_changed_paths(
+    root: Path,
+    older: str,
+    newer: str,
+) -> tuple[_GitChangeRecord, ...]:
     output = _run_git_bytes(
         root,
         "diff",
-        "--name-only",
+        "--name-status",
         "-z",
-        "--no-renames",
+        "--find-renames",
+        "--find-copies-harder",
         "--diff-filter=ACDMRTUXB",
         older,
         newer,
     )
-    return tuple(
-        sorted(os.fsdecode(field) for field in _nul_fields(output, label="git diff"))
-    )
+    fields = _nul_fields(output, label="git diff")
+    changes: list[_GitChangeRecord] = []
+    index = 0
+    while index < len(fields):
+        status = fields[index]
+        status_code = status[:1]
+        if status_code not in {
+            b"A",
+            b"B",
+            b"C",
+            b"D",
+            b"M",
+            b"R",
+            b"T",
+            b"U",
+            b"X",
+        }:
+            raise StudyRetentionError("git diff name-status output is malformed")
+        score: int | None = None
+        if status_code in {b"R", b"C"}:
+            score_bytes = status[1:]
+            if not score_bytes.isdigit() or int(score_bytes) > 100:
+                raise StudyRetentionError("git diff rename/copy status is malformed")
+            score = int(score_bytes)
+        elif len(status) != 1:
+            raise StudyRetentionError("git diff name-status output is malformed")
+        index += 1
+        if index >= len(fields):
+            raise StudyRetentionError("git diff path output is malformed")
+        first_path = os.fsdecode(fields[index])
+        index += 1
+        if status_code in {b"R", b"C"}:
+            if index >= len(fields):
+                raise StudyRetentionError("git diff rename/copy output is malformed")
+            second_path = os.fsdecode(fields[index])
+            index += 1
+            changes.append(
+                _GitChangeRecord(
+                    status=os.fsdecode(status_code),
+                    score=score,
+                    source=first_path,
+                    destination=second_path,
+                )
+            )
+        else:
+            changes.append(
+                _GitChangeRecord(
+                    status=os.fsdecode(status_code),
+                    score=None,
+                    source=None,
+                    destination=first_path,
+                )
+            )
+    return tuple(changes)
 
 
 def _git_status_paths(root: Path) -> tuple[str, ...]:
