@@ -14,6 +14,14 @@
     "task4_report_raw_sha256": "b6a2093082aa63631adb233c282466539720281ab96b53bc3928cf292efc8835",
     "task4_progress_ledger_raw_sha256": "fcef0c3b22b962f185911cc74bdad45f1bd2860c42ae8e59bac76d6741c13ea7"
   },
+  "ownership_map_hashes": {
+    "rev-A/front": "eadc490b04f8240e8356b3e20e75db08d79dfc5e27af180574d707836b3b776f",
+    "rev-A/oblique_left": "2d2a52ecae44ccae98455180211aaf528078707948dbf83f792223c550d3a074",
+    "rev-A/oblique_right": "8c42a88c3ffdf3dda10b073665b6d7a565ddde54a7a7450ba3c0f4782be14477",
+    "rev-B/front": "5f69348a9ce7b646054dce02f95a0ff8ebd420c641ab40f414b0afa645ef49bc",
+    "rev-B/oblique_left": "1fb2f752d738a7bf595f8cae97860452a3a8628ea5cb3eec4347d1f42fe43b8b",
+    "rev-B/oblique_right": "373337ec46da320dbbcdf0ffa14c22794db05208cd9491e5b272e0d34169830d"
+  },
   "negative_result_snapshots": [
     {"name": "task4_report", "checked_in_path": "docs/evaluation/negative-results/e1-v2-task4-report.raw.txt", "original_sibling_path": "/Users/jangtaeho/manufacturing-vision-studio-e1-v2/.superpowers/sdd/2026-08-01-e1-v2-scale-feature-remediation/task-4-report.md", "raw_sha256": "b6a2093082aa63631adb233c282466539720281ab96b53bc3928cf292efc8835"},
     {"name": "task4_progress_ledger", "checked_in_path": "docs/evaluation/negative-results/e1-v2-task4-progress-ledger.raw.txt", "original_sibling_path": "/Users/jangtaeho/manufacturing-vision-studio-e1-v2/.superpowers/sdd/2026-08-01-e1-v2-scale-feature-remediation/progress.md", "raw_sha256": "fcef0c3b22b962f185911cc74bdad45f1bd2860c42ae8e59bac76d6741c13ea7"}
@@ -27,7 +35,7 @@
     "study_protocol_v2": ["manufacturing_vision_studio.canonical", "manufacturing_vision_studio.e1.domain"],
     "known_transform_v2": ["manufacturing_vision_studio.canonical", "manufacturing_vision_studio.canonical_png", "manufacturing_vision_studio.images"],
     "study_inference_v2": ["manufacturing_vision_studio.e1.domain", "manufacturing_vision_studio.e1.feature_mapping", "manufacturing_vision_studio.e1.metrics_v2", "manufacturing_vision_studio.e1.model", "manufacturing_vision_studio.model"],
-    "study_truth_v2": ["manufacturing_vision_studio.e1.domain", "manufacturing_vision_studio.e1.domain_v2", "manufacturing_vision_studio.e1.generator", "manufacturing_vision_studio.e1.generator_v2", "manufacturing_vision_studio.e1.oracle", "manufacturing_vision_studio.e1.protocol_v2"],
+    "study_truth_v2": ["manufacturing_vision_studio.canonical", "manufacturing_vision_studio.canonical_png", "manufacturing_vision_studio.e1.domain", "manufacturing_vision_studio.e1.domain_v2", "manufacturing_vision_studio.e1.feature_mapping", "manufacturing_vision_studio.e1.generator", "manufacturing_vision_studio.e1.generator_v2", "manufacturing_vision_studio.e1.metrics_v2", "manufacturing_vision_studio.e1.oracle", "manufacturing_vision_studio.e1.protocol_v2"],
     "study_artifacts_v2": ["manufacturing_vision_studio.canonical"],
     "study_retention_v2": ["manufacturing_vision_studio.canonical", "manufacturing_vision_studio.e1.protocol_v2"],
     "study_runner_v2": ["manufacturing_vision_studio.e1.feature_mapping", "manufacturing_vision_studio.e1.metrics_v2"],

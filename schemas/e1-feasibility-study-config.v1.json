@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["$schema", "schema_version", "record_type", "study_id", "base_commit", "paths", "diagnostic_matrix", "source_hashes", "negative_result_snapshots", "phase_1", "phase_2", "diagnostic_gates", "development_gates", "implementation_projection_paths", "direct_import_allowlist"],
+  "required": ["$schema", "schema_version", "record_type", "study_id", "base_commit", "paths", "diagnostic_matrix", "source_hashes", "ownership_map_hashes", "negative_result_snapshots", "phase_1", "phase_2", "diagnostic_gates", "development_gates", "implementation_projection_paths", "direct_import_allowlist"],
   "properties": {
     "$schema": {"type": "string", "minLength": 1},
     "schema_version": {"type": "string", "const": "1.0.0"},
@@ -27,6 +27,18 @@
         "selection_record_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "task4_report_raw_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "task4_progress_ledger_raw_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "ownership_map_hashes": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rev-A/front", "rev-A/oblique_left", "rev-A/oblique_right", "rev-B/front", "rev-B/oblique_left", "rev-B/oblique_right"],
+      "properties": {
+        "rev-A/front": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "rev-A/oblique_left": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "rev-A/oblique_right": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "rev-B/front": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "rev-B/oblique_left": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "rev-B/oblique_right": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     },
     "negative_result_snapshots": {

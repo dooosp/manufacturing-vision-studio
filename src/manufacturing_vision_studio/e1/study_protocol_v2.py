@@ -45,6 +45,14 @@ _EXPECTED_SOURCE_HASHES = {
         "fcef0c3b22b962f185911cc74bdad45f1bd2860c42ae8e59bac76d6741c13ea7"
     ),
 }
+_EXPECTED_OWNERSHIP_MAP_HASHES = {
+    "rev-A/front": "eadc490b04f8240e8356b3e20e75db08d79dfc5e27af180574d707836b3b776f",
+    "rev-A/oblique_left": "2d2a52ecae44ccae98455180211aaf528078707948dbf83f792223c550d3a074",
+    "rev-A/oblique_right": "8c42a88c3ffdf3dda10b073665b6d7a565ddde54a7a7450ba3c0f4782be14477",
+    "rev-B/front": "5f69348a9ce7b646054dce02f95a0ff8ebd420c641ab40f414b0afa645ef49bc",
+    "rev-B/oblique_left": "1fb2f752d738a7bf595f8cae97860452a3a8628ea5cb3eec4347d1f42fe43b8b",
+    "rev-B/oblique_right": "373337ec46da320dbbcdf0ffa14c22794db05208cd9491e5b272e0d34169830d",
+}
 
 
 class StudyProtocolError(ValueError):
@@ -115,6 +123,7 @@ class StudyProtocolV2:
     diagnostic_gates: DiagnosticGates
     development_gates: DevelopmentGates
     source_hashes: Mapping[str, str]
+    ownership_map_hashes: Mapping[str, str]
     _implementation_projection_paths: tuple[str, ...] = field(repr=False)
     _direct_import_allowlist: Mapping[str, tuple[str, ...]] = field(repr=False)
 
@@ -158,6 +167,9 @@ class StudyProtocolV2:
                 _number(development, "feature_accuracy"),
             ),
             source_hashes=MappingProxyType(_string_mapping(_object(document, "source_hashes"))),
+            ownership_map_hashes=MappingProxyType(
+                _string_mapping(_object(document, "ownership_map_hashes"))
+            ),
             _implementation_projection_paths=tuple(
                 _string_list(document, "implementation_projection_paths")
             ),
@@ -234,6 +246,8 @@ def _validate_protocol_document(document: Mapping[str, Any]) -> str:
         raise StudyProtocolError("phase 2 development counts changed")
     if _string_mapping(_object(document, "source_hashes")) != _EXPECTED_SOURCE_HASHES:
         raise StudyProtocolError("historical source hashes changed")
+    if _string_mapping(_object(document, "ownership_map_hashes")) != _EXPECTED_OWNERSHIP_MAP_HASHES:
+        raise StudyProtocolError("ownership-map hashes changed")
     _validate_gates(document)
     _validate_snapshots(document)
     matrix = _object(document, "diagnostic_matrix")
