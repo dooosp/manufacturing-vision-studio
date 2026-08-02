@@ -7,11 +7,13 @@ import math
 import os
 import stat
 import uuid
+import weakref
 from collections.abc import Mapping
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+from threading import Lock
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from jsonschema import Draft202012Validator
@@ -353,13 +355,37 @@ class StudyArtifactStore:
         requested_allowed = _absolute_lexical(allowed_root or requested_root)
         if not requested_root.is_relative_to(requested_allowed):
             raise StudyArtifactError("artifact root escapes allowed root")
-        _ensure_directory_without_symlinks(requested_allowed)
-        _ensure_directory_without_symlinks(requested_root)
-        self.root = requested_root.resolve(strict=True)
-        self.allowed_root = requested_allowed.resolve(strict=True)
-        if not self.root.is_relative_to(self.allowed_root):
-            raise StudyArtifactError("artifact root escapes allowed root")
+        allowed_fd = _open_or_create_absolute_directory(requested_allowed)
+        try:
+            root_fd = _traverse_directory_fd(
+                allowed_fd,
+                requested_root.relative_to(requested_allowed).parts,
+                create=True,
+            )
+        finally:
+            os.close(allowed_fd)
+        try:
+            root_metadata = _validated_directory_metadata(root_fd, purpose="artifact root")
+        except Exception:
+            os.close(root_fd)
+            raise
+        self.root = requested_root
+        self.allowed_root = requested_allowed
         self.max_artifact_bytes = max_artifact_bytes
+        self._root_fd = root_fd
+        self._root_identity = (root_metadata.st_dev, root_metadata.st_ino)
+        self._root_lock = Lock()
+        try:
+            self._root_finalizer = weakref.finalize(self, _close_descriptor, root_fd)
+        except Exception:
+            os.close(root_fd)
+            raise
+
+    def close(self) -> None:
+        """Close the pinned root descriptor; later operations fail closed."""
+
+        with self._root_lock:
+            self._root_finalizer()
 
     def publish_json(
         self,
@@ -401,8 +427,7 @@ class StudyArtifactStore:
         ):
             raise StudyArtifactError("artifact media type is invalid")
 
-        parent, name = self._prepare_parent(normalized, create=True)
-        directory_fd = _open_directory(parent)
+        directory_fd, name = self._prepare_parent_fd(normalized, create=True)
         temporary_name = f".{name}.{uuid.uuid4().hex}.tmp"
         descriptor: int | None = None
         try:
@@ -457,8 +482,7 @@ class StudyArtifactStore:
 
     def read_bytes(self, relative_path: str) -> bytes:
         normalized = _validate_relative_path(relative_path)
-        parent, name = self._prepare_parent(normalized, create=False)
-        directory_fd = _open_directory(parent)
+        directory_fd, name = self._prepare_parent_fd(normalized, create=False)
         descriptor: int | None = None
         try:
             try:
@@ -522,34 +546,38 @@ class StudyArtifactStore:
             raise StudyArtifactError("artifact record type does not match expectation")
         return cast(dict[str, object], document)
 
-    def _prepare_parent(self, relative_path: str, *, create: bool) -> tuple[Path, str]:
+    def _prepare_parent_fd(self, relative_path: str, *, create: bool) -> tuple[int, str]:
         pure = PurePosixPath(relative_path)
-        current = self.root
-        for part in pure.parts[:-1]:
-            current = current / part
+        current_fd = self._duplicate_root_fd()
+        try:
+            for part in pure.parts[:-1]:
+                next_fd = _open_child_directory(current_fd, part, create=create)
+                os.close(current_fd)
+                current_fd = next_fd
+            return current_fd, pure.name
+        except Exception:
+            os.close(current_fd)
+            raise
+
+    def _duplicate_root_fd(self) -> int:
+        with self._root_lock:
+            if not self._root_finalizer.alive:
+                raise StudyArtifactError("artifact store is closed")
             try:
-                metadata = current.lstat()
-            except FileNotFoundError:
-                if not create:
-                    raise StudyArtifactError("artifact parent is missing") from None
-                try:
-                    current.mkdir(mode=0o700)
-                except FileExistsError:
-                    pass
-                except OSError as exc:
-                    raise StudyArtifactError("artifact parent cannot be created safely") from exc
-                metadata = current.lstat()
-            if stat.S_ISLNK(metadata.st_mode):
-                raise StudyArtifactError("artifact path contains a symlink")
-            if not stat.S_ISDIR(metadata.st_mode):
-                raise StudyArtifactError("artifact parent is not a directory")
-            try:
-                resolved = current.resolve(strict=True)
+                duplicate = os.dup(self._root_fd)
             except OSError as exc:
-                raise StudyArtifactError("artifact parent cannot be resolved safely") from exc
-            if not resolved.is_relative_to(self.root):
-                raise StudyArtifactError("artifact path escapes root")
-        return current, pure.name
+                raise StudyArtifactError("pinned artifact root is invalid") from exc
+            if not self._root_finalizer.alive:
+                os.close(duplicate)
+                raise StudyArtifactError("artifact store is closed")
+        try:
+            metadata = _validated_directory_metadata(duplicate, purpose="pinned artifact root")
+            if (metadata.st_dev, metadata.st_ino) != self._root_identity:
+                raise StudyArtifactError("pinned artifact root identity changed")
+        except Exception:
+            os.close(duplicate)
+            raise
+        return duplicate
 
 
 def _validate_phase_claim_semantics(document: Mapping[str, object]) -> None:
@@ -622,38 +650,91 @@ def _absolute_lexical(path: Path) -> Path:
     return Path(os.path.abspath(os.fspath(path.expanduser())))
 
 
-def _ensure_directory_without_symlinks(path: Path) -> None:
+def _open_or_create_absolute_directory(path: Path) -> int:
     if not path.is_absolute():
         raise StudyArtifactError("artifact root must be absolute")
-    current = Path(path.anchor)
-    for part in path.parts[1:]:
-        current /= part
-        try:
-            metadata = current.lstat()
-        except FileNotFoundError:
-            try:
-                current.mkdir(mode=0o700)
-            except FileExistsError:
-                pass
-            except OSError as exc:
-                raise StudyArtifactError("artifact root cannot be created safely") from exc
-            metadata = current.lstat()
-        if stat.S_ISLNK(metadata.st_mode):
-            raise StudyArtifactError("artifact root contains a symlink")
-        if not stat.S_ISDIR(metadata.st_mode):
-            raise StudyArtifactError("artifact root parent is not a directory")
-
-
-def _open_directory(path: Path) -> int:
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
-        descriptor = os.open(path, flags)
+        anchor_fd = os.open(path.anchor, _directory_open_flags())
     except OSError as exc:
-        raise StudyArtifactError("artifact directory is unsafe or a symlink") from exc
-    if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+        raise StudyArtifactError("artifact root anchor is unsafe") from exc
+    try:
+        return _traverse_directory_fd(anchor_fd, path.parts[1:], create=True)
+    finally:
+        os.close(anchor_fd)
+
+
+def _traverse_directory_fd(
+    starting_fd: int,
+    parts: tuple[str, ...],
+    *,
+    create: bool,
+) -> int:
+    try:
+        current_fd = os.dup(starting_fd)
+    except OSError as exc:
+        raise StudyArtifactError("artifact directory descriptor is invalid") from exc
+    try:
+        _validated_directory_metadata(current_fd, purpose="artifact directory")
+        for part in parts:
+            next_fd = _open_child_directory(current_fd, part, create=create)
+            os.close(current_fd)
+            current_fd = next_fd
+        return current_fd
+    except Exception:
+        os.close(current_fd)
+        raise
+
+
+def _open_child_directory(parent_fd: int, name: str, *, create: bool) -> int:
+    if not name or name in {".", ".."} or "/" in name or "\x00" in name:
+        raise StudyArtifactError("artifact directory component is unsafe")
+    try:
+        descriptor = os.open(name, _directory_open_flags(), dir_fd=parent_fd)
+    except FileNotFoundError:
+        if not create:
+            raise StudyArtifactError("artifact parent is missing") from None
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise StudyArtifactError("artifact parent cannot be created safely") from exc
+        try:
+            descriptor = os.open(name, _directory_open_flags(), dir_fd=parent_fd)
+        except OSError as exc:
+            raise StudyArtifactError("artifact directory component is unsafe or a symlink") from exc
+    except OSError as exc:
+        raise StudyArtifactError("artifact directory component is unsafe or a symlink") from exc
+    try:
+        _validated_directory_metadata(descriptor, purpose="artifact directory component")
+    except Exception:
         os.close(descriptor)
-        raise StudyArtifactError("artifact parent is not a directory")
+        raise
     return descriptor
+
+
+def _validated_directory_metadata(descriptor: int, *, purpose: str) -> os.stat_result:
+    try:
+        metadata = os.fstat(descriptor)
+    except OSError as exc:
+        raise StudyArtifactError(f"{purpose} descriptor is invalid") from exc
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_nlink < 1:
+        raise StudyArtifactError(f"{purpose} is invalid")
+    return metadata
+
+
+def _directory_open_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+
+
+def _close_descriptor(descriptor: int) -> None:
+    with suppress(OSError):
+        os.close(descriptor)
 
 
 def _reject_existing_target(directory_fd: int, name: str) -> None:

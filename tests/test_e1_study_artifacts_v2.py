@@ -91,6 +91,39 @@ def _published_document(
     return load_strict_json_object(store.read_bytes(relative_path))
 
 
+def _store_with_replaced_lexical_path(
+    tmp_path: Path,
+    *,
+    replacement: Literal["ancestor", "root"],
+    nested: bool,
+) -> tuple[StudyArtifactStore, Path, Path, str, str]:
+    allowed = tmp_path / "allowed"
+    root = allowed / "artifacts"
+    outside_root = tmp_path / "outside" / "artifacts"
+    root.mkdir(parents=True)
+    outside_root.mkdir(parents=True)
+    store = StudyArtifactStore(root, allowed_root=allowed)
+    read_path = "nested/read.bin" if nested else "read.bin"
+    write_path = "nested/write.bin" if nested else "write.bin"
+    store.publish_bytes(read_path, b"trusted", media_type="application/octet-stream")
+
+    if replacement == "ancestor":
+        pinned_allowed = tmp_path / "pinned-allowed"
+        allowed.rename(pinned_allowed)
+        allowed.symlink_to(tmp_path / "outside", target_is_directory=True)
+        pinned_root = pinned_allowed / "artifacts"
+    else:
+        pinned_root = allowed / "pinned-artifacts"
+        root.rename(pinned_root)
+        root.symlink_to(outside_root, target_is_directory=True)
+
+    outside_read = outside_root / read_path
+    outside_read.parent.mkdir(parents=True, exist_ok=True)
+    outside_read.write_bytes(b"untrusted")
+    (outside_root / write_path).parent.mkdir(parents=True, exist_ok=True)
+    return store, pinned_root, outside_root, read_path, write_path
+
+
 def test_phase_1_execution_claim_binds_exact_contract(protocol: StudyProtocolV2) -> None:
     claim = begin_phase_execution(
         phase="phase1",
@@ -529,6 +562,62 @@ def test_store_rejects_final_symlink_on_read_and_write(tmp_path: Path) -> None:
     with pytest.raises(StudyArtifactError, match="symlink"):
         store.publish_bytes("claim.txt", b"payload", media_type="text/plain")
     assert outside.read_bytes() == b"outside"
+
+
+@pytest.mark.parametrize("replacement", ["ancestor", "root"])
+@pytest.mark.parametrize("nested", [False, True], ids=["flat", "nested"])
+def test_store_read_stays_pinned_after_lexical_path_is_replaced_by_symlink(
+    tmp_path: Path,
+    replacement: Literal["ancestor", "root"],
+    nested: bool,
+) -> None:
+    store, _, _, read_path, _ = _store_with_replaced_lexical_path(
+        tmp_path,
+        replacement=replacement,
+        nested=nested,
+    )
+
+    assert store.read_bytes(read_path) == b"trusted"
+
+
+@pytest.mark.parametrize("replacement", ["ancestor", "root"])
+@pytest.mark.parametrize("nested", [False, True], ids=["flat", "nested"])
+def test_store_write_stays_pinned_after_lexical_path_is_replaced_by_symlink(
+    tmp_path: Path,
+    replacement: Literal["ancestor", "root"],
+    nested: bool,
+) -> None:
+    store, pinned_root, outside_root, _, write_path = _store_with_replaced_lexical_path(
+        tmp_path,
+        replacement=replacement,
+        nested=nested,
+    )
+
+    record = store.publish_bytes(
+        write_path,
+        b"trusted-write",
+        media_type="application/octet-stream",
+    )
+
+    assert record.path == write_path
+    assert (pinned_root / write_path).read_bytes() == b"trusted-write"
+    assert not (outside_root / write_path).exists()
+
+
+def test_store_fails_closed_after_its_pinned_root_descriptor_is_closed(
+    tmp_path: Path,
+) -> None:
+    store = StudyArtifactStore(tmp_path)
+    store.publish_bytes("read.bin", b"trusted", media_type="application/octet-stream")
+
+    store.close()
+    store.close()
+
+    with pytest.raises(StudyArtifactError, match="closed"):
+        store.read_bytes("read.bin")
+    with pytest.raises(StudyArtifactError, match="closed"):
+        store.publish_bytes("write.bin", b"blocked", media_type="application/octet-stream")
+    assert not (tmp_path / "write.bin").exists()
 
 
 def test_store_enforces_bounded_writes_and_reads(tmp_path: Path) -> None:
