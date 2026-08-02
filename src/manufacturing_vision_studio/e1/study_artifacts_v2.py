@@ -14,6 +14,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from threading import Lock
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from jsonschema import Draft202012Validator
@@ -36,6 +37,23 @@ _SHA256_LENGTH = 64
 _ZERO_SHA256 = "0" * _SHA256_LENGTH
 _STUDY_ID = "e1-feasibility-separability"
 _PHASE_1_MODES = ("NEAREST", "BILINEAR", "BICUBIC")
+_RESULT_RECORD_TYPES = {
+    "scope_audit",
+    "diagnostic_result",
+    "feature_oracle",
+    "development_result",
+    "decision",
+}
+_PRE_DECISION_PATHS = (
+    "implementation-validation.json",
+    "retention-audit.json",
+    "phase-1-execution-claim.json",
+    "known-transform-diagnostic-108.json",
+    "scope-audit.json",
+    "feature-ownership-oracle.json",
+    "phase-2-execution-claim.json",
+    "known-transform-development-120.json",
+)
 
 
 class StudyArtifactError(ValueError):
@@ -49,6 +67,16 @@ class StudyArtifactRecord:
     byte_size: int
     media_type: str
     record_sha256: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedStudyJson:
+    """One immutable JSON verification bound to the exact bytes read once."""
+
+    document: Mapping[str, object]
+    raw_bytes: bytes
+    raw_sha256: str
+    record_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -298,6 +326,7 @@ def validate_study_schema(document: Mapping[str, object]) -> None:
             f"study artifact failed schema validation at {field_path}: {first.message}"
         )
     _validate_phase_claim_semantics(document)
+    _validate_result_semantics(document)
 
 
 def read_bounded_bytes(path: Path, *, maximum: int) -> bytes:
@@ -369,6 +398,66 @@ class StudyArtifactStore:
         except Exception:
             os.close(root_fd)
             raise
+        self._bind_root(
+            requested_root=requested_root,
+            requested_allowed=requested_allowed,
+            max_artifact_bytes=max_artifact_bytes,
+            root_fd=root_fd,
+            root_metadata=root_metadata,
+        )
+
+    @classmethod
+    def open_existing(
+        cls,
+        root: Path,
+        *,
+        allowed_root: Path | None = None,
+        max_artifact_bytes: int = _DEFAULT_MAX_ARTIFACT_BYTES,
+    ) -> StudyArtifactStore | None:
+        """Open a safely pinned existing root, returning ``None`` only for absence."""
+
+        if max_artifact_bytes < 1:
+            raise ValueError("artifact byte limit must be positive")
+        requested_root = _absolute_lexical(root)
+        requested_allowed = _absolute_lexical(allowed_root or requested_root)
+        if not requested_root.is_relative_to(requested_allowed):
+            raise StudyArtifactError("artifact root escapes allowed root")
+        allowed_fd = _open_existing_absolute_directory(requested_allowed)
+        if allowed_fd is None:
+            return None
+        try:
+            root_fd = _traverse_existing_directory_fd(
+                allowed_fd,
+                requested_root.relative_to(requested_allowed).parts,
+            )
+        finally:
+            os.close(allowed_fd)
+        if root_fd is None:
+            return None
+        try:
+            root_metadata = _validated_directory_metadata(root_fd, purpose="artifact root")
+            instance = cls.__new__(cls)
+        except Exception:
+            os.close(root_fd)
+            raise
+        instance._bind_root(
+            requested_root=requested_root,
+            requested_allowed=requested_allowed,
+            max_artifact_bytes=max_artifact_bytes,
+            root_fd=root_fd,
+            root_metadata=root_metadata,
+        )
+        return instance
+
+    def _bind_root(
+        self,
+        *,
+        requested_root: Path,
+        requested_allowed: Path,
+        max_artifact_bytes: int,
+        root_fd: int,
+        root_metadata: os.stat_result,
+    ) -> None:
         self.root = requested_root
         self.allowed_root = requested_allowed
         self.max_artifact_bytes = max_artifact_bytes
@@ -380,6 +469,24 @@ class StudyArtifactStore:
         except Exception:
             os.close(root_fd)
             raise
+
+    def verify_lexical_root_identity(self) -> None:
+        """Require the current lexical root to name the pinned root without symlinks."""
+
+        pinned = self._duplicate_root_fd()
+        os.close(pinned)
+        lexical_fd = _open_existing_absolute_directory(self.root)
+        if lexical_fd is None:
+            raise StudyArtifactError("lexical artifact root identity is missing")
+        try:
+            metadata = _validated_directory_metadata(
+                lexical_fd,
+                purpose="lexical artifact root",
+            )
+            if (metadata.st_dev, metadata.st_ino) != self._root_identity:
+                raise StudyArtifactError("lexical artifact root identity changed")
+        finally:
+            os.close(lexical_fd)
 
     def close(self) -> None:
         """Close the pinned root descriptor; later operations fail closed."""
@@ -532,6 +639,23 @@ class StudyArtifactStore:
         *,
         expected_record_type: str,
     ) -> dict[str, object]:
+        verified = self.verify_json_result(
+            relative_path,
+            expected_record_type=expected_record_type,
+        )
+        thawed = _thaw_json_value(verified.document)
+        if not isinstance(thawed, dict):
+            raise AssertionError("verified study JSON document must remain an object")
+        return cast(dict[str, object], thawed)
+
+    def verify_json_result(
+        self,
+        relative_path: str,
+        *,
+        expected_record_type: str,
+    ) -> VerifiedStudyJson:
+        """Verify one JSON artifact from one read and retain its immutable evidence."""
+
         payload = self.read_bytes(relative_path)
         document = load_strict_json_object(payload)
         try:
@@ -544,7 +668,16 @@ class StudyArtifactStore:
         validate_study_schema(document)
         if document.get("record_type") != expected_record_type:
             raise StudyArtifactError("artifact record type does not match expectation")
-        return cast(dict[str, object], document)
+        record_sha256 = cast(str, document["record_sha256"])
+        frozen = _freeze_json_value(document)
+        if not isinstance(frozen, Mapping):
+            raise AssertionError("verified study JSON document must remain an object")
+        return VerifiedStudyJson(
+            document=cast(Mapping[str, object], frozen),
+            raw_bytes=payload,
+            raw_sha256=sha256_bytes(payload),
+            record_sha256=record_sha256,
+        )
 
     def _prepare_parent_fd(self, relative_path: str, *, create: bool) -> tuple[int, str]:
         pure = PurePosixPath(relative_path)
@@ -595,6 +728,293 @@ def _validate_phase_claim_semantics(document: Mapping[str, object]) -> None:
         protocol_ordered = tuple(mode for mode in _PHASE_1_MODES if mode in selected)
         if selected != protocol_ordered:
             raise StudyArtifactError("phase2 claim modes do not retain protocol order")
+
+
+def _validate_result_semantics(document: Mapping[str, object]) -> None:
+    record_type = document.get("record_type")
+    if record_type not in _RESULT_RECORD_TYPES:
+        return
+    for field_name in ("artifact_schema_sha256", "implementation_projection_sha256"):
+        if document.get(field_name) == _ZERO_SHA256:
+            raise StudyArtifactError(f"{record_type} {field_name} must be a real hash")
+    upstreams = cast(list[dict[str, object]], document["upstream_artifacts"])
+    if any(
+        upstream[hash_field] == _ZERO_SHA256
+        for upstream in upstreams
+        for hash_field in ("raw_sha256", "record_sha256")
+    ):
+        raise StudyArtifactError(f"{record_type} upstream hashes must be real")
+    payload = cast(dict[str, object], document["payload"])
+    if record_type == "scope_audit":
+        _validate_scope_semantics(payload)
+    elif record_type == "diagnostic_result":
+        _validate_diagnostic_semantics(payload)
+    elif record_type == "feature_oracle":
+        _validate_oracle_semantics(payload)
+    elif record_type == "development_result":
+        _validate_development_semantics(payload)
+    else:
+        _validate_decision_semantics(payload, upstreams)
+
+
+def _development_binding_projection() -> tuple[tuple[str, int, str], ...]:
+    return tuple(
+        (f"e1-v2-development-{group}-{ordinal:03d}", seed_start + ordinal, group)
+        for group, count, seed_start in (
+            ("clean", 24, 400000),
+            ("nuisance", 30, 410000),
+            ("defect", 60, 420000),
+            ("trust_boundary", 6, 430000),
+        )
+        for ordinal in range(count)
+    )
+
+
+def _validate_scope_semantics(payload: Mapping[str, object]) -> None:
+    bindings = cast(list[dict[str, object]], payload["bindings"])
+    actual = tuple(
+        (cast(str, binding["case_id"]), cast(int, binding["seed"]), cast(str, binding["group"]))
+        for binding in bindings
+    )
+    if actual != _development_binding_projection():
+        raise StudyArtifactError("scope audit binding order or identity is invalid")
+
+
+def _validate_diagnostic_semantics(payload: Mapping[str, object]) -> None:
+    cases = cast(list[dict[str, object]], payload["cases"])
+    expected_cases = tuple(
+        (f"e1-v2-development-diagnostic-{ordinal:03d}", 800000 + ordinal)
+        for ordinal in range(108)
+    )
+    actual_cases = tuple(
+        (cast(str, case["diagnostic_id"]), cast(int, case["seed"])) for case in cases
+    )
+    if actual_cases != expected_cases:
+        raise StudyArtifactError("diagnostic case order or identity is invalid")
+
+    observations = cast(list[dict[str, object]], payload["observations"])
+    expected_observations = tuple(
+        (diagnostic_id, seed, mode)
+        for diagnostic_id, seed in expected_cases
+        for mode in _PHASE_1_MODES
+    )
+    actual_observations = tuple(
+        (
+            cast(str, observation["diagnostic_id"]),
+            cast(int, observation["seed"]),
+            cast(str, observation["mode"]),
+        )
+        for observation in observations
+    )
+    if actual_observations != expected_observations:
+        raise StudyArtifactError("diagnostic observation order or identity is invalid")
+
+    by_case = {cast(str, case["diagnostic_id"]): case for case in cases}
+    for observation in observations:
+        diagnostic_id = cast(str, observation["diagnostic_id"])
+        case = by_case[diagnostic_id]
+        if observation["authoritative_mask_sha256"] != case["authoritative_mask_sha256"]:
+            raise StudyArtifactError("diagnostic mask binding is invalid")
+        inference = cast(dict[str, object], observation["inference_trace"])
+        source_hashes = cast(dict[str, object], inference["source_hashes"])
+        if (
+            source_hashes["reference_sha256"] != case["reference_sha256"]
+            or source_hashes["inspection_sha256"] != case["inspection_sha256"]
+        ):
+            raise StudyArtifactError("diagnostic inference source binding is invalid")
+        if observation["outside_boundary_residual"] != (
+            cast(int, observation["total_residual"])
+            - cast(int, observation["boundary_residual"])
+        ):
+            raise StudyArtifactError("diagnostic residual trace is invalid")
+
+    summaries = cast(list[dict[str, object]], payload["mode_summaries"])
+    if tuple(summary["mode"] for summary in summaries) != _PHASE_1_MODES:
+        raise StudyArtifactError("diagnostic mode-summary order is invalid")
+    expected_gate_names = (
+        "maximum_recall_drop",
+        "median_dice_drop",
+        "medium_high_classification_recall",
+    )
+    for summary in summaries:
+        gates = cast(list[dict[str, object]], summary["gates"])
+        if tuple(gate["name"] for gate in gates) != expected_gate_names:
+            raise StudyArtifactError("diagnostic gate order is invalid")
+    eligible_modes = tuple(cast(list[str], payload["eligible_modes"]))
+    derived_modes = tuple(
+        cast(str, summary["mode"]) for summary in summaries if summary["eligible"] is True
+    )
+    if eligible_modes != derived_modes:
+        raise StudyArtifactError("diagnostic eligible-mode declaration is invalid")
+
+
+def _validate_oracle_semantics(payload: Mapping[str, object]) -> None:
+    records = cast(list[dict[str, object]], payload["records"])
+    expected = tuple(
+        (f"e1-v2-development-defect-{ordinal:03d}", 420000 + ordinal)
+        for ordinal in range(60)
+    )
+    actual = tuple(
+        (cast(str, record["case_id"]), cast(int, record["seed"])) for record in records
+    )
+    if actual != expected:
+        raise StudyArtifactError("feature oracle record order or identity is invalid")
+    for record in records:
+        conserved = (
+            cast(int, record["owned_pixel_count"])
+            + cast(int, record["unmapped_pixel_count"])
+            == cast(int, record["authoritative_positive_pixels"])
+        )
+        if record["conserved"] is not conserved:
+            raise StudyArtifactError("feature oracle conservation declaration is invalid")
+        if record["correct"] is True and (
+            cast(int, record["target_owned_pixels"]) < 8
+            or record["predicted_feature_id"] != record["expected_feature_id"]
+            or record["hash_binding_matches"] is not True
+            or not conserved
+        ):
+            raise StudyArtifactError("feature oracle correct-case declaration is invalid")
+
+    correct = sum(record["correct"] is True for record in records)
+    ambiguous = sum(
+        record["correct"] is not True and record["status"] == "AMBIGUOUS"
+        for record in records
+    )
+    null = sum(
+        record["correct"] is not True
+        and record["status"] != "AMBIGUOUS"
+        and record["predicted_feature_id"] is None
+        for record in records
+    )
+    wrong = 60 - correct - ambiguous - null
+    declared = (
+        payload["correct_cases"],
+        payload["ambiguous_cases"],
+        payload["null_cases"],
+        payload["wrong_cases"],
+    )
+    if declared != (correct, ambiguous, null, wrong):
+        raise StudyArtifactError("feature oracle totals are invalid")
+    expected_passed = correct == 60 and ambiguous == 0 and null == 0 and wrong == 0
+    if payload["passed"] is not expected_passed:
+        raise StudyArtifactError("feature oracle pass declaration is invalid")
+
+
+def _validate_development_semantics(payload: Mapping[str, object]) -> None:
+    bindings = cast(list[dict[str, object]], payload["bindings"])
+    expected_projection = _development_binding_projection()
+    actual_projection = tuple(
+        (cast(str, item["case_id"]), cast(int, item["seed"]), cast(str, item["group"]))
+        for item in bindings
+    )
+    if actual_projection != expected_projection:
+        raise StudyArtifactError("development binding order or identity is invalid")
+    modes = tuple(cast(list[str], payload["eligible_modes"]))
+    if modes != tuple(mode for mode in _PHASE_1_MODES if mode in modes):
+        raise StudyArtifactError("development eligible-mode order is invalid")
+
+    inference_bindings = bindings[:114]
+    expected_inference = tuple(
+        (
+            cast(str, binding["case_id"]),
+            cast(int, binding["seed"]),
+            cast(str, binding["group"]),
+            mode,
+            cast(str, binding["case_binding_sha256"]),
+        )
+        for mode in modes
+        for binding in inference_bindings
+    )
+    inference_records = cast(list[dict[str, object]], payload["inference_records"])
+    actual_inference = tuple(
+        (
+            cast(str, record["case_id"]),
+            cast(int, record["seed"]),
+            cast(str, record["group"]),
+            cast(str, record["mode"]),
+            cast(str, record["case_binding_sha256"]),
+        )
+        for record in inference_records
+    )
+    if actual_inference != expected_inference:
+        raise StudyArtifactError("development inference order or count is invalid")
+    binding_by_id = {cast(str, binding["case_id"]): binding for binding in bindings}
+    for record in inference_records:
+        binding = binding_by_id[cast(str, record["case_id"])]
+        inference = cast(dict[str, object], record["inference_trace"])
+        hashes = cast(dict[str, object], inference["source_hashes"])
+        if (
+            hashes["reference_sha256"] != binding["reference_sha256"]
+            or hashes["inspection_sha256"] != binding["inspection_sha256"]
+        ):
+            raise StudyArtifactError("development inference source binding is invalid")
+
+    trust_records = cast(list[dict[str, object]], payload["trust_bindings"])
+    expected_trust = tuple(
+        (
+            cast(str, binding["case_id"]),
+            cast(int, binding["seed"]),
+            cast(str, binding["case_binding_sha256"]),
+        )
+        for binding in bindings[114:]
+    )
+    actual_trust = tuple(
+        (
+            cast(str, record["case_id"]),
+            cast(int, record["seed"]),
+            cast(str, record["case_binding_sha256"]),
+        )
+        for record in trust_records
+    )
+    if actual_trust != expected_trust:
+        raise StudyArtifactError("development trust-binding order is invalid")
+
+    summaries = cast(list[dict[str, object]], payload["mode_summaries"])
+    if tuple(summary["mode"] for summary in summaries) != modes:
+        raise StudyArtifactError("development mode-summary order is invalid")
+    expected_gate_names = (
+        "medium_high_defect_recall",
+        "nuisance_only_false_positive_rate",
+        "positive_case_median_dice",
+        "affected_feature_mapping_accuracy",
+    )
+    for summary in summaries:
+        gates = cast(list[dict[str, object]], summary["gates"])
+        if tuple(gate["name"] for gate in gates) != expected_gate_names:
+            raise StudyArtifactError("development gate order is invalid")
+    passing_modes = tuple(cast(list[str], payload["passing_modes"]))
+    derived_passing = tuple(
+        cast(str, summary["mode"])
+        for summary in summaries
+        if summary["passed_all_gates"] is True
+    )
+    if passing_modes != derived_passing:
+        raise StudyArtifactError("development passing-mode declaration is invalid")
+
+
+def _validate_decision_semantics(
+    payload: Mapping[str, object],
+    upstreams: list[dict[str, object]],
+) -> None:
+    present = tuple(cast(list[str], payload["present_paths"]))
+    invalid = tuple(cast(list[str], payload["invalid_paths"]))
+    if present != tuple(path for path in _PRE_DECISION_PATHS if path in present):
+        raise StudyArtifactError("decision present-path inventory order is invalid")
+    if invalid != tuple(path for path in _PRE_DECISION_PATHS if path in invalid):
+        raise StudyArtifactError("decision invalid-path inventory order is invalid")
+    if any(path not in present for path in invalid):
+        raise StudyArtifactError("decision invalid path is not present")
+    verified_paths = tuple(path for path in present if path not in invalid)
+    if payload["present_artifact_count"] != len(present):
+        raise StudyArtifactError("decision present-artifact count is invalid")
+    if payload["verified_artifact_count"] != len(verified_paths):
+        raise StudyArtifactError("decision verified-artifact count is invalid")
+    expected_rate = len(verified_paths) / len(present) if present else 0.0
+    if payload["study_artifact_verify_rate"] != expected_rate:
+        raise StudyArtifactError("decision artifact verification rate is invalid")
+    upstream_paths = tuple(cast(str, upstream["path"]) for upstream in upstreams)
+    if upstream_paths != verified_paths:
+        raise StudyArtifactError("decision upstream inventory is invalid")
 
 
 def _require_finite_json_value(value: object) -> None:
@@ -650,6 +1070,19 @@ def _absolute_lexical(path: Path) -> Path:
     return Path(os.path.abspath(os.fspath(path.expanduser())))
 
 
+def _open_existing_absolute_directory(path: Path) -> int | None:
+    if not path.is_absolute():
+        raise StudyArtifactError("artifact root must be absolute")
+    try:
+        anchor_fd = os.open(path.anchor, _directory_open_flags())
+    except OSError as exc:
+        raise StudyArtifactError("artifact root anchor is unsafe") from exc
+    try:
+        return _traverse_existing_directory_fd(anchor_fd, path.parts[1:])
+    finally:
+        os.close(anchor_fd)
+
+
 def _open_or_create_absolute_directory(path: Path) -> int:
     if not path.is_absolute():
         raise StudyArtifactError("artifact root must be absolute")
@@ -661,6 +1094,29 @@ def _open_or_create_absolute_directory(path: Path) -> int:
         return _traverse_directory_fd(anchor_fd, path.parts[1:], create=True)
     finally:
         os.close(anchor_fd)
+
+
+def _traverse_existing_directory_fd(
+    starting_fd: int,
+    parts: tuple[str, ...],
+) -> int | None:
+    try:
+        current_fd = os.dup(starting_fd)
+    except OSError as exc:
+        raise StudyArtifactError("artifact directory descriptor is invalid") from exc
+    try:
+        _validated_directory_metadata(current_fd, purpose="artifact directory")
+        for part in parts:
+            next_fd = _open_existing_child_directory(current_fd, part)
+            if next_fd is None:
+                os.close(current_fd)
+                return None
+            os.close(current_fd)
+            current_fd = next_fd
+        return current_fd
+    except Exception:
+        os.close(current_fd)
+        raise
 
 
 def _traverse_directory_fd(
@@ -683,6 +1139,25 @@ def _traverse_directory_fd(
     except Exception:
         os.close(current_fd)
         raise
+
+
+def _open_existing_child_directory(parent_fd: int, name: str) -> int | None:
+    if not name or name in {".", ".."} or "/" in name or "\x00" in name:
+        raise StudyArtifactError("artifact directory component is unsafe")
+    try:
+        descriptor = os.open(name, _directory_open_flags(), dir_fd=parent_fd)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise StudyArtifactError(
+            "artifact directory component is unsafe or a symlink"
+        ) from exc
+    try:
+        _validated_directory_metadata(descriptor, purpose="artifact directory component")
+    except Exception:
+        os.close(descriptor)
+        raise
+    return descriptor
 
 
 def _open_child_directory(parent_fd: int, name: str, *, create: bool) -> int:
@@ -755,3 +1230,21 @@ def _is_lower_hex(value: object, length: int) -> bool:
         and len(value) == length
         and all(character in "0123456789abcdef" for character in value)
     )
+
+
+def _freeze_json_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {str(key): _freeze_json_value(item) for key, item in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json_value(item) for item in value)
+    return value
+
+
+def _thaw_json_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _thaw_json_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json_value(item) for item in value]
+    return value

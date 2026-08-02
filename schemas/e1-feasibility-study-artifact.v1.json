@@ -4,7 +4,12 @@
   "oneOf": [
     {"$ref": "#/$defs/phaseExecutionClaim"},
     {"$ref": "#/$defs/implementationValidation"},
-    {"$ref": "#/$defs/retentionAudit"}
+    {"$ref": "#/$defs/retentionAudit"},
+    {"$ref": "#/$defs/scopeAudit"},
+    {"$ref": "#/$defs/diagnosticResult"},
+    {"$ref": "#/$defs/featureOracle"},
+    {"$ref": "#/$defs/developmentResult"},
+    {"$ref": "#/$defs/decision"}
   ],
   "$defs": {
     "sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
@@ -415,6 +420,1197 @@
         "payload": {"$ref": "#/$defs/retentionPayload"},
         "record_sha256": {"$ref": "#/$defs/sha256"}
       }
+    },
+    "resultUpstreamArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "raw_sha256", "record_sha256"],
+      "properties": {
+        "path": {
+          "enum": [
+            "implementation-validation.json",
+            "retention-audit.json",
+            "phase-1-execution-claim.json",
+            "known-transform-diagnostic-108.json",
+            "scope-audit.json",
+            "feature-ownership-oracle.json",
+            "phase-2-execution-claim.json",
+            "known-transform-development-120.json"
+          ]
+        },
+        "raw_sha256": {"$ref": "#/$defs/sha256"},
+        "record_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "fullEvidenceEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_type",
+        "schema_version",
+        "study_id",
+        "development_only",
+        "selection_eligible",
+        "release_claim_allowed",
+        "base_commit",
+        "execution_commit",
+        "protocol_sha256",
+        "artifact_root",
+        "artifact_schema_sha256",
+        "implementation_projection_sha256",
+        "upstream_artifacts",
+        "payload",
+        "record_sha256"
+      ],
+      "properties": {
+        "record_type": {
+          "enum": [
+            "scope_audit",
+            "diagnostic_result",
+            "feature_oracle",
+            "development_result",
+            "decision"
+          ]
+        },
+        "schema_version": {"const": "1.0.0"},
+        "study_id": {"const": "e1-feasibility-separability"},
+        "development_only": {"const": true},
+        "selection_eligible": {"const": false},
+        "release_claim_allowed": {"const": false},
+        "base_commit": {"$ref": "#/$defs/sha1"},
+        "execution_commit": {"$ref": "#/$defs/sha1"},
+        "protocol_sha256": {"$ref": "#/$defs/sha256"},
+        "artifact_root": {"const": "docs/evaluation/results/e1-feasibility-study"},
+        "artifact_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "implementation_projection_sha256": {"$ref": "#/$defs/sha256"},
+        "upstream_artifacts": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 8,
+          "items": {"$ref": "#/$defs/resultUpstreamArtifact"}
+        },
+        "payload": {},
+        "record_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "runtimeVersions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["python", "numpy", "pillow"],
+      "properties": {
+        "python": {"type": "string", "minLength": 1},
+        "numpy": {"type": "string", "minLength": 1},
+        "pillow": {"type": "string", "minLength": 1}
+      }
+    },
+    "resamplingMode": {"enum": ["NEAREST", "BILINEAR", "BICUBIC"]},
+    "appliedTransform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scale_factor",
+        "rotation_degrees",
+        "translation_x",
+        "translation_y"
+      ],
+      "properties": {
+        "scale_factor": {"type": "number", "exclusiveMinimum": 0},
+        "rotation_degrees": {"type": "number"},
+        "translation_x": {"type": "number"},
+        "translation_y": {"type": "number"}
+      }
+    },
+    "identityAppliedTransform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scale_factor",
+        "rotation_degrees",
+        "translation_x",
+        "translation_y"
+      ],
+      "properties": {
+        "scale_factor": {"const": 1.0},
+        "rotation_degrees": {"const": 0.0},
+        "translation_x": {"const": 0.0},
+        "translation_y": {"const": 0.0}
+      }
+    },
+    "alignmentObjective": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "value",
+        "silhouette_xor_rate",
+        "normalized_edge_mae",
+        "foreground_iou"
+      ],
+      "properties": {
+        "value": {"type": "number", "minimum": 0},
+        "silhouette_xor_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "normalized_edge_mae": {"type": "number", "minimum": 0, "maximum": 1},
+        "foreground_iou": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "affineCoefficients": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["a", "b", "c", "d", "e", "f"],
+      "properties": {
+        "a": {"type": "number"},
+        "b": {"type": "number"},
+        "c": {"type": "number"},
+        "d": {"type": "number"},
+        "e": {"type": "number"},
+        "f": {"type": "number"}
+      }
+    },
+    "correctionTransform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dx", "dy", "rotation_degrees", "scale"],
+      "properties": {
+        "dx": {"type": "number"},
+        "dy": {"type": "number"},
+        "rotation_degrees": {"type": "number"},
+        "scale": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "transformTrace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "applied",
+        "applied_transform",
+        "coefficients",
+        "correction",
+        "fill_rgb",
+        "normalized_sha256",
+        "objective_after",
+        "objective_before",
+        "reference_sha256",
+        "resampling",
+        "source_inspection_sha256"
+      ],
+      "properties": {
+        "applied": {"type": "boolean"},
+        "applied_transform": {"$ref": "#/$defs/appliedTransform"},
+        "coefficients": {"$ref": "#/$defs/affineCoefficients"},
+        "correction": {"$ref": "#/$defs/correctionTransform"},
+        "fill_rgb": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {"type": "integer", "minimum": 0, "maximum": 255}
+        },
+        "normalized_sha256": {"$ref": "#/$defs/sha256"},
+        "objective_after": {"$ref": "#/$defs/alignmentObjective"},
+        "objective_before": {"$ref": "#/$defs/alignmentObjective"},
+        "reference_sha256": {"$ref": "#/$defs/sha256"},
+        "resampling": {"$ref": "#/$defs/resamplingMode"},
+        "source_inspection_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "ownerPixelCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bottom_edge", "hole_left", "hole_right", "top_edge", "top_face"],
+      "properties": {
+        "bottom_edge": {"type": "integer", "minimum": 0},
+        "hole_left": {"type": "integer", "minimum": 0},
+        "hole_right": {"type": "integer", "minimum": 0},
+        "top_edge": {"type": "integer", "minimum": 0},
+        "top_face": {"type": "integer", "minimum": 0}
+      }
+    },
+    "featureMappingTrace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "predicted_feature_id",
+        "status",
+        "reason",
+        "owner_pixel_counts",
+        "owned_pixel_count",
+        "winner_owned_pixel_count",
+        "final_positive_pixel_count",
+        "unmapped_pixel_count",
+        "winner_margin",
+        "final_mask_sha256",
+        "ownership_map_sha256"
+      ],
+      "properties": {
+        "predicted_feature_id": {
+          "type": ["string", "null"]
+        },
+        "status": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "owner_pixel_counts": {"$ref": "#/$defs/ownerPixelCounts"},
+        "owned_pixel_count": {"type": "integer", "minimum": 0},
+        "winner_owned_pixel_count": {"type": "integer", "minimum": 0},
+        "final_positive_pixel_count": {"type": "integer", "minimum": 0},
+        "unmapped_pixel_count": {"type": "integer", "minimum": 0},
+        "winner_margin": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "string", "pattern": "^[0-9]+\\.[0-9]{8}$"}
+          ]
+        },
+        "final_mask_sha256": {"$ref": "#/$defs/sha256"},
+        "ownership_map_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "maskPostprocessingTrace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "removed_component_count",
+        "removed_pixel_count",
+        "filtered_mask_sha256"
+      ],
+      "properties": {
+        "algorithm": {"const": "structural_residue_filter_v2"},
+        "removed_component_count": {"type": "integer", "minimum": 0},
+        "removed_pixel_count": {"type": "integer", "minimum": 0},
+        "filtered_mask_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "modelRegistrationTrace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dx", "dy", "mean_absolute_error"],
+      "properties": {
+        "dx": {"type": "integer"},
+        "dy": {"type": "integer"},
+        "mean_absolute_error": {"type": "number", "minimum": 0}
+      }
+    },
+    "inferenceSourceHashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inspection_sha256",
+        "normalized_inspection_sha256",
+        "reference_sha256"
+      ],
+      "properties": {
+        "inspection_sha256": {"$ref": "#/$defs/sha256"},
+        "normalized_inspection_sha256": {"$ref": "#/$defs/sha256"},
+        "reference_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "inferenceTrace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actual_outcome",
+        "anomaly_score",
+        "feature_mapping",
+        "global_anomaly_score",
+        "mask_postprocessing",
+        "model_registration",
+        "predicted_mask_sha256",
+        "registered_inspection_sha256",
+        "source_hashes",
+        "transform_trace"
+      ],
+      "properties": {
+        "actual_outcome": {"enum": ["NORMAL", "ANOMALY"]},
+        "anomaly_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "feature_mapping": {"$ref": "#/$defs/featureMappingTrace"},
+        "global_anomaly_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "mask_postprocessing": {"$ref": "#/$defs/maskPostprocessingTrace"},
+        "model_registration": {"$ref": "#/$defs/modelRegistrationTrace"},
+        "predicted_mask_sha256": {"$ref": "#/$defs/sha256"},
+        "registered_inspection_sha256": {"$ref": "#/$defs/sha256"},
+        "source_hashes": {"$ref": "#/$defs/inferenceSourceHashes"},
+        "transform_trace": {"$ref": "#/$defs/transformTrace"}
+      }
+    },
+    "applicableStudyGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "status",
+        "numerator",
+        "denominator",
+        "exclusions",
+        "observed",
+        "operator",
+        "threshold",
+        "reason"
+      ],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "status": {"enum": ["PASS", "FAIL"]},
+        "numerator": {
+          "oneOf": [
+            {"type": "integer", "minimum": 0},
+            {"type": "null"}
+          ]
+        },
+        "denominator": {"type": "integer", "minimum": 1},
+        "exclusions": {"type": "integer", "minimum": 0},
+        "observed": {"type": "number"},
+        "operator": {"enum": ["ge", "le", "eq"]},
+        "threshold": {"type": ["number", "boolean"]},
+        "reason": {"type": ["string", "null"]}
+      }
+    },
+    "developmentBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "seed",
+        "group",
+        "reference_sha256",
+        "inspection_sha256",
+        "authoritative_mask_sha256",
+        "case_binding_sha256"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string",
+          "pattern": "^e1-v2-development-(?:clean|nuisance|defect|trust_boundary)-[0-9]{3}$"
+        },
+        "seed": {"type": "integer"},
+        "group": {"enum": ["clean", "nuisance", "defect", "trust_boundary"]},
+        "reference_sha256": {"$ref": "#/$defs/sha256"},
+        "inspection_sha256": {"$ref": "#/$defs/sha256"},
+        "authoritative_mask_sha256": {"$ref": "#/$defs/sha256"},
+        "case_binding_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "developmentGroupCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clean", "nuisance", "defect", "trust_boundary", "total"],
+      "properties": {
+        "clean": {"const": 24},
+        "nuisance": {"const": 30},
+        "defect": {"const": 60},
+        "trust_boundary": {"const": 6},
+        "total": {"const": 120}
+      }
+    },
+    "scopePayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "member_count",
+        "bindings",
+        "group_counts",
+        "scope_projection",
+        "external_request_count",
+        "internal_membership_validation_count",
+        "protected_emission_count",
+        "legacy_v1_planning_caveat",
+        "passed"
+      ],
+      "properties": {
+        "member_count": {"const": 120},
+        "bindings": {
+          "type": "array",
+          "minItems": 120,
+          "maxItems": 120,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/developmentBinding"}
+        },
+        "group_counts": {"$ref": "#/$defs/developmentGroupCounts"},
+        "scope_projection": {"const": ["development"]},
+        "external_request_count": {"const": 1},
+        "internal_membership_validation_count": {"const": 120},
+        "protected_emission_count": {"const": 0},
+        "legacy_v1_planning_caveat": {
+          "const": "LEGACY_V1_FULL_TEMPLATES_FILTERED_TO_V2_DEVELOPMENT_ONLY"
+        },
+        "passed": {"const": true}
+      }
+    },
+    "scopeAudit": {
+      "allOf": [
+        {"$ref": "#/$defs/fullEvidenceEnvelope"},
+        {
+          "properties": {
+            "record_type": {"const": "scope_audit"},
+            "upstream_artifacts": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "prefixItems": [
+                {
+                  "allOf": [
+                    {"$ref": "#/$defs/resultUpstreamArtifact"},
+                    {"properties": {"path": {"const": "retention-audit.json"}}}
+                  ]
+                },
+                {
+                  "allOf": [
+                    {"$ref": "#/$defs/resultUpstreamArtifact"},
+                    {
+                      "properties": {
+                        "path": {"const": "known-transform-diagnostic-108.json"}
+                      }
+                    }
+                  ]
+                }
+              ],
+              "items": false
+            },
+            "payload": {"$ref": "#/$defs/scopePayload"}
+          }
+        }
+      ]
+    },
+    "diagnosticCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "diagnostic_id",
+        "seed",
+        "expected_outcome",
+        "part_id",
+        "cad_revision",
+        "view_id",
+        "reference_sha256",
+        "inspection_sha256",
+        "authoritative_mask_sha256",
+        "applied_transform",
+        "defect_type",
+        "defect_severity",
+        "expected_feature_id"
+      ],
+      "properties": {
+        "diagnostic_id": {
+          "type": "string",
+          "pattern": "^e1-v2-development-diagnostic-[0-9]{3}$"
+        },
+        "seed": {"type": "integer", "minimum": 800000, "maximum": 800107},
+        "expected_outcome": {"enum": ["NORMAL", "ANOMALY"]},
+        "part_id": {"type": "string", "minLength": 1},
+        "cad_revision": {"enum": ["rev-A", "rev-B"]},
+        "view_id": {"enum": ["front", "oblique_left", "oblique_right"]},
+        "reference_sha256": {"$ref": "#/$defs/sha256"},
+        "inspection_sha256": {"$ref": "#/$defs/sha256"},
+        "authoritative_mask_sha256": {"$ref": "#/$defs/sha256"},
+        "applied_transform": {"$ref": "#/$defs/appliedTransform"},
+        "defect_type": {"type": ["string", "null"]},
+        "defect_severity": {
+          "oneOf": [
+            {"enum": ["LOW", "MEDIUM", "HIGH"]},
+            {"type": "null"}
+          ]
+        },
+        "expected_feature_id": {"type": ["string", "null"]}
+      }
+    },
+    "boundaryBandTrace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "radius",
+        "foreground_positive_pixels",
+        "boundary_positive_pixels",
+        "band_positive_pixels",
+        "band_mask_sha256"
+      ],
+      "properties": {
+        "radius": {"const": 3},
+        "foreground_positive_pixels": {"type": "integer", "minimum": 1},
+        "boundary_positive_pixels": {"type": "integer", "minimum": 1},
+        "band_positive_pixels": {"type": "integer", "minimum": 1},
+        "band_mask_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "diagnosticObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "diagnostic_id",
+        "seed",
+        "mode",
+        "defect_row",
+        "medium_high_row",
+        "authoritative_mask_sha256",
+        "identity_mask_sha256",
+        "boundary_band",
+        "actual_outcome",
+        "identity_recall",
+        "study_recall",
+        "identity_dice",
+        "study_dice",
+        "study_iou",
+        "total_residual",
+        "boundary_residual",
+        "outside_boundary_residual",
+        "inference_trace"
+      ],
+      "properties": {
+        "diagnostic_id": {
+          "type": "string",
+          "pattern": "^e1-v2-development-diagnostic-[0-9]{3}$"
+        },
+        "seed": {"type": "integer", "minimum": 800000, "maximum": 800107},
+        "mode": {"$ref": "#/$defs/resamplingMode"},
+        "defect_row": {"type": "boolean"},
+        "medium_high_row": {"type": "boolean"},
+        "authoritative_mask_sha256": {"$ref": "#/$defs/sha256"},
+        "identity_mask_sha256": {"$ref": "#/$defs/sha256"},
+        "boundary_band": {"$ref": "#/$defs/boundaryBandTrace"},
+        "actual_outcome": {"enum": ["NORMAL", "ANOMALY"]},
+        "identity_recall": {"type": "number", "minimum": 0, "maximum": 1},
+        "study_recall": {"type": "number", "minimum": 0, "maximum": 1},
+        "identity_dice": {"type": "number", "minimum": 0, "maximum": 1},
+        "study_dice": {"type": "number", "minimum": 0, "maximum": 1},
+        "study_iou": {"type": "number", "minimum": 0, "maximum": 1},
+        "total_residual": {"type": "integer", "minimum": 0},
+        "boundary_residual": {"type": "integer", "minimum": 0},
+        "outside_boundary_residual": {"type": "integer", "minimum": 0},
+        "inference_trace": {"$ref": "#/$defs/inferenceTrace"}
+      }
+    },
+    "diagnosticModeSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "row_count",
+        "defect_drop_denominator",
+        "defect_drop_exclusions",
+        "medium_high_classification_denominator",
+        "medium_high_classification_exclusions",
+        "maximum_recall_drop",
+        "median_dice_drop",
+        "medium_high_classification_recall",
+        "gates",
+        "eligible"
+      ],
+      "properties": {
+        "mode": {"$ref": "#/$defs/resamplingMode"},
+        "row_count": {"const": 108},
+        "defect_drop_denominator": {"const": 24},
+        "defect_drop_exclusions": {"const": 84},
+        "medium_high_classification_denominator": {"const": 24},
+        "medium_high_classification_exclusions": {"const": 84},
+        "maximum_recall_drop": {"type": "number", "minimum": -1, "maximum": 1},
+        "median_dice_drop": {"type": "number", "minimum": -1, "maximum": 1},
+        "medium_high_classification_recall": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "gates": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {"$ref": "#/$defs/applicableStudyGate"}
+        },
+        "eligible": {"type": "boolean"}
+      }
+    },
+    "diagnosticPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_versions",
+        "row_count",
+        "observation_count",
+        "cases",
+        "observations",
+        "mode_summaries",
+        "eligible_modes"
+      ],
+      "properties": {
+        "runtime_versions": {"$ref": "#/$defs/runtimeVersions"},
+        "row_count": {"const": 108},
+        "observation_count": {"const": 324},
+        "cases": {
+          "type": "array",
+          "minItems": 108,
+          "maxItems": 108,
+          "items": {"$ref": "#/$defs/diagnosticCase"}
+        },
+        "observations": {
+          "type": "array",
+          "minItems": 324,
+          "maxItems": 324,
+          "items": {"$ref": "#/$defs/diagnosticObservation"}
+        },
+        "mode_summaries": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {"$ref": "#/$defs/diagnosticModeSummary"}
+        },
+        "eligible_modes": {
+          "type": "array",
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/resamplingMode"}
+        }
+      }
+    },
+    "diagnosticResult": {
+      "allOf": [
+        {"$ref": "#/$defs/fullEvidenceEnvelope"},
+        {
+          "properties": {
+            "record_type": {"const": "diagnostic_result"},
+            "upstream_artifacts": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "prefixItems": [
+                {
+                  "allOf": [
+                    {"$ref": "#/$defs/resultUpstreamArtifact"},
+                    {"properties": {"path": {"const": "retention-audit.json"}}}
+                  ]
+                },
+                {
+                  "allOf": [
+                    {"$ref": "#/$defs/resultUpstreamArtifact"},
+                    {
+                      "properties": {
+                        "path": {"const": "phase-1-execution-claim.json"}
+                      }
+                    }
+                  ]
+                }
+              ],
+              "items": false
+            },
+            "payload": {"$ref": "#/$defs/diagnosticPayload"}
+          }
+        }
+      ]
+    },
+    "ownershipHashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rev-A/front",
+        "rev-A/oblique_left",
+        "rev-A/oblique_right",
+        "rev-B/front",
+        "rev-B/oblique_left",
+        "rev-B/oblique_right"
+      ],
+      "properties": {
+        "rev-A/front": {
+          "const": "eadc490b04f8240e8356b3e20e75db08d79dfc5e27af180574d707836b3b776f"
+        },
+        "rev-A/oblique_left": {
+          "const": "2d2a52ecae44ccae98455180211aaf528078707948dbf83f792223c550d3a074"
+        },
+        "rev-A/oblique_right": {
+          "const": "8c42a88c3ffdf3dda10b073665b6d7a565ddde54a7a7450ba3c0f4782be14477"
+        },
+        "rev-B/front": {
+          "const": "5f69348a9ce7b646054dce02f95a0ff8ebd420c641ab40f414b0afa645ef49bc"
+        },
+        "rev-B/oblique_left": {
+          "const": "1fb2f752d738a7bf595f8cae97860452a3a8628ea5cb3eec4347d1f42fe43b8b"
+        },
+        "rev-B/oblique_right": {
+          "const": "373337ec46da320dbbcdf0ffa14c22794db05208cd9491e5b272e0d34169830d"
+        }
+      }
+    },
+    "oracleRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "seed",
+        "authoritative_mask_sha256",
+        "authoritative_positive_pixels",
+        "expected_feature_id",
+        "predicted_feature_id",
+        "status",
+        "correct",
+        "hash_binding_matches",
+        "ownership_map_sha256",
+        "target_owned_pixels",
+        "owned_pixel_count",
+        "unmapped_pixel_count",
+        "conserved"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string",
+          "pattern": "^e1-v2-development-defect-[0-9]{3}$"
+        },
+        "seed": {"type": "integer", "minimum": 420000, "maximum": 420059},
+        "authoritative_mask_sha256": {"$ref": "#/$defs/sha256"},
+        "authoritative_positive_pixels": {"type": "integer", "minimum": 1},
+        "expected_feature_id": {"type": "string", "minLength": 1},
+        "predicted_feature_id": {"type": ["string", "null"]},
+        "status": {"type": "string", "minLength": 1},
+        "correct": {"type": "boolean"},
+        "hash_binding_matches": {"type": "boolean"},
+        "ownership_map_sha256": {"$ref": "#/$defs/sha256"},
+        "target_owned_pixels": {"type": "integer", "minimum": 0},
+        "owned_pixel_count": {"type": "integer", "minimum": 0},
+        "unmapped_pixel_count": {"type": "integer", "minimum": 0},
+        "conserved": {"type": "boolean"}
+      }
+    },
+    "featureOraclePayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_count",
+        "correct_cases",
+        "ambiguous_cases",
+        "null_cases",
+        "wrong_cases",
+        "minimum_winner_pixels",
+        "ambiguity_margin",
+        "ownership_hashes",
+        "records",
+        "passed"
+      ],
+      "properties": {
+        "case_count": {"const": 60},
+        "correct_cases": {"type": "integer", "minimum": 0, "maximum": 60},
+        "ambiguous_cases": {"type": "integer", "minimum": 0, "maximum": 60},
+        "null_cases": {"type": "integer", "minimum": 0, "maximum": 60},
+        "wrong_cases": {"type": "integer", "minimum": 0, "maximum": 60},
+        "minimum_winner_pixels": {"const": 8},
+        "ambiguity_margin": {"const": 0.1},
+        "ownership_hashes": {"$ref": "#/$defs/ownershipHashes"},
+        "records": {
+          "type": "array",
+          "minItems": 60,
+          "maxItems": 60,
+          "items": {"$ref": "#/$defs/oracleRecord"}
+        },
+        "passed": {"type": "boolean"}
+      }
+    },
+    "featureOracle": {
+      "allOf": [
+        {"$ref": "#/$defs/fullEvidenceEnvelope"},
+        {
+          "properties": {
+            "record_type": {"const": "feature_oracle"},
+            "upstream_artifacts": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "prefixItems": [
+                {
+                  "allOf": [
+                    {"$ref": "#/$defs/resultUpstreamArtifact"},
+                    {"properties": {"path": {"const": "scope-audit.json"}}}
+                  ]
+                },
+                {
+                  "allOf": [
+                    {"$ref": "#/$defs/resultUpstreamArtifact"},
+                    {
+                      "properties": {
+                        "path": {"const": "known-transform-diagnostic-108.json"}
+                      }
+                    }
+                  ]
+                }
+              ],
+              "items": false
+            },
+            "payload": {"$ref": "#/$defs/featureOraclePayload"}
+          }
+        }
+      ]
+    },
+    "developmentMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expected_outcome",
+        "actual_outcome",
+        "anomaly_score",
+        "defect_type",
+        "severity",
+        "nuisance_types",
+        "cad_revision",
+        "view_id",
+        "truth_positive_pixels",
+        "predicted_positive_pixels",
+        "intersection_pixels",
+        "total_pixels",
+        "expected_feature_id",
+        "predicted_feature_id"
+      ],
+      "properties": {
+        "expected_outcome": {"enum": ["NORMAL", "ANOMALY"]},
+        "actual_outcome": {"enum": ["NORMAL", "ANOMALY"]},
+        "anomaly_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "defect_type": {"type": ["string", "null"]},
+        "severity": {
+          "oneOf": [
+            {"enum": ["LOW", "MEDIUM", "HIGH"]},
+            {"type": "null"}
+          ]
+        },
+        "nuisance_types": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "cad_revision": {"enum": ["rev-A", "rev-B"]},
+        "view_id": {"enum": ["front", "oblique_left", "oblique_right"]},
+        "truth_positive_pixels": {"type": "integer", "minimum": 0},
+        "predicted_positive_pixels": {"type": "integer", "minimum": 0},
+        "intersection_pixels": {"type": "integer", "minimum": 0},
+        "total_pixels": {"const": 196608},
+        "expected_feature_id": {"type": ["string", "null"]},
+        "predicted_feature_id": {"type": ["string", "null"]}
+      }
+    },
+    "developmentInferenceRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "seed",
+        "group",
+        "mode",
+        "case_binding_sha256",
+        "evaluation_status",
+        "inference_trace",
+        "metrics"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string",
+          "pattern": "^e1-v2-development-(?:clean|nuisance|defect)-[0-9]{3}$"
+        },
+        "seed": {"type": "integer"},
+        "group": {"enum": ["clean", "nuisance", "defect"]},
+        "mode": {"$ref": "#/$defs/resamplingMode"},
+        "case_binding_sha256": {"$ref": "#/$defs/sha256"},
+        "evaluation_status": {"const": "APPLICABLE"},
+        "inference_trace": {"$ref": "#/$defs/inferenceTrace"},
+        "metrics": {"$ref": "#/$defs/developmentMetrics"}
+      }
+    },
+    "trustBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "seed",
+        "group",
+        "reference_sha256",
+        "inspection_sha256",
+        "authoritative_mask_sha256",
+        "case_binding_sha256",
+        "applied_transform",
+        "evaluation_status",
+        "actual_outcome",
+        "anomaly_score",
+        "denominator_exclusion"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string",
+          "pattern": "^e1-v2-development-trust_boundary-[0-9]{3}$"
+        },
+        "seed": {"type": "integer", "minimum": 430000, "maximum": 430005},
+        "group": {"const": "trust_boundary"},
+        "reference_sha256": {"$ref": "#/$defs/sha256"},
+        "inspection_sha256": {"$ref": "#/$defs/sha256"},
+        "authoritative_mask_sha256": {"$ref": "#/$defs/sha256"},
+        "case_binding_sha256": {"$ref": "#/$defs/sha256"},
+        "applied_transform": {"$ref": "#/$defs/identityAppliedTransform"},
+        "evaluation_status": {"const": "NOT_APPLICABLE"},
+        "actual_outcome": {"type": "null"},
+        "anomaly_score": {"type": "null"},
+        "denominator_exclusion": {"const": "TRUST_BOUNDARY_BINDING_ONLY"}
+      }
+    },
+    "developmentModeSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "member_count",
+        "inference_count",
+        "trust_binding_count",
+        "medium_high_recall",
+        "nuisance_false_positive_rate",
+        "positive_median_dice",
+        "feature_mapping_accuracy",
+        "gates",
+        "passed_all_gates"
+      ],
+      "properties": {
+        "mode": {"$ref": "#/$defs/resamplingMode"},
+        "member_count": {"const": 120},
+        "inference_count": {"const": 114},
+        "trust_binding_count": {"const": 6},
+        "medium_high_recall": {"type": "number", "minimum": 0, "maximum": 1},
+        "nuisance_false_positive_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "positive_median_dice": {"type": "number", "minimum": 0, "maximum": 1},
+        "feature_mapping_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
+        "gates": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {"$ref": "#/$defs/applicableStudyGate"}
+        },
+        "passed_all_gates": {"type": "boolean"}
+      }
+    },
+    "developmentPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_versions",
+        "member_count",
+        "bindings",
+        "eligible_modes",
+        "inference_records",
+        "trust_bindings",
+        "mode_summaries",
+        "passing_modes"
+      ],
+      "properties": {
+        "runtime_versions": {"$ref": "#/$defs/runtimeVersions"},
+        "member_count": {"const": 120},
+        "bindings": {
+          "type": "array",
+          "minItems": 120,
+          "maxItems": 120,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/developmentBinding"}
+        },
+        "eligible_modes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/resamplingMode"}
+        },
+        "inference_records": {
+          "type": "array",
+          "minItems": 114,
+          "maxItems": 342,
+          "items": {"$ref": "#/$defs/developmentInferenceRecord"}
+        },
+        "trust_bindings": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/trustBinding"}
+        },
+        "mode_summaries": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": {"$ref": "#/$defs/developmentModeSummary"}
+        },
+        "passing_modes": {
+          "type": "array",
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/resamplingMode"}
+        }
+      }
+    },
+    "developmentResult": {
+      "allOf": [
+        {"$ref": "#/$defs/fullEvidenceEnvelope"},
+        {
+          "properties": {
+            "record_type": {"const": "development_result"},
+            "upstream_artifacts": {
+              "type": "array",
+              "minItems": 5,
+              "maxItems": 5,
+              "prefixItems": [
+                {
+                  "allOf": [
+                    {"$ref": "#/$defs/resultUpstreamArtifact"},
+                    {"properties": {"path": {"const": "retention-audit.json"}}}
+                  ]
+                },
+                {
+                  "allOf": [
+                    {"$ref": "#/$defs/resultUpstreamArtifact"},
+                    {
+                      "properties": {
+                        "path": {"const": "known-transform-diagnostic-108.json"}
+                      }
+                    }
+                  ]
+                },
+                {
+                  "allOf": [
+                    {"$ref": "#/$defs/resultUpstreamArtifact"},
+                    {"properties": {"path": {"const": "scope-audit.json"}}}
+                  ]
+                },
+                {
+                  "allOf": [
+                    {"$ref": "#/$defs/resultUpstreamArtifact"},
+                    {
+                      "properties": {
+                        "path": {"const": "feature-ownership-oracle.json"}
+                      }
+                    }
+                  ]
+                },
+                {
+                  "allOf": [
+                    {"$ref": "#/$defs/resultUpstreamArtifact"},
+                    {
+                      "properties": {
+                        "path": {"const": "phase-2-execution-claim.json"}
+                      }
+                    }
+                  ]
+                }
+              ],
+              "items": false
+            },
+            "payload": {"$ref": "#/$defs/developmentPayload"}
+          }
+        }
+      ]
+    },
+    "orderedArtifactPathInventory": {
+      "type": "array",
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "implementation-validation.json",
+          "retention-audit.json",
+          "phase-1-execution-claim.json",
+          "known-transform-diagnostic-108.json",
+          "scope-audit.json",
+          "feature-ownership-oracle.json",
+          "phase-2-execution-claim.json",
+          "known-transform-development-120.json"
+        ]
+      }
+    },
+    "decisionPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "allowed_next_action",
+        "reasons",
+        "verified_artifact_count",
+        "present_artifact_count",
+        "study_artifact_verify_rate",
+        "present_paths",
+        "invalid_paths"
+      ],
+      "properties": {
+        "decision": {
+          "enum": [
+            "STUDY_INVALID",
+            "FEATURE_CONTRACT_FAILED",
+            "KNOWN_TRANSFORM_DIAGNOSTIC_FAILED",
+            "DIFFERENCE_BASELINE_LIMITED",
+            "TRANSFORM_ESTIMATION_LIMITED"
+          ]
+        },
+        "allowed_next_action": {"type": "string", "minLength": 1},
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"}
+        },
+        "verified_artifact_count": {"type": "integer", "minimum": 0, "maximum": 8},
+        "present_artifact_count": {"type": "integer", "minimum": 0, "maximum": 8},
+        "study_artifact_verify_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "present_paths": {"$ref": "#/$defs/orderedArtifactPathInventory"},
+        "invalid_paths": {"$ref": "#/$defs/orderedArtifactPathInventory"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"decision": {"const": "STUDY_INVALID"}}},
+          "then": {
+            "properties": {
+              "allowed_next_action": {
+                "const": "Repair evidence machinery only; no performance conclusion"
+              }
+            }
+          }
+        },
+        {
+          "if": {"properties": {"decision": {"const": "FEATURE_CONTRACT_FAILED"}}},
+          "then": {
+            "properties": {
+              "allowed_next_action": {
+                "const": "New protocol/ownership design; do not alter model"
+              },
+              "study_artifact_verify_rate": {"const": 1.0}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"decision": {"const": "KNOWN_TRANSFORM_DIAGNOSTIC_FAILED"}}
+          },
+          "then": {
+            "properties": {
+              "allowed_next_action": {
+                "const": "End affine-candidate search; analyze resampling/baseline residual evidence"
+              },
+              "study_artifact_verify_rate": {"const": 1.0}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"decision": {"const": "DIFFERENCE_BASELINE_LIMITED"}}},
+          "then": {
+            "properties": {
+              "allowed_next_action": {
+                "const": "Preserve negative result; Candidate C prohibited; a new model family needs a new protocol"
+              },
+              "study_artifact_verify_rate": {"const": 1.0}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"decision": {"const": "TRANSFORM_ESTIMATION_LIMITED"}}},
+          "then": {
+            "properties": {
+              "allowed_next_action": {
+                "const": "A separate approved plan may design exactly one evidence-based Candidate C"
+              },
+              "study_artifact_verify_rate": {"const": 1.0}
+            }
+          }
+        }
+      ]
+    },
+    "decision": {
+      "allOf": [
+        {"$ref": "#/$defs/fullEvidenceEnvelope"},
+        {
+          "properties": {
+            "record_type": {"const": "decision"},
+            "payload": {"$ref": "#/$defs/decisionPayload"}
+          }
+        }
+      ]
     },
     "phase1Payload": {
       "type": "object",
