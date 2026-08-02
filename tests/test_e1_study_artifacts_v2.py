@@ -4,6 +4,7 @@ import inspect
 import json
 import os
 from copy import deepcopy
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -14,6 +15,7 @@ from manufacturing_vision_studio.canonical import (
     canonical_json_hash,
     sha256_bytes,
 )
+from manufacturing_vision_studio.e1 import study_artifacts_v2 as artifacts_module
 from manufacturing_vision_studio.e1.study_artifacts_v2 import (
     STUDY_ARTIFACT_SCHEMA_PATH,
     StudyArtifactError,
@@ -63,6 +65,25 @@ EXPECTED_VALIDATION_COMMANDS = (
     ("web_check", ["npm", "--prefix", "web", "run", "check"]),
     ("playwright", ["npm", "--prefix", "web", "run", "test:e2e"]),
 )
+EXPECTED_VALIDATION_TIMEOUTS = (300, 300, 600, 1800, 600, 900)
+EXPECTED_SANITIZED_ENVIRONMENT = {
+    "HOME": "/tmp/e1-study-home",
+    "PATH": "/opt/e1-study/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "TMPDIR": "/tmp/e1-study",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "TZ": "UTC",
+    "TERM": "dumb",
+    "NO_COLOR": "1",
+    "FORCE_COLOR": "0",
+    "PYTHONHASHSEED": "0",
+    "PYTHONUTF8": "1",
+    "PYTHONNOUSERSITE": "1",
+    "UV_NO_CONFIG": "1",
+    "NPM_CONFIG_USERCONFIG": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+}
 EXPECTED_NOT_APPLICABLE_CONTROLS = (
     ("bundle_verify_reimport_rate", "STUDY_PUBLISHES_NO_BUNDLE"),
     ("dataset_split_hash_overlap", "PROTECTED_SPLIT_MEMBERS_NOT_ENUMERATED"),
@@ -74,6 +95,26 @@ EXPECTED_NOT_APPLICABLE_CONTROLS = (
 
 def _nonzero_sha(label: str) -> str:
     return sha256_bytes(label.encode("utf-8"))
+
+
+def _task_7a_validation_command_audit_metadata(ordinal: int) -> dict[str, object]:
+    return {
+        "cwd": ".",
+        "shell": False,
+        "timeout_seconds": EXPECTED_VALIDATION_TIMEOUTS[ordinal],
+        "output_limit_bytes": 4_194_304,
+        "timed_out": False,
+        "stdout_byte_count": 0,
+        "stderr_byte_count": 0,
+        "sanitized_environment": dict(EXPECTED_SANITIZED_ENVIRONMENT),
+    }
+
+
+def _task_7a_add_validation_command_audit_metadata(record: dict[str, object]) -> None:
+    payload = cast(dict[str, object], record["payload"])
+    commands = cast(list[dict[str, object]], payload["commands"])
+    for ordinal, command in enumerate(commands):
+        command.update(_task_7a_validation_command_audit_metadata(ordinal))
 
 
 def minimal_valid_implementation_validation_record(
@@ -88,8 +129,9 @@ def minimal_valid_implementation_validation_record(
             "stderr_sha256": _nonzero_sha(f"{name}-stderr"),
             "started_at_utc": "2026-08-01T00:00:00Z",
             "ended_at_utc": "2026-08-01T00:00:01Z",
+            **_task_7a_validation_command_audit_metadata(ordinal),
         }
-        for name, argv in EXPECTED_VALIDATION_COMMANDS
+        for ordinal, (name, argv) in enumerate(EXPECTED_VALIDATION_COMMANDS)
     ]
     controls = [
         StudyGateRecord(
@@ -659,6 +701,73 @@ def test_task_6_schema_variants_are_closed_at_envelope_and_payload(
     cast(dict[str, object], payload_extra["payload"])["unexpected"] = True
     with pytest.raises(StudyArtifactError, match="schema"):
         validate_study_schema(finalize_study_record(payload_extra))
+
+
+def test_task_7a_fix1_validation_command_audit_contract_accepts_closed_metadata(
+    protocol: StudyProtocolV2,
+) -> None:
+    record = minimal_valid_implementation_validation_record(protocol)
+    _task_7a_add_validation_command_audit_metadata(record)
+
+    validate_study_schema(finalize_study_record(record))
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "missing_environment_key",
+        "extra_environment_key",
+        "poisoned_fixed_environment",
+        "relative_home",
+        "control_tmpdir",
+        "path_suffix",
+        "cwd",
+        "shell",
+        "timeout",
+        "output_limit",
+        "timed_out",
+        "stdout_overflow",
+        "stderr_overflow",
+    ],
+)
+def test_task_7a_fix1_validation_command_audit_contract_rejects_schema_tamper(
+    protocol: StudyProtocolV2,
+    variant: str,
+) -> None:
+    record = minimal_valid_implementation_validation_record(protocol)
+    _task_7a_add_validation_command_audit_metadata(record)
+    payload = cast(dict[str, object], record["payload"])
+    command = cast(list[dict[str, object]], payload["commands"])[0]
+    environment = cast(dict[str, object], command["sanitized_environment"])
+    if variant == "missing_environment_key":
+        environment.pop("HOME")
+    elif variant == "extra_environment_key":
+        environment["PYTEST_ADDOPTS"] = "-x"
+    elif variant == "poisoned_fixed_environment":
+        environment["LANG"] = "en_US.UTF-8"
+    elif variant == "relative_home":
+        environment["HOME"] = "relative/home"
+    elif variant == "control_tmpdir":
+        environment["TMPDIR"] = "/tmp/e1\npoisoned"
+    elif variant == "path_suffix":
+        environment["PATH"] = "/opt/e1-study/bin"
+    elif variant == "cwd":
+        command["cwd"] = "/tmp"
+    elif variant == "shell":
+        command["shell"] = True
+    elif variant == "timeout":
+        command["timeout_seconds"] = 301
+    elif variant == "output_limit":
+        command["output_limit_bytes"] = 1024
+    elif variant == "timed_out":
+        command["timed_out"] = True
+    elif variant == "stdout_overflow":
+        command["stdout_byte_count"] = 4_194_305
+    else:
+        command["stderr_byte_count"] = 4_194_305
+
+    with pytest.raises(StudyArtifactError, match="schema"):
+        validate_study_schema(finalize_study_record(record))
 
 
 def test_task_6_upstream_items_are_closed_and_validation_has_none(
@@ -1316,6 +1425,40 @@ def minimal_valid_feature_oracle_record(
     )
 
 
+def _task_7a_set_first_oracle_class(
+    record: dict[str, object],
+    classification: Literal["wrong", "unmapped", "ambiguous"],
+) -> dict[str, object]:
+    payload = cast(dict[str, object], record["payload"])
+    first = cast(list[dict[str, object]], payload["records"])[0]
+    first["correct"] = False
+    if classification == "wrong":
+        first["status"] = "MAPPED"
+        first["predicted_feature_id"] = "hole_left"
+        first["target_owned_pixels"] = 16
+        first["owned_pixel_count"] = 16
+        first["unmapped_pixel_count"] = 0
+    elif classification == "unmapped":
+        first["status"] = "UNMAPPED"
+        first["predicted_feature_id"] = None
+        first["target_owned_pixels"] = 0
+        first["owned_pixel_count"] = 0
+        first["unmapped_pixel_count"] = 16
+    else:
+        first["status"] = "AMBIGUOUS"
+        first["predicted_feature_id"] = None
+        first["target_owned_pixels"] = 8
+        first["owned_pixel_count"] = 16
+        first["unmapped_pixel_count"] = 0
+    first["conserved"] = True
+    payload["correct_cases"] = 59
+    payload["ambiguous_cases"] = 1 if classification == "ambiguous" else 0
+    payload["null_cases"] = 1 if classification == "unmapped" else 0
+    payload["wrong_cases"] = 1 if classification == "wrong" else 0
+    payload["passed"] = False
+    return first
+
+
 def _task_7a_development_inference_record(
     binding: dict[str, object],
     mode: str,
@@ -1477,6 +1620,24 @@ TASK_7A_ALLOWED_NEXT_ACTIONS = {
         "A separate approved plan may design exactly one evidence-based Candidate C"
     ),
 }
+TASK_7A_PERFORMANCE_DECISION_BRANCHES = {
+    "FEATURE_CONTRACT_FAILED": (
+        TASK_7A_PRE_DECISION_PATHS[:6],
+        "FEATURE_ORACLE_FAILED",
+    ),
+    "KNOWN_TRANSFORM_DIAGNOSTIC_FAILED": (
+        TASK_7A_PRE_DECISION_PATHS[:6],
+        "NO_DIAGNOSTIC_MODE_ELIGIBLE",
+    ),
+    "DIFFERENCE_BASELINE_LIMITED": (
+        TASK_7A_PRE_DECISION_PATHS,
+        "NO_DEVELOPMENT_MODE_PASSED",
+    ),
+    "TRANSFORM_ESTIMATION_LIMITED": (
+        TASK_7A_PRE_DECISION_PATHS,
+        "DEVELOPMENT_MODE_PASSED",
+    ),
+}
 
 
 def minimal_valid_decision_record(
@@ -1491,16 +1652,10 @@ def minimal_valid_decision_record(
         verify_rate = 0.0
         reason = "ARTIFACT_VERIFICATION_FAILED"
     else:
-        present_paths = TASK_7A_PRE_DECISION_PATHS
+        present_paths, reason = TASK_7A_PERFORMANCE_DECISION_BRANCHES[decision]
         invalid_paths = ()
         verified_count = len(present_paths)
         verify_rate = 1.0
-        reason = {
-            "FEATURE_CONTRACT_FAILED": "FEATURE_ORACLE_FAILED",
-            "KNOWN_TRANSFORM_DIAGNOSTIC_FAILED": "NO_DIAGNOSTIC_MODE_ELIGIBLE",
-            "DIFFERENCE_BASELINE_LIMITED": "NO_DEVELOPMENT_MODE_PASSED",
-            "TRANSFORM_ESTIMATION_LIMITED": "DEVELOPMENT_MODE_PASSED",
-        }[decision]
     return _task_7a_result_record(
         protocol,
         record_type="decision",
@@ -1516,6 +1671,24 @@ def minimal_valid_decision_record(
             "invalid_paths": list(invalid_paths),
         },
     )
+
+
+def _task_7a_set_decision_inventory(
+    record: dict[str, object],
+    present_paths: tuple[str, ...],
+    *,
+    invalid_paths: tuple[str, ...] = (),
+) -> None:
+    payload = cast(dict[str, object], record["payload"])
+    verified_paths = tuple(path for path in present_paths if path not in invalid_paths)
+    payload["present_paths"] = list(present_paths)
+    payload["invalid_paths"] = list(invalid_paths)
+    payload["present_artifact_count"] = len(present_paths)
+    payload["verified_artifact_count"] = len(verified_paths)
+    payload["study_artifact_verify_rate"] = (
+        len(verified_paths) / len(present_paths) if present_paths else 0.0
+    )
+    record["upstream_artifacts"] = [_task_7a_upstream(path) for path in verified_paths]
 
 
 @pytest.mark.parametrize(
@@ -1695,6 +1868,196 @@ def test_task_7a_semantics_rejects_declared_summary_and_total_drift(
             validate_study_schema(finalize_study_record(record))
 
 
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "reason",
+        "denominator",
+        "exclusions",
+        "operator",
+        "threshold",
+        "statistic_numerator",
+        "ratio_numerator_bound",
+        "ratio_arithmetic",
+        "summary_observed",
+        "status",
+        "eligibility",
+    ],
+)
+def test_task_7a_fix1_applicable_gate_contract_rejects_diagnostic_forgery(
+    protocol: StudyProtocolV2,
+    variant: str,
+) -> None:
+    record = minimal_valid_diagnostic_result_record(protocol)
+    payload = cast(dict[str, object], record["payload"])
+    summaries = cast(list[dict[str, object]], payload["mode_summaries"])
+    summary = summaries[0]
+    gates = cast(list[dict[str, object]], summary["gates"])
+    statistic = gates[0]
+    ratio = gates[2]
+    if variant == "reason":
+        statistic["reason"] = "FORGED"
+    elif variant == "denominator":
+        statistic["denominator"] = 25
+    elif variant == "exclusions":
+        statistic["exclusions"] = 83
+    elif variant == "operator":
+        statistic["operator"] = "ge"
+    elif variant == "threshold":
+        statistic["threshold"] = 0.06
+    elif variant == "statistic_numerator":
+        statistic["numerator"] = 0
+    elif variant == "ratio_numerator_bound":
+        ratio["numerator"] = 25
+    elif variant == "ratio_arithmetic":
+        ratio["numerator"] = 23
+    elif variant == "summary_observed":
+        statistic["observed"] = 0.01
+    elif variant == "status":
+        statistic["status"] = "FAIL"
+    else:
+        summary["eligible"] = False
+        payload["eligible_modes"] = ["BILINEAR", "BICUBIC"]
+
+    with pytest.raises(StudyArtifactError, match=r"schema|diagnostic.*gate|eligible"):
+        validate_study_schema(finalize_study_record(record))
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "reason",
+        "denominator",
+        "exclusions",
+        "operator",
+        "threshold",
+        "statistic_numerator",
+        "ratio_numerator_bound",
+        "ratio_arithmetic",
+        "summary_observed",
+        "status",
+        "passing",
+    ],
+)
+def test_task_7a_fix1_applicable_gate_contract_rejects_development_forgery(
+    protocol: StudyProtocolV2,
+    variant: str,
+) -> None:
+    record = minimal_valid_development_result_record(protocol)
+    payload = cast(dict[str, object], record["payload"])
+    summaries = cast(list[dict[str, object]], payload["mode_summaries"])
+    summary = summaries[0]
+    gates = cast(list[dict[str, object]], summary["gates"])
+    ratio = gates[0]
+    statistic = gates[2]
+    if variant == "reason":
+        ratio["reason"] = "FORGED"
+    elif variant == "denominator":
+        ratio["denominator"] = 41
+    elif variant == "exclusions":
+        ratio["exclusions"] = 73
+    elif variant == "operator":
+        ratio["operator"] = "le"
+    elif variant == "threshold":
+        ratio["threshold"] = 0.91
+    elif variant == "statistic_numerator":
+        statistic["numerator"] = 60
+    elif variant == "ratio_numerator_bound":
+        ratio["numerator"] = 41
+    elif variant == "ratio_arithmetic":
+        ratio["numerator"] = 39
+    elif variant == "summary_observed":
+        statistic["observed"] = 0.99
+    elif variant == "status":
+        ratio["status"] = "FAIL"
+    else:
+        summary["passed_all_gates"] = False
+        payload["passing_modes"] = ["BILINEAR"]
+
+    with pytest.raises(StudyArtifactError, match=r"schema|development.*gate|passing"):
+        validate_study_schema(finalize_study_record(record))
+
+
+@pytest.mark.parametrize("classification", ["wrong", "unmapped", "ambiguous"])
+def test_task_7a_fix1_oracle_row_contract_accepts_each_legal_negative_class(
+    protocol: StudyProtocolV2,
+    classification: Literal["wrong", "unmapped", "ambiguous"],
+) -> None:
+    record = minimal_valid_feature_oracle_record(protocol)
+    _task_7a_set_first_oracle_class(record, classification)
+
+    validate_study_schema(finalize_study_record(record))
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "status",
+        "expected_feature",
+        "predicted_feature",
+        "ownership_hash",
+        "mapped_null",
+        "unmapped_prediction",
+        "ambiguous_prediction",
+        "unmapped_minimum",
+        "target_exceeds_owned",
+        "owned_exceeds_positive",
+        "false_correct_formula",
+        "true_illegal_status",
+    ],
+)
+def test_task_7a_fix1_oracle_row_contract_rejects_forged_failure_row(
+    protocol: StudyProtocolV2,
+    variant: str,
+) -> None:
+    record = minimal_valid_feature_oracle_record(protocol)
+    payload = cast(dict[str, object], record["payload"])
+    first = cast(list[dict[str, object]], payload["records"])[0]
+    if variant == "status":
+        first = _task_7a_set_first_oracle_class(record, "unmapped")
+        first["status"] = "FORGED"
+    elif variant == "expected_feature":
+        first["expected_feature_id"] = "forged_feature"
+        first["predicted_feature_id"] = "forged_feature"
+    elif variant == "predicted_feature":
+        first = _task_7a_set_first_oracle_class(record, "wrong")
+        first["predicted_feature_id"] = "forged_feature"
+    elif variant == "ownership_hash":
+        first = _task_7a_set_first_oracle_class(record, "wrong")
+        first["ownership_map_sha256"] = _nonzero_sha("unfrozen-ownership-map")
+    elif variant == "mapped_null":
+        first = _task_7a_set_first_oracle_class(record, "unmapped")
+        first["status"] = "MAPPED"
+    elif variant == "unmapped_prediction":
+        first = _task_7a_set_first_oracle_class(record, "wrong")
+        first["status"] = "UNMAPPED"
+    elif variant == "ambiguous_prediction":
+        first = _task_7a_set_first_oracle_class(record, "wrong")
+        first["status"] = "AMBIGUOUS"
+        payload["ambiguous_cases"] = 1
+        payload["wrong_cases"] = 0
+    elif variant == "unmapped_minimum":
+        first = _task_7a_set_first_oracle_class(record, "unmapped")
+        first["target_owned_pixels"] = 8
+    elif variant == "target_exceeds_owned":
+        first = _task_7a_set_first_oracle_class(record, "wrong")
+        first["target_owned_pixels"] = 17
+    elif variant == "owned_exceeds_positive":
+        first = _task_7a_set_first_oracle_class(record, "wrong")
+        first["owned_pixel_count"] = 17
+        first["conserved"] = False
+    elif variant == "false_correct_formula":
+        first["correct"] = False
+        payload["correct_cases"] = 59
+        payload["wrong_cases"] = 1
+        payload["passed"] = False
+    else:
+        first["status"] = "UNMAPPED"
+
+    with pytest.raises(StudyArtifactError, match=r"schema|oracle"):
+        validate_study_schema(finalize_study_record(record))
+
+
 def test_task_7a_decision_semantics_bind_counts_invalid_inventory_and_upstreams(
     protocol: StudyProtocolV2,
 ) -> None:
@@ -1714,6 +2077,78 @@ def test_task_7a_decision_semantics_bind_counts_invalid_inventory_and_upstreams(
     for record in (wrong_count, invalid_not_present, fabricated_upstream):
         with pytest.raises(StudyArtifactError, match="decision"):
             validate_study_schema(finalize_study_record(record))
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [
+        "FEATURE_CONTRACT_FAILED",
+        "KNOWN_TRANSFORM_DIAGNOSTIC_FAILED",
+        "DIFFERENCE_BASELINE_LIMITED",
+        "TRANSFORM_ESTIMATION_LIMITED",
+    ],
+)
+def test_task_7a_fix1_decision_branch_contract_accepts_exact_performance_branch(
+    protocol: StudyProtocolV2,
+    decision: str,
+) -> None:
+    validate_study_schema(
+        finalize_study_record(minimal_valid_decision_record(protocol, decision=decision))
+    )
+
+
+@pytest.mark.parametrize(
+    "decision,present_paths",
+    [
+        ("FEATURE_CONTRACT_FAILED", TASK_7A_PRE_DECISION_PATHS[:7]),
+        ("KNOWN_TRANSFORM_DIAGNOSTIC_FAILED", TASK_7A_PRE_DECISION_PATHS),
+        ("DIFFERENCE_BASELINE_LIMITED", TASK_7A_PRE_DECISION_PATHS[:7]),
+        (
+            "TRANSFORM_ESTIMATION_LIMITED",
+            (*TASK_7A_PRE_DECISION_PATHS[:6], TASK_7A_PRE_DECISION_PATHS[7]),
+        ),
+    ],
+)
+def test_task_7a_fix1_decision_branch_contract_rejects_wrong_performance_inventory(
+    protocol: StudyProtocolV2,
+    decision: str,
+    present_paths: tuple[str, ...],
+) -> None:
+    record = minimal_valid_decision_record(protocol, decision=decision)
+    _task_7a_set_decision_inventory(record, present_paths)
+
+    with pytest.raises(StudyArtifactError, match=r"schema|decision"):
+        validate_study_schema(finalize_study_record(record))
+
+
+@pytest.mark.parametrize("decision", list(TASK_7A_PERFORMANCE_DECISION_BRANCHES))
+def test_task_7a_fix1_decision_branch_contract_rejects_performance_reason_forgery(
+    protocol: StudyProtocolV2,
+    decision: str,
+) -> None:
+    record = minimal_valid_decision_record(protocol, decision=decision)
+    payload = cast(dict[str, object], record["payload"])
+    payload["reasons"] = ["FORGED_REASON", "EXTRA_REASON"]
+
+    with pytest.raises(StudyArtifactError, match=r"schema|decision"):
+        validate_study_schema(finalize_study_record(record))
+
+
+def test_task_7a_fix1_decision_branch_contract_closes_invalid_reason_and_inventory(
+    protocol: StudyProtocolV2,
+) -> None:
+    valid = minimal_valid_decision_record(protocol, decision="STUDY_INVALID")
+    _task_7a_set_decision_inventory(
+        valid,
+        TASK_7A_PRE_DECISION_PATHS[:4],
+        invalid_paths=("retention-audit.json",),
+    )
+    validate_study_schema(finalize_study_record(valid))
+
+    forged_reason = deepcopy(valid)
+    cast(dict[str, object], forged_reason["payload"])["reasons"] = ["FORGED_REASON"]
+    with pytest.raises(StudyArtifactError, match=r"schema|decision"):
+        validate_study_schema(finalize_study_record(forged_reason))
 
 
 def test_task_7a_new_variant_rejects_forged_self_hash(
@@ -1825,3 +2260,148 @@ def test_task_7a_verify_json_delegates_to_verified_result(
         "claim.json", expected_record_type="phase_execution_claim"
     ) == expected
     assert store.result_calls == 1
+
+
+def test_task_7a_fix1_inventory_contract_returns_frozen_global_byte_order(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "artifacts"
+    store = StudyArtifactStore(root, allowed_root=tmp_path)
+    assert store.inventory() == ()
+    (root / "a").mkdir()
+    (root / "a" / "child").write_bytes(b"child")
+    (root / "a-plain").write_bytes(b"plain")
+
+    inventory = store.inventory()
+
+    assert tuple(entry.path for entry in inventory) == ("a", "a-plain", "a/child")
+    assert tuple(entry.kind for entry in inventory) == ("directory", "file", "file")
+    assert tuple(entry.byte_size for entry in inventory[1:]) == (5, 5)
+    assert tuple(entry.link_count for entry in inventory[1:]) == (1, 1)
+    with pytest.raises(FrozenInstanceError):
+        cast(Any, inventory[0]).kind = "other"
+
+
+def test_task_7a_fix1_inventory_contract_never_follows_links_and_reports_node_kinds(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "artifacts"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "child").write_bytes(b"outside")
+    outside_file = tmp_path / "outside.bin"
+    outside_file.write_bytes(b"outside")
+    store = StudyArtifactStore(root, allowed_root=tmp_path)
+    (root / "linked-dir").symlink_to(outside, target_is_directory=True)
+    (root / "linked-file").symlink_to(outside_file)
+    (root / "hard-a").write_bytes(b"hard")
+    os.link(root / "hard-a", root / "hard-b")
+    os.mkfifo(root / "fifo")
+
+    inventory = {entry.path: entry for entry in store.inventory()}
+
+    assert inventory["linked-dir"].kind == "symlink"
+    assert inventory["linked-file"].kind == "symlink"
+    assert "linked-dir/child" not in inventory
+    assert inventory["hard-a"].kind == "file"
+    assert inventory["hard-a"].link_count == 2
+    assert inventory["hard-b"].link_count == 2
+    assert inventory["fifo"].kind == "other"
+
+
+def test_task_7a_fix1_inventory_contract_enforces_entry_limit(tmp_path: Path) -> None:
+    root = tmp_path / "artifacts"
+    store = StudyArtifactStore(root, allowed_root=tmp_path)
+    for ordinal in range(257):
+        (root / f"entry-{ordinal:03d}").write_bytes(b"")
+
+    with pytest.raises(StudyArtifactError, match=r"entry.*limit"):
+        store.inventory()
+
+
+def test_task_7a_fix1_inventory_contract_enforces_depth_limit(tmp_path: Path) -> None:
+    root = tmp_path / "artifacts"
+    store = StudyArtifactStore(root, allowed_root=tmp_path)
+    too_deep = root.joinpath(*("d" for _ in range(9)))
+    too_deep.mkdir(parents=True)
+
+    with pytest.raises(StudyArtifactError, match="depth"):
+        store.inventory()
+
+
+@pytest.mark.parametrize("name", ["x" * 241, "control\nname"])
+def test_task_7a_fix1_inventory_contract_enforces_path_policy(
+    tmp_path: Path,
+    name: str,
+) -> None:
+    root = tmp_path / "artifacts"
+    store = StudyArtifactStore(root, allowed_root=tmp_path)
+    (root / name).write_bytes(b"unsafe")
+
+    with pytest.raises(StudyArtifactError, match=r"path.*unsafe"):
+        store.inventory()
+
+
+def test_task_7a_fix1_inventory_contract_detects_concurrent_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "artifacts"
+    store = StudyArtifactStore(root, allowed_root=tmp_path)
+    (root / "initial").write_bytes(b"initial")
+    real_names = getattr(
+        artifacts_module,
+        "_inventory_directory_names",
+        lambda descriptor: tuple(entry.name for entry in os.scandir(descriptor)),
+    )
+    mutated = False
+
+    def mutate_after_names(descriptor: int) -> tuple[str, ...]:
+        nonlocal mutated
+        names = real_names(descriptor)
+        if not mutated:
+            (root / "late").write_bytes(b"late")
+            mutated = True
+        return names
+
+    monkeypatch.setattr(
+        artifacts_module,
+        "_inventory_directory_names",
+        mutate_after_names,
+        raising=False,
+    )
+
+    with pytest.raises(StudyArtifactError, match=r"changed|mutation"):
+        store.inventory()
+
+
+def test_task_7a_fix1_inventory_contract_rejects_lexical_replacement_and_closed_store(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "artifacts"
+    store = StudyArtifactStore(root, allowed_root=tmp_path)
+    root.rename(tmp_path / "pinned")
+    root.mkdir()
+
+    with pytest.raises(StudyArtifactError, match=r"lexical.*identity"):
+        store.inventory()
+
+    store.close()
+    with pytest.raises(StudyArtifactError, match="closed"):
+        store.inventory()
+
+
+def test_task_7a_fix1_inventory_contract_does_not_leak_descriptors(tmp_path: Path) -> None:
+    root = tmp_path / "artifacts"
+    store = StudyArtifactStore(root, allowed_root=tmp_path)
+    (root / "nested").mkdir()
+    (root / "nested" / "artifact.bin").write_bytes(b"artifact")
+    descriptor_directory = Path("/dev/fd")
+    if not descriptor_directory.is_dir():
+        pytest.skip("descriptor inventory is unavailable")
+    before = len(os.listdir(descriptor_directory))
+
+    for _ in range(50):
+        store.inventory()
+
+    assert len(os.listdir(descriptor_directory)) == before

@@ -42,6 +42,25 @@ EXPECTED_COMMANDS = (
     ("web_check", ("npm", "--prefix", "web", "run", "check")),
     ("playwright", ("npm", "--prefix", "web", "run", "test:e2e")),
 )
+EXPECTED_COMMAND_TIMEOUTS = (300, 300, 600, 1800, 600, 900)
+EXPECTED_SANITIZED_ENVIRONMENT = {
+    "HOME": "/tmp/e1-study-home",
+    "PATH": "/opt/e1-study/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "TMPDIR": "/tmp/e1-study",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "TZ": "UTC",
+    "TERM": "dumb",
+    "NO_COLOR": "1",
+    "FORCE_COLOR": "0",
+    "PYTHONHASHSEED": "0",
+    "PYTHONUTF8": "1",
+    "PYTHONNOUSERSITE": "1",
+    "UV_NO_CONFIG": "1",
+    "NPM_CONFIG_USERCONFIG": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+}
 EXPECTED_CONTROLS = (
     ("bundle_verify_reimport_rate", "STUDY_PUBLISHES_NO_BUNDLE"),
     ("dataset_split_hash_overlap", "PROTECTED_SPLIT_MEMBERS_NOT_ENUMERATED"),
@@ -135,6 +154,29 @@ def _copy_projection(repo_root: Path, protocol: StudyProtocolV2) -> None:
         _write(destination, payload)
 
 
+def _audited_validation_commands() -> list[dict[str, object]]:
+    return [
+        {
+            "name": name,
+            "argv": list(argv),
+            "exit_code": 0,
+            "stdout_sha256": sha256_bytes(f"{name}-stdout".encode()),
+            "stderr_sha256": sha256_bytes(f"{name}-stderr".encode()),
+            "started_at_utc": "2026-08-01T00:00:00Z",
+            "ended_at_utc": "2026-08-01T00:00:01Z",
+            "cwd": ".",
+            "shell": False,
+            "timeout_seconds": EXPECTED_COMMAND_TIMEOUTS[ordinal],
+            "output_limit_bytes": 4_194_304,
+            "timed_out": False,
+            "stdout_byte_count": 0,
+            "stderr_byte_count": 0,
+            "sanitized_environment": dict(EXPECTED_SANITIZED_ENVIRONMENT),
+        }
+        for ordinal, (name, argv) in enumerate(EXPECTED_COMMANDS)
+    ]
+
+
 def _validation_document(
     protocol: StudyProtocolV2,
     *,
@@ -165,18 +207,7 @@ def _validation_document(
         "upstream_artifacts": [],
         "payload": {
             "worktree_clean": True,
-            "commands": [
-                {
-                    "name": name,
-                    "argv": list(argv),
-                    "exit_code": 0,
-                    "stdout_sha256": sha256_bytes(f"{name}-stdout".encode()),
-                    "stderr_sha256": sha256_bytes(f"{name}-stderr".encode()),
-                    "started_at_utc": "2026-08-01T00:00:00Z",
-                    "ended_at_utc": "2026-08-01T00:00:01Z",
-                }
-                for name, argv in EXPECTED_COMMANDS
-            ],
+            "commands": _audited_validation_commands(),
             "determinism_control": {
                 "first_projection": mode_hashes,
                 "second_projection": dict(mode_hashes),
@@ -397,6 +428,76 @@ def test_implementation_validation_is_read_only_and_semantically_verified(
     assert verified.first_projection == verified.second_projection
     assert verified.passed is True
     assert verified.raw_sha256 == sha256_bytes(_validation_path(retention_fixture).read_bytes())
+
+
+def test_task_7a_fix1_validation_command_audit_contract_returns_verified_metadata() -> None:
+    commands = retention_module._verify_validation_commands(_audited_validation_commands())
+
+    assert tuple(command.timeout_seconds for command in commands) == EXPECTED_COMMAND_TIMEOUTS
+    assert commands[0].cwd == "."
+    assert commands[0].shell is False
+    assert commands[0].output_limit_bytes == 4_194_304
+    assert commands[0].timed_out is False
+    assert commands[0].stdout_byte_count == 0
+    assert commands[0].stderr_byte_count == 0
+    assert dict(commands[0].sanitized_environment) == EXPECTED_SANITIZED_ENVIRONMENT
+    with pytest.raises(TypeError):
+        cast(dict[str, str], commands[0].sanitized_environment)["LANG"] = "poisoned"
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "wrong_timeout_for_ordinal",
+        "missing_environment_key",
+        "extra_environment_key",
+        "poisoned_fixed_environment",
+        "relative_home",
+        "control_path",
+        "bad_path_suffix",
+        "cwd",
+        "shell",
+        "output_limit",
+        "timed_out",
+        "boolean_byte_count",
+        "overflow_byte_count",
+    ],
+)
+def test_task_7a_fix1_validation_command_audit_contract_rejects_semantic_tamper(
+    variant: str,
+) -> None:
+    commands = _audited_validation_commands()
+    command = commands[0]
+    environment = cast(dict[str, object], command["sanitized_environment"])
+    if variant == "wrong_timeout_for_ordinal":
+        command["timeout_seconds"] = 600
+    elif variant == "missing_environment_key":
+        environment.pop("HOME")
+    elif variant == "extra_environment_key":
+        environment["PYTEST_ADDOPTS"] = "-x"
+    elif variant == "poisoned_fixed_environment":
+        environment["LANG"] = "en_US.UTF-8"
+    elif variant == "relative_home":
+        environment["HOME"] = "relative/home"
+    elif variant == "control_path":
+        environment["PATH"] = "/opt/e1\npoisoned:/usr/bin:/bin:/usr/sbin:/sbin"
+    elif variant == "bad_path_suffix":
+        environment["PATH"] = "/opt/e1-study/bin"
+    elif variant == "cwd":
+        command["cwd"] = "/tmp"
+    elif variant == "shell":
+        command["shell"] = True
+    elif variant == "output_limit":
+        command["output_limit_bytes"] = 1024
+    elif variant == "timed_out":
+        command["timed_out"] = True
+    elif variant == "boolean_byte_count":
+        command["stdout_byte_count"] = True
+    else:
+        command["stderr_byte_count"] = 4_194_305
+
+    with pytest.raises(StudyRetentionError, match=r"validation command|environment|byte count"):
+        retention_module._verify_validation_commands(commands)
 
 
 def _reverse_first_command_time(document: dict[str, object]) -> None:

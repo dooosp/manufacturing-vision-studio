@@ -32,11 +32,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 STUDY_ARTIFACT_SCHEMA_PATH = PROJECT_ROOT / "schemas" / "e1-feasibility-study-artifact.v1.json"
 _MAX_SCHEMA_BYTES = 4 * 1024 * 1024
 _DEFAULT_MAX_ARTIFACT_BYTES = 25 * 1024 * 1024
+_MAX_INVENTORY_ENTRIES = 256
+_MAX_INVENTORY_DEPTH = 8
+_MAX_DIRECTORY_NAME_BYTES = 255
 _SHA1_LENGTH = 40
 _SHA256_LENGTH = 64
 _ZERO_SHA256 = "0" * _SHA256_LENGTH
 _STUDY_ID = "e1-feasibility-separability"
 _PHASE_1_MODES = ("NEAREST", "BILINEAR", "BICUBIC")
+_FEATURE_IDS = ("bottom_edge", "hole_left", "hole_right", "top_edge", "top_face")
 _RESULT_RECORD_TYPES = {
     "scope_audit",
     "diagnostic_result",
@@ -54,6 +58,21 @@ _PRE_DECISION_PATHS = (
     "phase-2-execution-claim.json",
     "known-transform-development-120.json",
 )
+_PERFORMANCE_DECISION_BRANCHES = {
+    "FEATURE_CONTRACT_FAILED": (_PRE_DECISION_PATHS[:6], "FEATURE_ORACLE_FAILED"),
+    "KNOWN_TRANSFORM_DIAGNOSTIC_FAILED": (
+        _PRE_DECISION_PATHS[:6],
+        "NO_DIAGNOSTIC_MODE_ELIGIBLE",
+    ),
+    "DIFFERENCE_BASELINE_LIMITED": (
+        _PRE_DECISION_PATHS,
+        "NO_DEVELOPMENT_MODE_PASSED",
+    ),
+    "TRANSFORM_ESTIMATION_LIMITED": (
+        _PRE_DECISION_PATHS,
+        "DEVELOPMENT_MODE_PASSED",
+    ),
+}
 
 
 class StudyArtifactError(ValueError):
@@ -67,6 +86,16 @@ class StudyArtifactRecord:
     byte_size: int
     media_type: str
     record_sha256: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class StudyArtifactInventoryEntry:
+    """One immutable no-follow entry from the pinned artifact-root inventory."""
+
+    path: str
+    kind: Literal["file", "directory", "symlink", "other"]
+    byte_size: int
+    link_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -488,6 +517,27 @@ class StudyArtifactStore:
         finally:
             os.close(lexical_fd)
 
+    def inventory(self) -> tuple[StudyArtifactInventoryEntry, ...]:
+        """Return a bounded, deterministic no-follow snapshot of the pinned root."""
+
+        self.verify_lexical_root_identity()
+        root_fd = self._duplicate_root_fd()
+        entries: list[StudyArtifactInventoryEntry] = []
+        try:
+            _inventory_directory(
+                root_fd,
+                relative_parts=(),
+                entries=entries,
+            )
+        except StudyArtifactError:
+            raise
+        except OSError as exc:
+            raise StudyArtifactError(f"artifact inventory is unsafe or changed: {exc}") from exc
+        finally:
+            os.close(root_fd)
+        self.verify_lexical_root_identity()
+        return tuple(sorted(entries, key=lambda entry: os.fsencode(entry.path)))
+
     def close(self) -> None:
         """Close the pinned root descriptor; later operations fail closed."""
 
@@ -780,6 +830,47 @@ def _validate_scope_semantics(payload: Mapping[str, object]) -> None:
         raise StudyArtifactError("scope audit binding order or identity is invalid")
 
 
+def _validate_applicable_gate_semantics(
+    gate: Mapping[str, object],
+    *,
+    name: str,
+    denominator: int,
+    exclusions: int,
+    operator: Literal["ge", "le"],
+    threshold: float,
+    expected_observed: float,
+    ratio: bool,
+    context: str,
+) -> str:
+    if (
+        gate["name"] != name
+        or gate["denominator"] != denominator
+        or gate["exclusions"] != exclusions
+        or gate["operator"] != operator
+        or gate["threshold"] != threshold
+        or gate["reason"] is not None
+    ):
+        raise StudyArtifactError(f"{context} gate contract is invalid")
+    observed = gate["observed"]
+    if isinstance(observed, bool) or not isinstance(observed, (int, float)):
+        raise StudyArtifactError(f"{context} gate observation is invalid")
+    if observed != expected_observed:
+        raise StudyArtifactError(f"{context} gate summary binding is invalid")
+    numerator = gate["numerator"]
+    if ratio:
+        if type(numerator) is not int or not 0 <= numerator <= denominator:
+            raise StudyArtifactError(f"{context} gate numerator is invalid")
+        if observed != numerator / denominator:
+            raise StudyArtifactError(f"{context} gate ratio is invalid")
+    elif numerator is not None:
+        raise StudyArtifactError(f"{context} statistic gate numerator is invalid")
+    passed = observed >= threshold if operator == "ge" else observed <= threshold
+    expected_status = "PASS" if passed else "FAIL"
+    if gate["status"] != expected_status:
+        raise StudyArtifactError(f"{context} gate status is invalid")
+    return expected_status
+
+
 def _validate_diagnostic_semantics(payload: Mapping[str, object]) -> None:
     cases = cast(list[dict[str, object]], payload["cases"])
     expected_cases = tuple(
@@ -831,15 +922,45 @@ def _validate_diagnostic_semantics(payload: Mapping[str, object]) -> None:
     summaries = cast(list[dict[str, object]], payload["mode_summaries"])
     if tuple(summary["mode"] for summary in summaries) != _PHASE_1_MODES:
         raise StudyArtifactError("diagnostic mode-summary order is invalid")
-    expected_gate_names = (
-        "maximum_recall_drop",
-        "median_dice_drop",
-        "medium_high_classification_recall",
-    )
     for summary in summaries:
         gates = cast(list[dict[str, object]], summary["gates"])
-        if tuple(gate["name"] for gate in gates) != expected_gate_names:
-            raise StudyArtifactError("diagnostic gate order is invalid")
+        statuses = (
+            _validate_applicable_gate_semantics(
+                gates[0],
+                name="maximum_recall_drop",
+                denominator=24,
+                exclusions=84,
+                operator="le",
+                threshold=0.05,
+                expected_observed=cast(float, summary["maximum_recall_drop"]),
+                ratio=False,
+                context="diagnostic maximum-recall-drop",
+            ),
+            _validate_applicable_gate_semantics(
+                gates[1],
+                name="median_dice_drop",
+                denominator=24,
+                exclusions=84,
+                operator="le",
+                threshold=0.01,
+                expected_observed=cast(float, summary["median_dice_drop"]),
+                ratio=False,
+                context="diagnostic median-dice-drop",
+            ),
+            _validate_applicable_gate_semantics(
+                gates[2],
+                name="medium_high_classification_recall",
+                denominator=24,
+                exclusions=84,
+                operator="ge",
+                threshold=0.9,
+                expected_observed=cast(float, summary["medium_high_classification_recall"]),
+                ratio=True,
+                context="diagnostic classification-recall",
+            ),
+        )
+        if summary["eligible"] is not all(status == "PASS" for status in statuses):
+            raise StudyArtifactError("diagnostic eligible declaration is invalid")
     eligible_modes = tuple(cast(list[str], payload["eligible_modes"]))
     derived_modes = tuple(
         cast(str, summary["mode"]) for summary in summaries if summary["eligible"] is True
@@ -859,34 +980,48 @@ def _validate_oracle_semantics(payload: Mapping[str, object]) -> None:
     )
     if actual != expected:
         raise StudyArtifactError("feature oracle record order or identity is invalid")
+    ownership_hashes = cast(dict[str, str], payload["ownership_hashes"])
+    allowed_ownership_hashes = frozenset(ownership_hashes.values())
+    minimum_winner_pixels = cast(int, payload["minimum_winner_pixels"])
     for record in records:
-        conserved = (
-            cast(int, record["owned_pixel_count"])
-            + cast(int, record["unmapped_pixel_count"])
-            == cast(int, record["authoritative_positive_pixels"])
-        )
+        status = cast(str, record["status"])
+        expected_feature = cast(str, record["expected_feature_id"])
+        predicted_feature = record["predicted_feature_id"]
+        if status not in {"MAPPED", "UNMAPPED", "AMBIGUOUS"}:
+            raise StudyArtifactError("feature oracle status is invalid")
+        if expected_feature not in _FEATURE_IDS or (
+            predicted_feature is not None and predicted_feature not in _FEATURE_IDS
+        ):
+            raise StudyArtifactError("feature oracle feature ID is invalid")
+        if (status == "MAPPED") is (predicted_feature is None):
+            raise StudyArtifactError("feature oracle status/prediction binding is invalid")
+        target_owned = cast(int, record["target_owned_pixels"])
+        owned = cast(int, record["owned_pixel_count"])
+        authoritative = cast(int, record["authoritative_positive_pixels"])
+        unmapped = cast(int, record["unmapped_pixel_count"])
+        if status == "UNMAPPED" and target_owned >= minimum_winner_pixels:
+            raise StudyArtifactError("feature oracle UNMAPPED winner count is invalid")
+        if not 0 <= target_owned <= owned <= authoritative:
+            raise StudyArtifactError("feature oracle ownership counts are invalid")
+        conserved = owned + unmapped == authoritative
         if record["conserved"] is not conserved:
             raise StudyArtifactError("feature oracle conservation declaration is invalid")
-        if record["correct"] is True and (
-            cast(int, record["target_owned_pixels"]) < 8
-            or record["predicted_feature_id"] != record["expected_feature_id"]
-            or record["hash_binding_matches"] is not True
-            or not conserved
-        ):
+        if record["ownership_map_sha256"] not in allowed_ownership_hashes:
+            raise StudyArtifactError("feature oracle ownership hash is invalid")
+        expected_correct = (
+            status == "MAPPED"
+            and predicted_feature == expected_feature
+            and target_owned >= minimum_winner_pixels
+            and conserved
+            and record["hash_binding_matches"] is True
+        )
+        if record["correct"] is not expected_correct:
             raise StudyArtifactError("feature oracle correct-case declaration is invalid")
 
     correct = sum(record["correct"] is True for record in records)
-    ambiguous = sum(
-        record["correct"] is not True and record["status"] == "AMBIGUOUS"
-        for record in records
-    )
-    null = sum(
-        record["correct"] is not True
-        and record["status"] != "AMBIGUOUS"
-        and record["predicted_feature_id"] is None
-        for record in records
-    )
-    wrong = 60 - correct - ambiguous - null
+    ambiguous = sum(record["status"] == "AMBIGUOUS" for record in records)
+    null = sum(record["status"] == "UNMAPPED" for record in records)
+    wrong = sum(record["status"] == "MAPPED" and record["correct"] is False for record in records)
     declared = (
         payload["correct_cases"],
         payload["ambiguous_cases"],
@@ -972,16 +1107,56 @@ def _validate_development_semantics(payload: Mapping[str, object]) -> None:
     summaries = cast(list[dict[str, object]], payload["mode_summaries"])
     if tuple(summary["mode"] for summary in summaries) != modes:
         raise StudyArtifactError("development mode-summary order is invalid")
-    expected_gate_names = (
-        "medium_high_defect_recall",
-        "nuisance_only_false_positive_rate",
-        "positive_case_median_dice",
-        "affected_feature_mapping_accuracy",
-    )
     for summary in summaries:
         gates = cast(list[dict[str, object]], summary["gates"])
-        if tuple(gate["name"] for gate in gates) != expected_gate_names:
-            raise StudyArtifactError("development gate order is invalid")
+        statuses = (
+            _validate_applicable_gate_semantics(
+                gates[0],
+                name="medium_high_defect_recall",
+                denominator=40,
+                exclusions=74,
+                operator="ge",
+                threshold=0.9,
+                expected_observed=cast(float, summary["medium_high_recall"]),
+                ratio=True,
+                context="development defect-recall",
+            ),
+            _validate_applicable_gate_semantics(
+                gates[1],
+                name="nuisance_only_false_positive_rate",
+                denominator=30,
+                exclusions=84,
+                operator="le",
+                threshold=0.05,
+                expected_observed=cast(float, summary["nuisance_false_positive_rate"]),
+                ratio=True,
+                context="development nuisance-false-positive-rate",
+            ),
+            _validate_applicable_gate_semantics(
+                gates[2],
+                name="positive_case_median_dice",
+                denominator=60,
+                exclusions=54,
+                operator="ge",
+                threshold=0.7,
+                expected_observed=cast(float, summary["positive_median_dice"]),
+                ratio=False,
+                context="development positive-median-dice",
+            ),
+            _validate_applicable_gate_semantics(
+                gates[3],
+                name="affected_feature_mapping_accuracy",
+                denominator=60,
+                exclusions=54,
+                operator="ge",
+                threshold=0.95,
+                expected_observed=cast(float, summary["feature_mapping_accuracy"]),
+                ratio=True,
+                context="development feature-mapping-accuracy",
+            ),
+        )
+        if summary["passed_all_gates"] is not all(status == "PASS" for status in statuses):
+            raise StudyArtifactError("development passing declaration is invalid")
     passing_modes = tuple(cast(list[str], payload["passing_modes"]))
     derived_passing = tuple(
         cast(str, summary["mode"])
@@ -1015,6 +1190,17 @@ def _validate_decision_semantics(
     upstream_paths = tuple(cast(str, upstream["path"]) for upstream in upstreams)
     if upstream_paths != verified_paths:
         raise StudyArtifactError("decision upstream inventory is invalid")
+    decision = cast(str, payload["decision"])
+    reasons = tuple(cast(list[str], payload["reasons"]))
+    if decision == "STUDY_INVALID":
+        if reasons != ("ARTIFACT_VERIFICATION_FAILED",):
+            raise StudyArtifactError("invalid-study decision reason is invalid")
+        return
+    expected_present, expected_reason = _PERFORMANCE_DECISION_BRANCHES[decision]
+    if present != expected_present or invalid:
+        raise StudyArtifactError("performance decision inventory is invalid")
+    if reasons != (expected_reason,):
+        raise StudyArtifactError("performance decision reason is invalid")
 
 
 def _require_finite_json_value(value: object) -> None:
@@ -1043,6 +1229,101 @@ def _read_descriptor_bounded(descriptor: int, *, maximum: int) -> bytes:
     if len(payload) > maximum:
         raise StudyArtifactError("input exceeds byte limit")
     return payload
+
+
+def _inventory_metadata_snapshot(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _inventory_directory_names(descriptor: int) -> tuple[str, ...]:
+    names: list[str] = []
+    try:
+        with os.scandir(descriptor) as iterator:
+            for entry in iterator:
+                name = entry.name
+                if not isinstance(name, str) or len(os.fsencode(name)) > _MAX_DIRECTORY_NAME_BYTES:
+                    raise StudyArtifactError("artifact inventory directory name is unsafe")
+                names.append(name)
+                if len(names) > _MAX_INVENTORY_ENTRIES:
+                    raise StudyArtifactError("artifact inventory entry limit exceeded")
+    except StudyArtifactError:
+        raise
+    except OSError as exc:
+        raise StudyArtifactError(f"artifact inventory directory is unsafe: {exc}") from exc
+    return tuple(names)
+
+
+def _inventory_kind(mode: int) -> Literal["file", "directory", "symlink", "other"]:
+    if stat.S_ISREG(mode):
+        return "file"
+    if stat.S_ISDIR(mode):
+        return "directory"
+    if stat.S_ISLNK(mode):
+        return "symlink"
+    return "other"
+
+
+def _inventory_directory(
+    directory_fd: int,
+    *,
+    relative_parts: tuple[str, ...],
+    entries: list[StudyArtifactInventoryEntry],
+) -> None:
+    before = _validated_directory_metadata(directory_fd, purpose="artifact inventory directory")
+    before_snapshot = _inventory_metadata_snapshot(before)
+    for name in _inventory_directory_names(directory_fd):
+        relative = PurePosixPath(*relative_parts, name)
+        normalized = _validate_relative_path(relative.as_posix())
+        parts = PurePosixPath(normalized).parts
+        if len(parts) > _MAX_INVENTORY_DEPTH:
+            raise StudyArtifactError("artifact inventory depth limit exceeded")
+        try:
+            metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        except OSError as exc:
+            raise StudyArtifactError("artifact inventory changed during traversal") from exc
+        kind = _inventory_kind(metadata.st_mode)
+        entries.append(
+            StudyArtifactInventoryEntry(
+                path=normalized,
+                kind=kind,
+                byte_size=metadata.st_size,
+                link_count=metadata.st_nlink,
+            )
+        )
+        if len(entries) > _MAX_INVENTORY_ENTRIES:
+            raise StudyArtifactError("artifact inventory entry limit exceeded")
+        if kind != "directory":
+            continue
+        child_fd: int | None = None
+        try:
+            child_fd = os.open(name, _directory_open_flags(), dir_fd=directory_fd)
+            opened = _validated_directory_metadata(
+                child_fd,
+                purpose="artifact inventory child directory",
+            )
+            if (metadata.st_dev, metadata.st_ino) != (opened.st_dev, opened.st_ino):
+                raise StudyArtifactError("artifact inventory changed during traversal")
+            _inventory_directory(
+                child_fd,
+                relative_parts=parts,
+                entries=entries,
+            )
+        except StudyArtifactError:
+            raise
+        except OSError as exc:
+            raise StudyArtifactError("artifact inventory changed during traversal") from exc
+        finally:
+            if child_fd is not None:
+                os.close(child_fd)
+    after = _validated_directory_metadata(directory_fd, purpose="artifact inventory directory")
+    if _inventory_metadata_snapshot(after) != before_snapshot:
+        raise StudyArtifactError("artifact inventory directory changed during traversal")
 
 
 def _validate_relative_path(path: str) -> str:

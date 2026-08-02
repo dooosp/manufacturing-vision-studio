@@ -61,6 +61,42 @@ IMPLEMENTATION_VALIDATION_COMMANDS = (
     ("web_check", ("npm", "--prefix", "web", "run", "check")),
     ("playwright", ("npm", "--prefix", "web", "run", "test:e2e")),
 )
+IMPLEMENTATION_VALIDATION_TIMEOUT_SECONDS = (300, 300, 600, 1800, 600, 900)
+_VALIDATION_OUTPUT_LIMIT_BYTES = 4 * 1024 * 1024
+_SANITIZED_ENVIRONMENT_KEYS = (
+    "HOME",
+    "PATH",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "TZ",
+    "TERM",
+    "NO_COLOR",
+    "FORCE_COLOR",
+    "PYTHONHASHSEED",
+    "PYTHONUTF8",
+    "PYTHONNOUSERSITE",
+    "UV_NO_CONFIG",
+    "NPM_CONFIG_USERCONFIG",
+    "GIT_CONFIG_NOSYSTEM",
+    "GIT_CONFIG_GLOBAL",
+)
+_FIXED_SANITIZED_ENVIRONMENT = {
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "TZ": "UTC",
+    "TERM": "dumb",
+    "NO_COLOR": "1",
+    "FORCE_COLOR": "0",
+    "PYTHONHASHSEED": "0",
+    "PYTHONUTF8": "1",
+    "PYTHONNOUSERSITE": "1",
+    "UV_NO_CONFIG": "1",
+    "NPM_CONFIG_USERCONFIG": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+}
+_SYSTEM_PATH_SUFFIX = "/usr/bin:/bin:/usr/sbin:/sbin"
 NOT_APPLICABLE_CONTROLS = (
     ("bundle_verify_reimport_rate", "STUDY_PUBLISHES_NO_BUNDLE"),
     ("dataset_split_hash_overlap", "PROTECTED_SPLIT_MEMBERS_NOT_ENUMERATED"),
@@ -308,6 +344,14 @@ class ValidationCommand:
     stderr_sha256: str
     started_at_utc: str
     ended_at_utc: str
+    cwd: str
+    shell: bool
+    timeout_seconds: int
+    output_limit_bytes: int
+    timed_out: bool
+    stdout_byte_count: int
+    stderr_byte_count: int
+    sanitized_environment: Mapping[str, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1575,6 +1619,43 @@ def _artifact_schema_sha256(root: Path) -> str:
         raise StudyRetentionError(f"artifact schema cannot be hashed: {exc}") from exc
 
 
+def _contains_control_character(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+def _verify_sanitized_environment(value: object) -> Mapping[str, str]:
+    if not isinstance(value, dict) or set(value) != set(_SANITIZED_ENVIRONMENT_KEYS):
+        raise StudyRetentionError("implementation validation command environment is invalid")
+    raw = cast(dict[str, object], value)
+    environment: dict[str, str] = {}
+    for key in _SANITIZED_ENVIRONMENT_KEYS:
+        item = raw[key]
+        if not isinstance(item, str):
+            raise StudyRetentionError("implementation validation command environment is invalid")
+        environment[key] = item
+    for key, expected in _FIXED_SANITIZED_ENVIRONMENT.items():
+        if environment[key] != expected:
+            raise StudyRetentionError("implementation validation command environment is poisoned")
+    for key in ("HOME", "PATH", "TMPDIR"):
+        item = environment[key]
+        if not item or _contains_control_character(item):
+            raise StudyRetentionError("implementation validation command environment is unsafe")
+    if not PurePosixPath(environment["HOME"]).is_absolute() or not PurePosixPath(
+        environment["TMPDIR"]
+    ).is_absolute():
+        raise StudyRetentionError("implementation validation command environment path is relative")
+    if not environment["PATH"].endswith(_SYSTEM_PATH_SUFFIX):
+        raise StudyRetentionError("implementation validation command environment PATH is invalid")
+    return MappingProxyType(environment)
+
+
+def _validation_byte_count(command: Mapping[str, object], field_name: str) -> int:
+    value = command.get(field_name)
+    if type(value) is not int or not 0 <= value <= _VALIDATION_OUTPUT_LIMIT_BYTES:
+        raise StudyRetentionError("implementation validation command byte count is invalid")
+    return value
+
+
 def _verify_validation_commands(value: object) -> tuple[ValidationCommand, ...]:
     if not isinstance(value, list) or len(value) != len(IMPLEMENTATION_VALIDATION_COMMANDS):
         raise StudyRetentionError("implementation validation commands are incomplete")
@@ -1591,6 +1672,18 @@ def _verify_validation_commands(value: object) -> tuple[ValidationCommand, ...]:
             )
         if command.get("exit_code") != 0:
             raise StudyRetentionError("implementation validation command did not pass")
+        expected_timeout = IMPLEMENTATION_VALIDATION_TIMEOUT_SECONDS[ordinal]
+        if (
+            command.get("cwd") != "."
+            or command.get("shell") is not False
+            or command.get("timeout_seconds") != expected_timeout
+            or command.get("output_limit_bytes") != _VALIDATION_OUTPUT_LIMIT_BYTES
+            or command.get("timed_out") is not False
+        ):
+            raise StudyRetentionError("implementation validation command audit metadata is invalid")
+        stdout_byte_count = _validation_byte_count(command, "stdout_byte_count")
+        stderr_byte_count = _validation_byte_count(command, "stderr_byte_count")
+        environment = _verify_sanitized_environment(command.get("sanitized_environment"))
         stdout_sha256 = _required_hash(command, "stdout_sha256")
         stderr_sha256 = _required_hash(command, "stderr_sha256")
         started = _required_string(command, "started_at_utc")
@@ -1606,6 +1699,14 @@ def _verify_validation_commands(value: object) -> tuple[ValidationCommand, ...]:
                 stderr_sha256=stderr_sha256,
                 started_at_utc=started,
                 ended_at_utc=ended,
+                cwd=".",
+                shell=False,
+                timeout_seconds=expected_timeout,
+                output_limit_bytes=_VALIDATION_OUTPUT_LIMIT_BYTES,
+                timed_out=False,
+                stdout_byte_count=stdout_byte_count,
+                stderr_byte_count=stderr_byte_count,
+                sanitized_environment=environment,
             )
         )
     return tuple(commands)

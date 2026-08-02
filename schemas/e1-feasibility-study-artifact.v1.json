@@ -63,6 +63,49 @@
         "reason": {"type": "string", "minLength": 1}
       }
     },
+    "sanitizedEnvironment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "HOME",
+        "PATH",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "TZ",
+        "TERM",
+        "NO_COLOR",
+        "FORCE_COLOR",
+        "PYTHONHASHSEED",
+        "PYTHONUTF8",
+        "PYTHONNOUSERSITE",
+        "UV_NO_CONFIG",
+        "NPM_CONFIG_USERCONFIG",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_GLOBAL"
+      ],
+      "properties": {
+        "HOME": {"type": "string", "pattern": "^/[^\\u0000-\\u001F\\u007F]*$"},
+        "PATH": {
+          "type": "string",
+          "pattern": "^(?!.*[\\u0000-\\u001F\\u007F]).*/usr/bin:/bin:/usr/sbin:/sbin$"
+        },
+        "TMPDIR": {"type": "string", "pattern": "^/[^\\u0000-\\u001F\\u007F]*$"},
+        "LANG": {"const": "C.UTF-8"},
+        "LC_ALL": {"const": "C.UTF-8"},
+        "TZ": {"const": "UTC"},
+        "TERM": {"const": "dumb"},
+        "NO_COLOR": {"const": "1"},
+        "FORCE_COLOR": {"const": "0"},
+        "PYTHONHASHSEED": {"const": "0"},
+        "PYTHONUTF8": {"const": "1"},
+        "PYTHONNOUSERSITE": {"const": "1"},
+        "UV_NO_CONFIG": {"const": "1"},
+        "NPM_CONFIG_USERCONFIG": {"const": "/dev/null"},
+        "GIT_CONFIG_NOSYSTEM": {"const": "1"},
+        "GIT_CONFIG_GLOBAL": {"const": "/dev/null"}
+      }
+    },
     "commandRecord": {
       "type": "object",
       "additionalProperties": false,
@@ -73,7 +116,15 @@
         "stdout_sha256",
         "stderr_sha256",
         "started_at_utc",
-        "ended_at_utc"
+        "ended_at_utc",
+        "cwd",
+        "shell",
+        "timeout_seconds",
+        "output_limit_bytes",
+        "timed_out",
+        "stdout_byte_count",
+        "stderr_byte_count",
+        "sanitized_environment"
       ],
       "properties": {
         "name": {"type": "string", "minLength": 1},
@@ -92,7 +143,15 @@
         "ended_at_utc": {
           "type": "string",
           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
-        }
+        },
+        "cwd": {"const": "."},
+        "shell": {"const": false},
+        "timeout_seconds": {"enum": [300, 600, 900, 1800]},
+        "output_limit_bytes": {"const": 4194304},
+        "timed_out": {"const": false},
+        "stdout_byte_count": {"type": "integer", "minimum": 0, "maximum": 4194304},
+        "stderr_byte_count": {"type": "integer", "minimum": 0, "maximum": 4194304},
+        "sanitized_environment": {"$ref": "#/$defs/sanitizedEnvironment"}
       }
     },
     "modeProjection": {
@@ -504,6 +563,9 @@
       }
     },
     "resamplingMode": {"enum": ["NEAREST", "BILINEAR", "BICUBIC"]},
+    "fixedFeatureId": {
+      "enum": ["bottom_edge", "hole_left", "hole_right", "top_edge", "top_face"]
+    },
     "appliedTransform": {
       "type": "object",
       "additionalProperties": false,
@@ -756,7 +818,7 @@
         "observed": {"type": "number"},
         "operator": {"enum": ["ge", "le", "eq"]},
         "threshold": {"type": ["number", "boolean"]},
-        "reason": {"type": ["string", "null"]}
+        "reason": {"type": "null"}
       }
     },
     "developmentBinding": {
@@ -1006,7 +1068,54 @@
           "type": "array",
           "minItems": 3,
           "maxItems": 3,
-          "items": {"$ref": "#/$defs/applicableStudyGate"}
+          "prefixItems": [
+            {
+              "allOf": [
+                {"$ref": "#/$defs/applicableStudyGate"},
+                {
+                  "properties": {
+                    "name": {"const": "maximum_recall_drop"},
+                    "numerator": {"type": "null"},
+                    "denominator": {"const": 24},
+                    "exclusions": {"const": 84},
+                    "operator": {"const": "le"},
+                    "threshold": {"const": 0.05}
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {"$ref": "#/$defs/applicableStudyGate"},
+                {
+                  "properties": {
+                    "name": {"const": "median_dice_drop"},
+                    "numerator": {"type": "null"},
+                    "denominator": {"const": 24},
+                    "exclusions": {"const": 84},
+                    "operator": {"const": "le"},
+                    "threshold": {"const": 0.01}
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {"$ref": "#/$defs/applicableStudyGate"},
+                {
+                  "properties": {
+                    "name": {"const": "medium_high_classification_recall"},
+                    "numerator": {"type": "integer", "minimum": 0, "maximum": 24},
+                    "denominator": {"const": 24},
+                    "exclusions": {"const": 84},
+                    "operator": {"const": "ge"},
+                    "threshold": {"const": 0.9}
+                  }
+                }
+              ]
+            }
+          ],
+          "items": false
         },
         "eligible": {"type": "boolean"}
       }
@@ -1147,17 +1256,42 @@
         "seed": {"type": "integer", "minimum": 420000, "maximum": 420059},
         "authoritative_mask_sha256": {"$ref": "#/$defs/sha256"},
         "authoritative_positive_pixels": {"type": "integer", "minimum": 1},
-        "expected_feature_id": {"type": "string", "minLength": 1},
-        "predicted_feature_id": {"type": ["string", "null"]},
-        "status": {"type": "string", "minLength": 1},
+        "expected_feature_id": {"$ref": "#/$defs/fixedFeatureId"},
+        "predicted_feature_id": {
+          "oneOf": [{"$ref": "#/$defs/fixedFeatureId"}, {"type": "null"}]
+        },
+        "status": {"enum": ["MAPPED", "UNMAPPED", "AMBIGUOUS"]},
         "correct": {"type": "boolean"},
         "hash_binding_matches": {"type": "boolean"},
-        "ownership_map_sha256": {"$ref": "#/$defs/sha256"},
+        "ownership_map_sha256": {
+          "enum": [
+            "eadc490b04f8240e8356b3e20e75db08d79dfc5e27af180574d707836b3b776f",
+            "2d2a52ecae44ccae98455180211aaf528078707948dbf83f792223c550d3a074",
+            "8c42a88c3ffdf3dda10b073665b6d7a565ddde54a7a7450ba3c0f4782be14477",
+            "5f69348a9ce7b646054dce02f95a0ff8ebd420c641ab40f414b0afa645ef49bc",
+            "1fb2f752d738a7bf595f8cae97860452a3a8628ea5cb3eec4347d1f42fe43b8b",
+            "373337ec46da320dbbcdf0ffa14c22794db05208cd9491e5b272e0d34169830d"
+          ]
+        },
         "target_owned_pixels": {"type": "integer", "minimum": 0},
         "owned_pixel_count": {"type": "integer", "minimum": 0},
         "unmapped_pixel_count": {"type": "integer", "minimum": 0},
         "conserved": {"type": "boolean"}
-      }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "MAPPED"}}},
+          "then": {"properties": {"predicted_feature_id": {"$ref": "#/$defs/fixedFeatureId"}}}
+        },
+        {
+          "if": {"properties": {"status": {"enum": ["UNMAPPED", "AMBIGUOUS"]}}},
+          "then": {"properties": {"predicted_feature_id": {"type": "null"}}}
+        },
+        {
+          "if": {"properties": {"status": {"const": "UNMAPPED"}}},
+          "then": {"properties": {"target_owned_pixels": {"maximum": 7}}}
+        }
+      ]
     },
     "featureOraclePayload": {
       "type": "object",
@@ -1366,7 +1500,69 @@
           "type": "array",
           "minItems": 4,
           "maxItems": 4,
-          "items": {"$ref": "#/$defs/applicableStudyGate"}
+          "prefixItems": [
+            {
+              "allOf": [
+                {"$ref": "#/$defs/applicableStudyGate"},
+                {
+                  "properties": {
+                    "name": {"const": "medium_high_defect_recall"},
+                    "numerator": {"type": "integer", "minimum": 0, "maximum": 40},
+                    "denominator": {"const": 40},
+                    "exclusions": {"const": 74},
+                    "operator": {"const": "ge"},
+                    "threshold": {"const": 0.9}
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {"$ref": "#/$defs/applicableStudyGate"},
+                {
+                  "properties": {
+                    "name": {"const": "nuisance_only_false_positive_rate"},
+                    "numerator": {"type": "integer", "minimum": 0, "maximum": 30},
+                    "denominator": {"const": 30},
+                    "exclusions": {"const": 84},
+                    "operator": {"const": "le"},
+                    "threshold": {"const": 0.05}
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {"$ref": "#/$defs/applicableStudyGate"},
+                {
+                  "properties": {
+                    "name": {"const": "positive_case_median_dice"},
+                    "numerator": {"type": "null"},
+                    "denominator": {"const": 60},
+                    "exclusions": {"const": 54},
+                    "operator": {"const": "ge"},
+                    "threshold": {"const": 0.7}
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {"$ref": "#/$defs/applicableStudyGate"},
+                {
+                  "properties": {
+                    "name": {"const": "affected_feature_mapping_accuracy"},
+                    "numerator": {"type": "integer", "minimum": 0, "maximum": 60},
+                    "denominator": {"const": 60},
+                    "exclusions": {"const": 54},
+                    "operator": {"const": "ge"},
+                    "threshold": {"const": 0.95}
+                  }
+                }
+              ]
+            }
+          ],
+          "items": false
         },
         "passed_all_gates": {"type": "boolean"}
       }
@@ -1549,7 +1745,8 @@
             "properties": {
               "allowed_next_action": {
                 "const": "Repair evidence machinery only; no performance conclusion"
-              }
+              },
+              "reasons": {"const": ["ARTIFACT_VERIFICATION_FAILED"]}
             }
           }
         },
@@ -1560,7 +1757,21 @@
               "allowed_next_action": {
                 "const": "New protocol/ownership design; do not alter model"
               },
-              "study_artifact_verify_rate": {"const": 1.0}
+              "reasons": {"const": ["FEATURE_ORACLE_FAILED"]},
+              "verified_artifact_count": {"const": 6},
+              "present_artifact_count": {"const": 6},
+              "study_artifact_verify_rate": {"const": 1.0},
+              "present_paths": {
+                "const": [
+                  "implementation-validation.json",
+                  "retention-audit.json",
+                  "phase-1-execution-claim.json",
+                  "known-transform-diagnostic-108.json",
+                  "scope-audit.json",
+                  "feature-ownership-oracle.json"
+                ]
+              },
+              "invalid_paths": {"const": []}
             }
           }
         },
@@ -1573,7 +1784,21 @@
               "allowed_next_action": {
                 "const": "End affine-candidate search; analyze resampling/baseline residual evidence"
               },
-              "study_artifact_verify_rate": {"const": 1.0}
+              "reasons": {"const": ["NO_DIAGNOSTIC_MODE_ELIGIBLE"]},
+              "verified_artifact_count": {"const": 6},
+              "present_artifact_count": {"const": 6},
+              "study_artifact_verify_rate": {"const": 1.0},
+              "present_paths": {
+                "const": [
+                  "implementation-validation.json",
+                  "retention-audit.json",
+                  "phase-1-execution-claim.json",
+                  "known-transform-diagnostic-108.json",
+                  "scope-audit.json",
+                  "feature-ownership-oracle.json"
+                ]
+              },
+              "invalid_paths": {"const": []}
             }
           }
         },
@@ -1584,7 +1809,23 @@
               "allowed_next_action": {
                 "const": "Preserve negative result; Candidate C prohibited; a new model family needs a new protocol"
               },
-              "study_artifact_verify_rate": {"const": 1.0}
+              "reasons": {"const": ["NO_DEVELOPMENT_MODE_PASSED"]},
+              "verified_artifact_count": {"const": 8},
+              "present_artifact_count": {"const": 8},
+              "study_artifact_verify_rate": {"const": 1.0},
+              "present_paths": {
+                "const": [
+                  "implementation-validation.json",
+                  "retention-audit.json",
+                  "phase-1-execution-claim.json",
+                  "known-transform-diagnostic-108.json",
+                  "scope-audit.json",
+                  "feature-ownership-oracle.json",
+                  "phase-2-execution-claim.json",
+                  "known-transform-development-120.json"
+                ]
+              },
+              "invalid_paths": {"const": []}
             }
           }
         },
@@ -1595,7 +1836,23 @@
               "allowed_next_action": {
                 "const": "A separate approved plan may design exactly one evidence-based Candidate C"
               },
-              "study_artifact_verify_rate": {"const": 1.0}
+              "reasons": {"const": ["DEVELOPMENT_MODE_PASSED"]},
+              "verified_artifact_count": {"const": 8},
+              "present_artifact_count": {"const": 8},
+              "study_artifact_verify_rate": {"const": 1.0},
+              "present_paths": {
+                "const": [
+                  "implementation-validation.json",
+                  "retention-audit.json",
+                  "phase-1-execution-claim.json",
+                  "known-transform-diagnostic-108.json",
+                  "scope-audit.json",
+                  "feature-ownership-oracle.json",
+                  "phase-2-execution-claim.json",
+                  "known-transform-development-120.json"
+                ]
+              },
+              "invalid_paths": {"const": []}
             }
           }
         }
