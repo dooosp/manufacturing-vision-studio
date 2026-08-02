@@ -417,6 +417,7 @@ class _ImportVisitor(ast.NodeVisitor):
         self.importlib_module_names: set[str] = set()
         self.import_module_names: set[str] = set()
         self.package_object_names: dict[str, str] = {}
+        self.allowed_import_module_name_nodes: set[int] = set()
 
     def visit_If(self, node: ast.If) -> None:
         if _is_type_checking_test(node.test):
@@ -446,6 +447,17 @@ class _ImportVisitor(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
+            if self.type_checking_depth == 0:
+                if alias.name in _PROJECTED_PACKAGE_ROOTS:
+                    self.closure_errors.append(
+                        f"{self.source_module}:{node.lineno}:"
+                        f"runtime package-object import: {alias.name}"
+                    )
+                if _is_importlib_target(alias.name):
+                    self.closure_errors.append(
+                        f"{self.source_module}:{node.lineno}:"
+                        f"runtime importlib import: {alias.name}"
+                    )
             if alias.name == "importlib":
                 self.importlib_module_names.add(alias.asname or alias.name)
             if alias.name in _PROJECTED_PACKAGE_ROOTS:
@@ -459,6 +471,16 @@ class _ImportVisitor(ast.NodeVisitor):
                 )
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if (
+            self.type_checking_depth == 0
+            and node.level == 0
+            and _is_importlib_target(node.module)
+            and not _is_allowed_initializer_import_module(self.source_module, node)
+        ):
+            self.closure_errors.append(
+                f"{self.source_module}:{node.lineno}:"
+                f"runtime importlib import: {node.module}"
+            )
         if node.level == 0 and node.module == "importlib":
             for alias in node.names:
                 if alias.name == "import_module":
@@ -509,6 +531,10 @@ class _ImportVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
+        if self.type_checking_depth == 0 and node.attr == "__import__":
+            self.closure_errors.append(
+                f"{self.source_module}:{node.lineno}:runtime __import__ symbol access"
+            )
         package_target = self._package_object_target(node.value)
         if package_target is not None:
             self._record_package_attribute(
@@ -526,6 +552,7 @@ class _ImportVisitor(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         self._visit_package_getattr(node)
+        self._visit_reflected_builtin_import(node)
         loader_kind = _dynamic_import_loader_kind(
             node.func,
             importlib_module_names=self.importlib_module_names,
@@ -553,7 +580,54 @@ class _ImportVisitor(ast.NodeVisitor):
             )
         elif name in _FORBIDDEN_CALL_NAMES or name == "FreeCADExportAdapter":
             self.forbidden_calls.append(f"{self.source_module}:{node.lineno}:{name}")
-        self.generic_visit(node)
+        allowed_loader_name = (
+            isinstance(node.func, ast.Name)
+            and _is_allowed_lazy_package_import(
+                self.source_module,
+                self.function_stack,
+                node,
+            )
+        )
+        if allowed_loader_name:
+            self.allowed_import_module_name_nodes.add(id(node.func))
+        try:
+            self.generic_visit(node)
+        finally:
+            if allowed_loader_name:
+                self.allowed_import_module_name_nodes.remove(id(node.func))
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if (
+            self.type_checking_depth == 0
+            and isinstance(node.ctx, ast.Load)
+            and node.id == "__import__"
+        ):
+            self.closure_errors.append(
+                f"{self.source_module}:{node.lineno}:runtime __import__ symbol access"
+            )
+        if (
+            self.type_checking_depth == 0
+            and self.source_module in _PROJECTED_PACKAGE_ROOTS
+            and node.id in self.import_module_names
+            and id(node) not in self.allowed_import_module_name_nodes
+        ):
+            self.closure_errors.append(
+                f"{self.source_module}:{node.lineno}:"
+                "runtime importlib loader symbol access"
+            )
+
+    def _visit_reflected_builtin_import(self, node: ast.Call) -> None:
+        if (
+            self.type_checking_depth == 0
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value == "__import__"
+        ):
+            self.closure_errors.append(
+                f"{self.source_module}:{node.lineno}:runtime __import__ symbol access"
+            )
 
     def _visit_dynamic_import(self, node: ast.Call) -> None:
         if not node.args:
@@ -1198,6 +1272,26 @@ def _is_type_checking_test(node: ast.expr) -> bool:
         and isinstance(node.value, ast.Name)
         and node.value.id == "typing"
         and node.attr == "TYPE_CHECKING"
+    )
+
+
+def _is_importlib_target(module: str | None) -> bool:
+    return module == "importlib" or (
+        module is not None and module.startswith("importlib.")
+    )
+
+
+def _is_allowed_initializer_import_module(
+    source_module: str,
+    node: ast.ImportFrom,
+) -> bool:
+    return (
+        source_module in _PROJECTED_PACKAGE_ROOTS
+        and node.level == 0
+        and node.module == "importlib"
+        and len(node.names) == 1
+        and node.names[0].name == "import_module"
+        and node.names[0].asname is None
     )
 
 
