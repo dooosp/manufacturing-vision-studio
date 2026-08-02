@@ -1,15 +1,420 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://manufacturing-vision-studio.local/schemas/e1-feasibility-study-artifact.v1.json",
-  "$ref": "#/$defs/phaseExecutionClaim",
+  "oneOf": [
+    {"$ref": "#/$defs/phaseExecutionClaim"},
+    {"$ref": "#/$defs/implementationValidation"},
+    {"$ref": "#/$defs/retentionAudit"}
+  ],
   "$defs": {
-    "sha1": {
+    "sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "path": {
       "type": "string",
-      "pattern": "^[0-9a-f]{40}$"
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
     },
-    "sha256": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
+    "projectionEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "upstreamArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "raw_sha256", "record_sha256"],
+      "properties": {
+        "path": {"type": "string", "const": "implementation-validation.json"},
+        "raw_sha256": {"$ref": "#/$defs/sha256"},
+        "record_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "studyGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "status",
+        "numerator",
+        "denominator",
+        "observed",
+        "operator",
+        "threshold",
+        "reason"
+      ],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "status": {"type": "string", "const": "NOT_APPLICABLE"},
+        "numerator": {"type": "null"},
+        "denominator": {"type": "null"},
+        "observed": {"type": "null"},
+        "operator": {"type": "null"},
+        "threshold": {"type": "null"},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "commandRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "argv",
+        "exit_code",
+        "stdout_sha256",
+        "stderr_sha256",
+        "started_at_utc",
+        "ended_at_utc"
+      ],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "argv": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "exit_code": {"type": "integer", "const": 0},
+        "stdout_sha256": {"$ref": "#/$defs/sha256"},
+        "stderr_sha256": {"$ref": "#/$defs/sha256"},
+        "started_at_utc": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+        },
+        "ended_at_utc": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+        }
+      }
+    },
+    "modeProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["NEAREST", "BILINEAR", "BICUBIC"],
+      "properties": {
+        "NEAREST": {"$ref": "#/$defs/sha256"},
+        "BILINEAR": {"$ref": "#/$defs/sha256"},
+        "BICUBIC": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "determinismControl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["first_projection", "second_projection", "passed"],
+      "properties": {
+        "first_projection": {"$ref": "#/$defs/modeProjection"},
+        "second_projection": {"$ref": "#/$defs/modeProjection"},
+        "passed": {"type": "boolean", "const": true}
+      }
+    },
+    "implementationValidationPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "worktree_clean",
+        "commands",
+        "determinism_control",
+        "not_applicable_controls",
+        "passed"
+      ],
+      "properties": {
+        "worktree_clean": {"type": "boolean", "const": true},
+        "commands": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "items": {"$ref": "#/$defs/commandRecord"}
+        },
+        "determinism_control": {"$ref": "#/$defs/determinismControl"},
+        "not_applicable_controls": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {"$ref": "#/$defs/studyGate"}
+        },
+        "passed": {"type": "boolean", "const": true}
+      }
+    },
+    "implementationValidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_type",
+        "schema_version",
+        "study_id",
+        "development_only",
+        "selection_eligible",
+        "release_claim_allowed",
+        "base_commit",
+        "execution_commit",
+        "protocol_sha256",
+        "artifact_root",
+        "artifact_schema_sha256",
+        "implementation_projection_sha256",
+        "upstream_artifacts",
+        "payload",
+        "record_sha256"
+      ],
+      "properties": {
+        "record_type": {"type": "string", "const": "implementation_validation"},
+        "schema_version": {"type": "string", "const": "1.0.0"},
+        "study_id": {"type": "string", "const": "e1-feasibility-separability"},
+        "development_only": {"type": "boolean", "const": true},
+        "selection_eligible": {"type": "boolean", "const": false},
+        "release_claim_allowed": {"type": "boolean", "const": false},
+        "base_commit": {"$ref": "#/$defs/sha1"},
+        "execution_commit": {"$ref": "#/$defs/sha1"},
+        "protocol_sha256": {"$ref": "#/$defs/sha256"},
+        "artifact_root": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "artifact_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "implementation_projection_sha256": {"$ref": "#/$defs/sha256"},
+        "upstream_artifacts": {"type": "array", "maxItems": 0},
+        "payload": {"$ref": "#/$defs/implementationValidationPayload"},
+        "record_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "dependencyEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "target", "kind"],
+      "properties": {
+        "source": {"type": "string", "minLength": 1},
+        "target": {"type": "string", "minLength": 1},
+        "kind": {
+          "type": "string",
+          "enum": ["direct", "runtime_transitive", "type_checking"]
+        }
+      }
+    },
+    "directImportAllowlist": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "known_transform_v2",
+        "study_artifacts_v2",
+        "study_cli_v2",
+        "study_inference_v2",
+        "study_protocol_v2",
+        "study_retention_v2",
+        "study_runner_v2",
+        "study_truth_v2"
+      ],
+      "properties": {
+        "known_transform_v2": {"$ref": "#/$defs/importArray"},
+        "study_artifacts_v2": {"$ref": "#/$defs/importArray"},
+        "study_cli_v2": {"$ref": "#/$defs/importArray"},
+        "study_inference_v2": {"$ref": "#/$defs/importArray"},
+        "study_protocol_v2": {"$ref": "#/$defs/importArray"},
+        "study_retention_v2": {"$ref": "#/$defs/importArray"},
+        "study_runner_v2": {"$ref": "#/$defs/importArray"},
+        "study_truth_v2": {"$ref": "#/$defs/importArray"}
+      }
+    },
+    "importArray": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "historyAudit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selection_raw_sha256",
+        "selection_record_sha256",
+        "outcome",
+        "selected_candidate_id",
+        "v1_history_outcome",
+        "v1_history_artifact_count"
+      ],
+      "properties": {
+        "selection_raw_sha256": {"$ref": "#/$defs/sha256"},
+        "selection_record_sha256": {"$ref": "#/$defs/sha256"},
+        "outcome": {"type": "string", "const": "HOLD"},
+        "selected_candidate_id": {"type": "null"},
+        "v1_history_outcome": {"type": "string", "const": "HOLD"},
+        "v1_history_artifact_count": {"type": "integer", "const": 9}
+      }
+    },
+    "retainedInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "path", "source_sha256", "copied_sha256", "byte_size"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": ["candidate_a", "candidate_b", "task_4_report", "sdd_progress"]
+        },
+        "path": {"$ref": "#/$defs/path"},
+        "source_sha256": {"$ref": "#/$defs/sha256"},
+        "copied_sha256": {"$ref": "#/$defs/sha256"},
+        "byte_size": {"type": "integer", "minimum": 1}
+      }
+    },
+    "dependencyReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "edges",
+        "forbidden_direct_edges",
+        "protected_scope_references",
+        "projection_sha256",
+        "direct_import_allowlist"
+      ],
+      "properties": {
+        "edges": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/dependencyEdge"}
+        },
+        "forbidden_direct_edges": {
+          "type": "array",
+          "maxItems": 0,
+          "items": {"$ref": "#/$defs/dependencyEdge"}
+        },
+        "protected_scope_references": {
+          "type": "array",
+          "maxItems": 0,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "projection_sha256": {"$ref": "#/$defs/sha256"},
+        "direct_import_allowlist": {"$ref": "#/$defs/directImportAllowlist"}
+      }
+    },
+    "seedDisjointness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "diagnostic_seed_start",
+        "diagnostic_seed_end",
+        "diagnostic_seed_count",
+        "declared_evaluation_seed_count",
+        "overlap_count",
+        "overlap_seeds"
+      ],
+      "properties": {
+        "diagnostic_seed_start": {"type": "integer", "const": 800000},
+        "diagnostic_seed_end": {"type": "integer", "const": 800107},
+        "diagnostic_seed_count": {"type": "integer", "const": 108},
+        "declared_evaluation_seed_count": {"type": "integer", "const": 528},
+        "overlap_count": {"type": "integer", "const": 0},
+        "overlap_seeds": {"type": "array", "maxItems": 0}
+      }
+    },
+    "classifications": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["Retain", "Isolate", "Re-review"],
+      "properties": {
+        "Retain": {
+          "const": [
+            "development diagnostic matrix",
+            "split guards",
+            "canonical metric calculations",
+            "truth-erasing runtime input",
+            "final-mask ownership mapping",
+            "v1 history verification",
+            "Task 4 negative evidence"
+          ]
+        },
+        "Isolate": {
+          "const": [
+            "Candidate A/B search and normalization",
+            "candidate ranking",
+            "candidate selection loader",
+            "candidate work caps",
+            "candidate-specific benchmarking and constants"
+          ]
+        },
+        "Re-review": {
+          "const": [
+            "candidate-coupled protocol fields",
+            "legacy development-template planning",
+            "ownership assumptions",
+            "any source whose change would invalidate the historical implementation projection"
+          ]
+        }
+      }
+    },
+    "retentionPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "history",
+        "retained_inputs",
+        "implementation_projection",
+        "dependency_report",
+        "seed_disjointness",
+        "classifications",
+        "passed"
+      ],
+      "properties": {
+        "history": {"$ref": "#/$defs/historyAudit"},
+        "retained_inputs": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/retainedInput"}
+        },
+        "implementation_projection": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/projectionEntry"}
+        },
+        "dependency_report": {"$ref": "#/$defs/dependencyReport"},
+        "seed_disjointness": {"$ref": "#/$defs/seedDisjointness"},
+        "classifications": {"$ref": "#/$defs/classifications"},
+        "passed": {"type": "boolean", "const": true}
+      }
+    },
+    "retentionAudit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_type",
+        "schema_version",
+        "study_id",
+        "development_only",
+        "selection_eligible",
+        "release_claim_allowed",
+        "base_commit",
+        "execution_commit",
+        "evidence_commit",
+        "protocol_sha256",
+        "artifact_root",
+        "artifact_schema_sha256",
+        "implementation_projection_sha256",
+        "upstream_artifacts",
+        "payload",
+        "record_sha256"
+      ],
+      "properties": {
+        "record_type": {"type": "string", "const": "retention_audit"},
+        "schema_version": {"type": "string", "const": "1.0.0"},
+        "study_id": {"type": "string", "const": "e1-feasibility-separability"},
+        "development_only": {"type": "boolean", "const": true},
+        "selection_eligible": {"type": "boolean", "const": false},
+        "release_claim_allowed": {"type": "boolean", "const": false},
+        "base_commit": {"$ref": "#/$defs/sha1"},
+        "execution_commit": {"$ref": "#/$defs/sha1"},
+        "evidence_commit": {"$ref": "#/$defs/sha1"},
+        "protocol_sha256": {"$ref": "#/$defs/sha256"},
+        "artifact_root": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "artifact_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "implementation_projection_sha256": {"$ref": "#/$defs/sha256"},
+        "upstream_artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {"$ref": "#/$defs/upstreamArtifact"}
+        },
+        "payload": {"$ref": "#/$defs/retentionPayload"},
+        "record_sha256": {"$ref": "#/$defs/sha256"}
+      }
     },
     "phase1Payload": {
       "type": "object",
@@ -23,28 +428,12 @@
         "trust_binding_rows"
       ],
       "properties": {
-        "phase": {
-          "const": "phase1"
-        },
-        "expected_members": {
-          "const": 108
-        },
-        "expected_modes": {
-          "const": [
-            "NEAREST",
-            "BILINEAR",
-            "BICUBIC"
-          ]
-        },
-        "expected_mode_count": {
-          "const": 3
-        },
-        "expected_inference_rows_per_mode": {
-          "const": 108
-        },
-        "trust_binding_rows": {
-          "const": 0
-        }
+        "phase": {"const": "phase1"},
+        "expected_members": {"const": 108},
+        "expected_modes": {"const": ["NEAREST", "BILINEAR", "BICUBIC"]},
+        "expected_mode_count": {"const": 3},
+        "expected_inference_rows_per_mode": {"const": 108},
+        "trust_binding_rows": {"const": 0}
       }
     },
     "phase2Payload": {
@@ -59,36 +448,18 @@
         "trust_binding_rows"
       ],
       "properties": {
-        "phase": {
-          "const": "phase2"
-        },
-        "expected_members": {
-          "const": 120
-        },
+        "phase": {"const": "phase2"},
+        "expected_members": {"const": 120},
         "expected_modes": {
           "type": "array",
           "minItems": 1,
           "maxItems": 3,
           "uniqueItems": true,
-          "items": {
-            "enum": [
-              "NEAREST",
-              "BILINEAR",
-              "BICUBIC"
-            ]
-          }
+          "items": {"enum": ["NEAREST", "BILINEAR", "BICUBIC"]}
         },
-        "expected_mode_count": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 3
-        },
-        "expected_inference_rows_per_mode": {
-          "const": 114
-        },
-        "trust_binding_rows": {
-          "const": 6
-        }
+        "expected_mode_count": {"type": "integer", "minimum": 1, "maximum": 3},
+        "expected_inference_rows_per_mode": {"const": 114},
+        "trust_binding_rows": {"const": 6}
       }
     },
     "phaseExecutionClaim": {
@@ -109,51 +480,23 @@
         "record_sha256"
       ],
       "properties": {
-        "record_type": {
-          "const": "phase_execution_claim"
-        },
-        "schema_version": {
-          "const": "1.0.0"
-        },
-        "study_id": {
-          "const": "e1-feasibility-separability"
-        },
-        "development_only": {
-          "const": true
-        },
-        "selection_eligible": {
-          "const": false
-        },
-        "release_claim_allowed": {
-          "const": false
-        },
-        "base_commit": {
-          "$ref": "#/$defs/sha1"
-        },
-        "execution_commit": {
-          "$ref": "#/$defs/sha1"
-        },
-        "protocol_sha256": {
-          "$ref": "#/$defs/sha256"
-        },
-        "artifact_root": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 4096
-        },
+        "record_type": {"const": "phase_execution_claim"},
+        "schema_version": {"const": "1.0.0"},
+        "study_id": {"const": "e1-feasibility-separability"},
+        "development_only": {"const": true},
+        "selection_eligible": {"const": false},
+        "release_claim_allowed": {"const": false},
+        "base_commit": {"$ref": "#/$defs/sha1"},
+        "execution_commit": {"$ref": "#/$defs/sha1"},
+        "protocol_sha256": {"$ref": "#/$defs/sha256"},
+        "artifact_root": {"type": "string", "minLength": 1, "maxLength": 4096},
         "payload": {
           "oneOf": [
-            {
-              "$ref": "#/$defs/phase1Payload"
-            },
-            {
-              "$ref": "#/$defs/phase2Payload"
-            }
+            {"$ref": "#/$defs/phase1Payload"},
+            {"$ref": "#/$defs/phase2Payload"}
           ]
         },
-        "record_sha256": {
-          "$ref": "#/$defs/sha256"
-        }
+        "record_sha256": {"$ref": "#/$defs/sha256"}
       }
     }
   }

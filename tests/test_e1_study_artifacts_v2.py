@@ -55,6 +55,187 @@ EXPECTED_PAYLOAD_FIELDS = {
     "trust_binding_rows",
 }
 
+EXPECTED_VALIDATION_COMMANDS = (
+    ("ruff", ["uv", "run", "ruff", "check", "."]),
+    ("mypy", ["uv", "run", "mypy", "src"]),
+    ("v0_1_regression", ["uv", "run", "pytest", "-q", "tests/test_e1_baseline.py"]),
+    ("pytest", ["uv", "run", "pytest", "-q"]),
+    ("web_check", ["npm", "--prefix", "web", "run", "check"]),
+    ("playwright", ["npm", "--prefix", "web", "run", "test:e2e"]),
+)
+EXPECTED_NOT_APPLICABLE_CONTROLS = (
+    ("bundle_verify_reimport_rate", "STUDY_PUBLISHES_NO_BUNDLE"),
+    ("dataset_split_hash_overlap", "PROTECTED_SPLIT_MEMBERS_NOT_ENUMERATED"),
+    ("same_seed_manifest_equivalence", "FULL_TWO_RUN_EQUIVALENCE_NOT_AUTHORIZED"),
+    ("revision_mismatch_publication_count", "STUDY_HAS_NO_RUNTIME_PUBLICATION_PATH"),
+    ("corrupted_evidence_publication_count", "STUDY_HAS_NO_RUNTIME_PUBLICATION_PATH"),
+)
+
+
+def _nonzero_sha(label: str) -> str:
+    return sha256_bytes(label.encode("utf-8"))
+
+
+def minimal_valid_implementation_validation_record(
+    protocol: StudyProtocolV2,
+) -> dict[str, object]:
+    command_records = [
+        {
+            "name": name,
+            "argv": argv,
+            "exit_code": 0,
+            "stdout_sha256": _nonzero_sha(f"{name}-stdout"),
+            "stderr_sha256": _nonzero_sha(f"{name}-stderr"),
+            "started_at_utc": "2026-08-01T00:00:00Z",
+            "ended_at_utc": "2026-08-01T00:00:01Z",
+        }
+        for name, argv in EXPECTED_VALIDATION_COMMANDS
+    ]
+    controls = [
+        StudyGateRecord(
+            name=name,
+            status="NOT_APPLICABLE",
+            numerator=None,
+            denominator=None,
+            observed=None,
+            operator=None,
+            threshold=None,
+            reason=reason,
+        ).as_record()
+        for name, reason in EXPECTED_NOT_APPLICABLE_CONTROLS
+    ]
+    mode_hashes = {mode: _nonzero_sha(mode) for mode in ("NEAREST", "BILINEAR", "BICUBIC")}
+    return {
+        "record_type": "implementation_validation",
+        "schema_version": "1.0.0",
+        "study_id": "e1-feasibility-separability",
+        "development_only": True,
+        "selection_eligible": False,
+        "release_claim_allowed": False,
+        "base_commit": protocol.base_commit,
+        "execution_commit": EXECUTION_COMMIT,
+        "protocol_sha256": protocol.configuration_sha256,
+        "artifact_root": protocol.artifact_root.as_posix(),
+        "artifact_schema_sha256": _nonzero_sha("artifact-schema"),
+        "implementation_projection_sha256": _nonzero_sha("implementation-projection"),
+        "upstream_artifacts": [],
+        "payload": {
+            "worktree_clean": True,
+            "commands": command_records,
+            "determinism_control": {
+                "first_projection": mode_hashes,
+                "second_projection": dict(mode_hashes),
+                "passed": True,
+            },
+            "not_applicable_controls": controls,
+            "passed": True,
+        },
+        "record_sha256": ZERO_SHA256,
+    }
+
+
+def minimal_valid_retention_audit_record(
+    protocol: StudyProtocolV2,
+) -> dict[str, object]:
+    projection = [{"path": "Makefile", "sha256": _nonzero_sha("Makefile")}]
+    projection_sha256 = canonical_json_hash(projection)
+    retained = [
+        ("candidate_a", "retained-inputs/candidate-a.json"),
+        ("candidate_b", "retained-inputs/candidate-b.json"),
+        ("task_4_report", "retained-inputs/task-4-report.md"),
+        ("sdd_progress", "retained-inputs/sdd-progress.md"),
+    ]
+    return {
+        "record_type": "retention_audit",
+        "schema_version": "1.0.0",
+        "study_id": "e1-feasibility-separability",
+        "development_only": True,
+        "selection_eligible": False,
+        "release_claim_allowed": False,
+        "base_commit": protocol.base_commit,
+        "execution_commit": EXECUTION_COMMIT,
+        "evidence_commit": "b" * 40,
+        "protocol_sha256": protocol.configuration_sha256,
+        "artifact_root": protocol.artifact_root.as_posix(),
+        "artifact_schema_sha256": _nonzero_sha("artifact-schema"),
+        "implementation_projection_sha256": projection_sha256,
+        "upstream_artifacts": [
+            {
+                "path": "implementation-validation.json",
+                "raw_sha256": _nonzero_sha("validation-raw"),
+                "record_sha256": _nonzero_sha("validation-record"),
+            }
+        ],
+        "payload": {
+            "history": {
+                "selection_raw_sha256": protocol.source_hashes["selection_raw_sha256"],
+                "selection_record_sha256": protocol.source_hashes[
+                    "selection_record_sha256"
+                ],
+                "outcome": "HOLD",
+                "selected_candidate_id": None,
+                "v1_history_outcome": "HOLD",
+                "v1_history_artifact_count": 9,
+            },
+            "retained_inputs": [
+                {
+                    "name": name,
+                    "path": path,
+                    "source_sha256": _nonzero_sha(name),
+                    "copied_sha256": _nonzero_sha(name),
+                    "byte_size": 1,
+                }
+                for name, path in retained
+            ],
+            "implementation_projection": projection,
+            "dependency_report": {
+                "edges": [],
+                "forbidden_direct_edges": [],
+                "protected_scope_references": [],
+                "projection_sha256": projection_sha256,
+                "direct_import_allowlist": {
+                    name: list(imports)
+                    for name, imports in protocol.direct_import_allowlist().items()
+                },
+            },
+            "seed_disjointness": {
+                "diagnostic_seed_start": 800000,
+                "diagnostic_seed_end": 800107,
+                "diagnostic_seed_count": 108,
+                "declared_evaluation_seed_count": 528,
+                "overlap_count": 0,
+                "overlap_seeds": [],
+            },
+            "classifications": {
+                "Retain": [
+                    "development diagnostic matrix",
+                    "split guards",
+                    "canonical metric calculations",
+                    "truth-erasing runtime input",
+                    "final-mask ownership mapping",
+                    "v1 history verification",
+                    "Task 4 negative evidence",
+                ],
+                "Isolate": [
+                    "Candidate A/B search and normalization",
+                    "candidate ranking",
+                    "candidate selection loader",
+                    "candidate work caps",
+                    "candidate-specific benchmarking and constants",
+                ],
+                "Re-review": [
+                    "candidate-coupled protocol fields",
+                    "legacy development-template planning",
+                    "ownership assumptions",
+                    "any source whose change would invalidate the historical "
+                    "implementation projection",
+                ],
+            },
+            "passed": True,
+        },
+        "record_sha256": ZERO_SHA256,
+    }
+
 
 @pytest.fixture(scope="module")
 def protocol() -> StudyProtocolV2:
@@ -440,15 +621,17 @@ def test_schema_is_closed_at_envelope_and_payload(
         validate_study_schema(payload_extra)
 
 
-def test_schema_has_only_the_execution_claim_variant(
+def test_schema_registers_the_task_6_variants(
     protocol: StudyProtocolV2,
 ) -> None:
     schema = load_strict_json_object(STUDY_ARTIFACT_SCHEMA_PATH.read_bytes())
     definitions = cast(dict[str, object], schema["$defs"])
-    assert "phaseExecutionClaim" in definitions
-    assert not {
+    assert {
+        "phaseExecutionClaim",
         "implementationValidation",
         "retentionAudit",
+    }.issubset(definitions)
+    assert not {
         "scopeAudit",
         "diagnosticStudy",
         "featureOwnershipOracle",
@@ -461,6 +644,49 @@ def test_schema_has_only_the_execution_claim_variant(
     wrong_variant = finalize_study_record(wrong_variant)
     with pytest.raises(StudyArtifactError, match="schema"):
         validate_study_schema(wrong_variant)
+
+
+@pytest.mark.parametrize(
+    "builder",
+    [minimal_valid_implementation_validation_record, minimal_valid_retention_audit_record],
+)
+def test_task_6_schema_variants_are_closed_at_envelope_and_payload(
+    protocol: StudyProtocolV2,
+    builder: Any,
+) -> None:
+    valid = finalize_study_record(builder(protocol))
+    validate_study_schema(valid)
+
+    envelope_extra = deepcopy(valid)
+    envelope_extra["unexpected"] = True
+    with pytest.raises(StudyArtifactError, match="schema"):
+        validate_study_schema(finalize_study_record(envelope_extra))
+
+    payload_extra = deepcopy(valid)
+    cast(dict[str, object], payload_extra["payload"])["unexpected"] = True
+    with pytest.raises(StudyArtifactError, match="schema"):
+        validate_study_schema(finalize_study_record(payload_extra))
+
+
+def test_task_6_upstream_items_are_closed_and_validation_has_none(
+    protocol: StudyProtocolV2,
+) -> None:
+    validation = minimal_valid_implementation_validation_record(protocol)
+    validation["upstream_artifacts"] = [
+        {
+            "path": "unexpected.json",
+            "raw_sha256": _nonzero_sha("raw"),
+            "record_sha256": _nonzero_sha("record"),
+        }
+    ]
+    with pytest.raises(StudyArtifactError, match="schema"):
+        validate_study_schema(finalize_study_record(validation))
+
+    retention = minimal_valid_retention_audit_record(protocol)
+    upstream = cast(list[dict[str, object]], retention["upstream_artifacts"])[0]
+    upstream["unexpected"] = True
+    with pytest.raises(StudyArtifactError, match="schema"):
+        validate_study_schema(finalize_study_record(retention))
 
 
 def test_schema_rejects_phase_contract_drift(protocol: StudyProtocolV2) -> None:
