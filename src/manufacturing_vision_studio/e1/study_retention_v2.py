@@ -339,6 +339,7 @@ class UpstreamArtifact:
 class ValidationCommand:
     name: str
     argv: tuple[str, ...]
+    executable_lookup_path: str
     exit_code: int
     stdout_sha256: str
     stderr_sha256: str
@@ -1623,7 +1624,11 @@ def _contains_control_character(value: str) -> bool:
     return any(ord(character) < 32 or ord(character) == 127 for character in value)
 
 
-def _verify_sanitized_environment(value: object) -> Mapping[str, str]:
+def _verify_sanitized_environment(
+    value: object,
+    *,
+    expected_path: str,
+) -> Mapping[str, str]:
     if not isinstance(value, dict) or set(value) != set(_SANITIZED_ENVIRONMENT_KEYS):
         raise StudyRetentionError("implementation validation command environment is invalid")
     raw = cast(dict[str, object], value)
@@ -1644,9 +1649,44 @@ def _verify_sanitized_environment(value: object) -> Mapping[str, str]:
         environment["TMPDIR"]
     ).is_absolute():
         raise StudyRetentionError("implementation validation command environment path is relative")
-    if not environment["PATH"].endswith(_SYSTEM_PATH_SUFFIX):
+    if environment["PATH"] != expected_path:
         raise StudyRetentionError("implementation validation command environment PATH is invalid")
     return MappingProxyType(environment)
+
+
+def _verify_executable_lookup_path(value: object, *, expected_name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.startswith("/")
+        or len(value) > 4096
+        or ":" in value
+        or _contains_control_character(value)
+    ):
+        raise StudyRetentionError("implementation validation executable lookup path is invalid")
+    components = value.split("/")[1:]
+    if not components or any(component in {"", ".", ".."} for component in components):
+        raise StudyRetentionError("implementation validation executable lookup path is invalid")
+    lookup_path = PurePosixPath(value)
+    if (
+        not lookup_path.is_absolute()
+        or lookup_path.as_posix() != value
+        or lookup_path.name != expected_name
+    ):
+        raise StudyRetentionError("implementation validation executable lookup path is invalid")
+    return value
+
+
+def _expected_validation_environment_path(lookup_paths: tuple[str, ...]) -> str:
+    uv_paths = lookup_paths[:4]
+    npm_paths = lookup_paths[4:]
+    if len(set(uv_paths)) != 1 or len(set(npm_paths)) != 1:
+        raise StudyRetentionError("implementation validation executable lookup paths differ")
+    dynamic_parents: list[str] = []
+    for lookup_path in (uv_paths[0], npm_paths[0]):
+        parent = PurePosixPath(lookup_path).parent.as_posix()
+        if parent not in dynamic_parents:
+            dynamic_parents.append(parent)
+    return f"{':'.join(dynamic_parents)}:{_SYSTEM_PATH_SUFFIX}"
 
 
 def _validation_byte_count(command: Mapping[str, object], field_name: str) -> int:
@@ -1659,7 +1699,8 @@ def _validation_byte_count(command: Mapping[str, object], field_name: str) -> in
 def _verify_validation_commands(value: object) -> tuple[ValidationCommand, ...]:
     if not isinstance(value, list) or len(value) != len(IMPLEMENTATION_VALIDATION_COMMANDS):
         raise StudyRetentionError("implementation validation commands are incomplete")
-    commands: list[ValidationCommand] = []
+    raw_commands: list[dict[str, object]] = []
+    lookup_paths: list[str] = []
     for ordinal, ((expected_name, expected_argv), raw) in enumerate(
         zip(IMPLEMENTATION_VALIDATION_COMMANDS, value, strict=True)
     ):
@@ -1670,6 +1711,19 @@ def _verify_validation_commands(value: object) -> tuple[ValidationCommand, ...]:
             raise StudyRetentionError(
                 f"implementation validation command {ordinal} does not match"
             )
+        lookup_paths.append(
+            _verify_executable_lookup_path(
+                command.get("executable_lookup_path"),
+                expected_name=expected_argv[0],
+            )
+        )
+        raw_commands.append(command)
+    expected_environment_path = _expected_validation_environment_path(tuple(lookup_paths))
+    commands: list[ValidationCommand] = []
+    shared_environment: Mapping[str, str] | None = None
+    for ordinal, ((expected_name, expected_argv), command) in enumerate(
+        zip(IMPLEMENTATION_VALIDATION_COMMANDS, raw_commands, strict=True)
+    ):
         if command.get("exit_code") != 0:
             raise StudyRetentionError("implementation validation command did not pass")
         expected_timeout = IMPLEMENTATION_VALIDATION_TIMEOUT_SECONDS[ordinal]
@@ -1683,7 +1737,14 @@ def _verify_validation_commands(value: object) -> tuple[ValidationCommand, ...]:
             raise StudyRetentionError("implementation validation command audit metadata is invalid")
         stdout_byte_count = _validation_byte_count(command, "stdout_byte_count")
         stderr_byte_count = _validation_byte_count(command, "stderr_byte_count")
-        environment = _verify_sanitized_environment(command.get("sanitized_environment"))
+        environment = _verify_sanitized_environment(
+            command.get("sanitized_environment"),
+            expected_path=expected_environment_path,
+        )
+        if shared_environment is None:
+            shared_environment = environment
+        elif environment != shared_environment:
+            raise StudyRetentionError("implementation validation command environments differ")
         stdout_sha256 = _required_hash(command, "stdout_sha256")
         stderr_sha256 = _required_hash(command, "stderr_sha256")
         started = _required_string(command, "started_at_utc")
@@ -1694,6 +1755,7 @@ def _verify_validation_commands(value: object) -> tuple[ValidationCommand, ...]:
             ValidationCommand(
                 name=expected_name,
                 argv=expected_argv,
+                executable_lookup_path=lookup_paths[ordinal],
                 exit_code=0,
                 stdout_sha256=stdout_sha256,
                 stderr_sha256=stderr_sha256,

@@ -66,9 +66,17 @@ EXPECTED_VALIDATION_COMMANDS = (
     ("playwright", ["npm", "--prefix", "web", "run", "test:e2e"]),
 )
 EXPECTED_VALIDATION_TIMEOUTS = (300, 300, 600, 1800, 600, 900)
+EXPECTED_VALIDATION_EXECUTABLE_LOOKUP_PATHS = (
+    "/opt/e1-study/uv/bin/uv",
+    "/opt/e1-study/uv/bin/uv",
+    "/opt/e1-study/uv/bin/uv",
+    "/opt/e1-study/uv/bin/uv",
+    "/opt/e1-study/npm/bin/npm",
+    "/opt/e1-study/npm/bin/npm",
+)
 EXPECTED_SANITIZED_ENVIRONMENT = {
     "HOME": "/tmp/e1-study-home",
-    "PATH": "/opt/e1-study/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "PATH": "/opt/e1-study/uv/bin:/opt/e1-study/npm/bin:/usr/bin:/bin:/usr/sbin:/sbin",
     "TMPDIR": "/tmp/e1-study",
     "LANG": "C.UTF-8",
     "LC_ALL": "C.UTF-8",
@@ -99,6 +107,7 @@ def _nonzero_sha(label: str) -> str:
 
 def _task_7a_validation_command_audit_metadata(ordinal: int) -> dict[str, object]:
     return {
+        "executable_lookup_path": EXPECTED_VALIDATION_EXECUTABLE_LOOKUP_PATHS[ordinal],
         "cwd": ".",
         "shell": False,
         "timeout_seconds": EXPECTED_VALIDATION_TIMEOUTS[ordinal],
@@ -115,6 +124,23 @@ def _task_7a_add_validation_command_audit_metadata(record: dict[str, object]) ->
     commands = cast(list[dict[str, object]], payload["commands"])
     for ordinal, command in enumerate(commands):
         command.update(_task_7a_validation_command_audit_metadata(ordinal))
+
+
+def _task_7a_set_validation_executable_contract(
+    record: dict[str, object],
+    *,
+    uv_lookup_path: str,
+    npm_lookup_path: str,
+    environment_path: str,
+) -> None:
+    payload = cast(dict[str, object], record["payload"])
+    commands = cast(list[dict[str, object]], payload["commands"])
+    for ordinal, command in enumerate(commands):
+        command["executable_lookup_path"] = (
+            uv_lookup_path if ordinal < 4 else npm_lookup_path
+        )
+        environment = cast(dict[str, object], command["sanitized_environment"])
+        environment["PATH"] = environment_path
 
 
 def minimal_valid_implementation_validation_record(
@@ -765,6 +791,96 @@ def test_task_7a_fix1_validation_command_audit_contract_rejects_schema_tamper(
         command["stdout_byte_count"] = 4_194_305
     else:
         command["stderr_byte_count"] = 4_194_305
+
+    with pytest.raises(StudyArtifactError, match="schema"):
+        validate_study_schema(finalize_study_record(record))
+
+
+def test_task_7a_fix2_schema_rejects_unbound_validation_path_prefix(
+    protocol: StudyProtocolV2,
+) -> None:
+    record = minimal_valid_implementation_validation_record(protocol)
+    _task_7a_add_validation_command_audit_metadata(record)
+    payload = cast(dict[str, object], record["payload"])
+    commands = cast(list[dict[str, object]], payload["commands"])
+    for command in commands:
+        environment = cast(dict[str, object], command["sanitized_environment"])
+        current_path = environment["PATH"]
+        assert isinstance(current_path, str)
+        environment["PATH"] = f"/tmp/evil-bin:{current_path}"
+
+    with pytest.raises(StudyArtifactError, match="schema"):
+        validate_study_schema(finalize_study_record(record))
+
+
+@pytest.mark.parametrize(
+    ("uv_lookup_path", "npm_lookup_path", "environment_path"),
+    [
+        (
+            "/opt/e1-uv/bin/uv",
+            "/opt/e1-node/bin/npm",
+            "/opt/e1-uv/bin:/opt/e1-node/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        ),
+        (
+            "/opt/e1-tools/bin/uv",
+            "/opt/e1-tools/bin/npm",
+            "/opt/e1-tools/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        ),
+        (
+            "/Users/study/.local/bin/uv",
+            "/opt/homebrew/bin/npm",
+            "/Users/study/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        ),
+    ],
+    ids=("distinct-parents", "same-parent", "homebrew-lexical-path"),
+)
+def test_task_7a_fix2_schema_accepts_closed_executable_lookup_contract(
+    protocol: StudyProtocolV2,
+    uv_lookup_path: str,
+    npm_lookup_path: str,
+    environment_path: str,
+) -> None:
+    record = minimal_valid_implementation_validation_record(protocol)
+    _task_7a_add_validation_command_audit_metadata(record)
+    _task_7a_set_validation_executable_contract(
+        record,
+        uv_lookup_path=uv_lookup_path,
+        npm_lookup_path=npm_lookup_path,
+        environment_path=environment_path,
+    )
+
+    validate_study_schema(finalize_study_record(record))
+
+
+@pytest.mark.parametrize(
+    ("variant", "lookup_path"),
+    [
+        ("missing", None),
+        ("extra", "/opt/e1-study/uv/bin/uv"),
+        ("empty", ""),
+        ("relative", "opt/e1-study/uv/bin/uv"),
+        ("control", "/opt/e1-study/uv\n/bin/uv"),
+        ("colon", "/opt/e1-study:shadow/uv"),
+        ("empty-component", "/opt/e1-study//bin/uv"),
+        ("dot-component", "/opt/e1-study/./bin/uv"),
+        ("dot-dot-component", "/opt/e1-study/tools/../bin/uv"),
+    ],
+)
+def test_task_7a_fix2_schema_rejects_unsafe_executable_lookup_path(
+    protocol: StudyProtocolV2,
+    variant: str,
+    lookup_path: str | None,
+) -> None:
+    record = minimal_valid_implementation_validation_record(protocol)
+    _task_7a_add_validation_command_audit_metadata(record)
+    payload = cast(dict[str, object], record["payload"])
+    command = cast(list[dict[str, object]], payload["commands"])[0]
+    if variant == "missing":
+        command.pop("executable_lookup_path")
+    elif variant == "extra":
+        command["canonical_executable_path"] = lookup_path
+    else:
+        command["executable_lookup_path"] = lookup_path
 
     with pytest.raises(StudyArtifactError, match="schema"):
         validate_study_schema(finalize_study_record(record))

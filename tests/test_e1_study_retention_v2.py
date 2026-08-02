@@ -43,9 +43,17 @@ EXPECTED_COMMANDS = (
     ("playwright", ("npm", "--prefix", "web", "run", "test:e2e")),
 )
 EXPECTED_COMMAND_TIMEOUTS = (300, 300, 600, 1800, 600, 900)
+EXPECTED_EXECUTABLE_LOOKUP_PATHS = (
+    "/opt/e1-study/uv/bin/uv",
+    "/opt/e1-study/uv/bin/uv",
+    "/opt/e1-study/uv/bin/uv",
+    "/opt/e1-study/uv/bin/uv",
+    "/opt/e1-study/npm/bin/npm",
+    "/opt/e1-study/npm/bin/npm",
+)
 EXPECTED_SANITIZED_ENVIRONMENT = {
     "HOME": "/tmp/e1-study-home",
-    "PATH": "/opt/e1-study/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "PATH": "/opt/e1-study/uv/bin:/opt/e1-study/npm/bin:/usr/bin:/bin:/usr/sbin:/sbin",
     "TMPDIR": "/tmp/e1-study",
     "LANG": "C.UTF-8",
     "LC_ALL": "C.UTF-8",
@@ -159,6 +167,7 @@ def _audited_validation_commands() -> list[dict[str, object]]:
         {
             "name": name,
             "argv": list(argv),
+            "executable_lookup_path": EXPECTED_EXECUTABLE_LOOKUP_PATHS[ordinal],
             "exit_code": 0,
             "stdout_sha256": sha256_bytes(f"{name}-stdout".encode()),
             "stderr_sha256": sha256_bytes(f"{name}-stderr".encode()),
@@ -175,6 +184,21 @@ def _audited_validation_commands() -> list[dict[str, object]]:
         }
         for ordinal, (name, argv) in enumerate(EXPECTED_COMMANDS)
     ]
+
+
+def _set_validation_executable_contract(
+    commands: list[dict[str, object]],
+    *,
+    uv_lookup_path: str,
+    npm_lookup_path: str,
+    environment_path: str,
+) -> None:
+    for ordinal, command in enumerate(commands):
+        command["executable_lookup_path"] = (
+            uv_lookup_path if ordinal < 4 else npm_lookup_path
+        )
+        environment = cast(dict[str, object], command["sanitized_environment"])
+        environment["PATH"] = environment_path
 
 
 def _validation_document(
@@ -440,6 +464,9 @@ def test_task_7a_fix1_validation_command_audit_contract_returns_verified_metadat
     assert commands[0].timed_out is False
     assert commands[0].stdout_byte_count == 0
     assert commands[0].stderr_byte_count == 0
+    assert tuple(command.executable_lookup_path for command in commands) == (
+        EXPECTED_EXECUTABLE_LOOKUP_PATHS
+    )
     assert dict(commands[0].sanitized_environment) == EXPECTED_SANITIZED_ENVIRONMENT
     with pytest.raises(TypeError):
         cast(dict[str, str], commands[0].sanitized_environment)["LANG"] = "poisoned"
@@ -497,6 +524,170 @@ def test_task_7a_fix1_validation_command_audit_contract_rejects_semantic_tamper(
         command["stderr_byte_count"] = 4_194_305
 
     with pytest.raises(StudyRetentionError, match=r"validation command|environment|byte count"):
+        retention_module._verify_validation_commands(commands)
+
+
+def test_task_7a_fix2_validation_commands_reject_unbound_path_prefix() -> None:
+    commands = _audited_validation_commands()
+    for command in commands:
+        environment = cast(dict[str, object], command["sanitized_environment"])
+        current_path = environment["PATH"]
+        assert isinstance(current_path, str)
+        environment["PATH"] = f"/tmp/evil-bin:{current_path}"
+
+    with pytest.raises(StudyRetentionError, match="environment PATH"):
+        retention_module._verify_validation_commands(commands)
+
+
+@pytest.mark.parametrize(
+    ("uv_lookup_path", "npm_lookup_path", "environment_path"),
+    [
+        (
+            "/opt/e1-uv/bin/uv",
+            "/opt/e1-node/bin/npm",
+            "/opt/e1-uv/bin:/opt/e1-node/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        ),
+        (
+            "/opt/e1-tools/bin/uv",
+            "/opt/e1-tools/bin/npm",
+            "/opt/e1-tools/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        ),
+        (
+            "/Users/study/.local/bin/uv",
+            "/opt/homebrew/bin/npm",
+            "/Users/study/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        ),
+    ],
+    ids=("distinct-parents", "same-parent", "homebrew-lexical-path"),
+)
+def test_task_7a_fix2_validation_commands_accept_bound_executable_paths(
+    uv_lookup_path: str,
+    npm_lookup_path: str,
+    environment_path: str,
+) -> None:
+    commands = _audited_validation_commands()
+    _set_validation_executable_contract(
+        commands,
+        uv_lookup_path=uv_lookup_path,
+        npm_lookup_path=npm_lookup_path,
+        environment_path=environment_path,
+    )
+
+    verified = retention_module._verify_validation_commands(commands)
+
+    assert tuple(command.executable_lookup_path for command in verified) == (
+        uv_lookup_path,
+        uv_lookup_path,
+        uv_lookup_path,
+        uv_lookup_path,
+        npm_lookup_path,
+        npm_lookup_path,
+    )
+    assert all(
+        dict(command.sanitized_environment) == dict(verified[0].sanitized_environment)
+        for command in verified
+    )
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "missing_lookup_path",
+        "empty_lookup_path",
+        "relative_lookup_path",
+        "control_lookup_path",
+        "colon_lookup_path",
+        "empty_component_lookup_path",
+        "dot_component_lookup_path",
+        "dot_dot_component_lookup_path",
+        "wrong_basename",
+        "one_uv_lookup_drift",
+        "one_npm_lookup_drift",
+        "extra_path_prefix",
+        "missing_uv_parent",
+        "reordered_dynamic_parents",
+        "uv_parent_substitution",
+        "npm_parent_substitution",
+        "fixed_suffix_drift",
+        "one_command_path_drift",
+        "one_command_home_drift",
+        "one_command_tmpdir_drift",
+    ],
+)
+def test_task_7a_fix2_validation_commands_reject_executable_environment_drift(
+    variant: str,
+) -> None:
+    commands = _audited_validation_commands()
+    if variant == "missing_lookup_path":
+        commands[0].pop("executable_lookup_path")
+    elif variant == "empty_lookup_path":
+        commands[0]["executable_lookup_path"] = ""
+    elif variant == "relative_lookup_path":
+        commands[0]["executable_lookup_path"] = "opt/e1-study/uv/bin/uv"
+    elif variant == "control_lookup_path":
+        commands[0]["executable_lookup_path"] = "/opt/e1-study/uv\n/bin/uv"
+    elif variant == "colon_lookup_path":
+        commands[0]["executable_lookup_path"] = "/opt/e1-study:shadow/uv"
+    elif variant == "empty_component_lookup_path":
+        commands[0]["executable_lookup_path"] = "/opt/e1-study//bin/uv"
+    elif variant == "dot_component_lookup_path":
+        commands[0]["executable_lookup_path"] = "/opt/e1-study/./bin/uv"
+    elif variant == "dot_dot_component_lookup_path":
+        commands[0]["executable_lookup_path"] = "/opt/e1-study/tools/../bin/uv"
+    elif variant == "wrong_basename":
+        commands[0]["executable_lookup_path"] = "/opt/e1-study/uv/bin/npm"
+    elif variant == "one_uv_lookup_drift":
+        commands[1]["executable_lookup_path"] = "/opt/other-uv/bin/uv"
+    elif variant == "one_npm_lookup_drift":
+        commands[5]["executable_lookup_path"] = "/opt/other-npm/bin/npm"
+    elif variant == "extra_path_prefix":
+        for command in commands:
+            environment = cast(dict[str, object], command["sanitized_environment"])
+            environment["PATH"] = f"/tmp/evil-bin:{EXPECTED_SANITIZED_ENVIRONMENT['PATH']}"
+    elif variant == "missing_uv_parent":
+        for command in commands:
+            environment = cast(dict[str, object], command["sanitized_environment"])
+            environment["PATH"] = "/opt/e1-study/npm/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    elif variant == "reordered_dynamic_parents":
+        for command in commands:
+            environment = cast(dict[str, object], command["sanitized_environment"])
+            environment["PATH"] = (
+                "/opt/e1-study/npm/bin:/opt/e1-study/uv/bin:"
+                "/usr/bin:/bin:/usr/sbin:/sbin"
+            )
+    elif variant == "uv_parent_substitution":
+        for command in commands:
+            environment = cast(dict[str, object], command["sanitized_environment"])
+            environment["PATH"] = (
+                "/tmp/substitute:/opt/e1-study/npm/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            )
+    elif variant == "npm_parent_substitution":
+        for command in commands:
+            environment = cast(dict[str, object], command["sanitized_environment"])
+            environment["PATH"] = (
+                "/opt/e1-study/uv/bin:/tmp/substitute:/usr/bin:/bin:/usr/sbin:/sbin"
+            )
+    elif variant == "fixed_suffix_drift":
+        for command in commands:
+            environment = cast(dict[str, object], command["sanitized_environment"])
+            environment["PATH"] = (
+                "/opt/e1-study/uv/bin:/opt/e1-study/npm/bin:"
+                "/usr/bin:/bin:/usr/sbin:/usr/local/sbin"
+            )
+    elif variant == "one_command_path_drift":
+        environment = cast(dict[str, object], commands[2]["sanitized_environment"])
+        environment["PATH"] = f"/tmp/evil-bin:{EXPECTED_SANITIZED_ENVIRONMENT['PATH']}"
+    elif variant == "one_command_home_drift":
+        environment = cast(dict[str, object], commands[2]["sanitized_environment"])
+        environment["HOME"] = "/tmp/other-home"
+    else:
+        environment = cast(dict[str, object], commands[2]["sanitized_environment"])
+        environment["TMPDIR"] = "/tmp/other-tmpdir"
+
+    with pytest.raises(
+        StudyRetentionError,
+        match=r"executable lookup path|environment PATH|environments",
+    ):
         retention_module._verify_validation_commands(commands)
 
 

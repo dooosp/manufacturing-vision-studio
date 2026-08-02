@@ -63,6 +63,12 @@
         "reason": {"type": "string", "minLength": 1}
       }
     },
+    "validationExecutableLookupPath": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 4096,
+      "pattern": "^/(?!.*[\\u0000-\\u001F\\u007F:])(?!(?:[^/]+/)*(?:\\.|\\.\\.)(?:/|$))(?:[^/]+/)*(?:uv|npm)$"
+    },
     "sanitizedEnvironment": {
       "type": "object",
       "additionalProperties": false,
@@ -88,7 +94,7 @@
         "HOME": {"type": "string", "pattern": "^/[^\\u0000-\\u001F\\u007F]*$"},
         "PATH": {
           "type": "string",
-          "pattern": "^(?!.*[\\u0000-\\u001F\\u007F]).*/usr/bin:/bin:/usr/sbin:/sbin$"
+          "pattern": "^(?!.*[\\u0000-\\u001F\\u007F])/(?:[^/:]+/)*[^/:]+:(?:/(?:[^/:]+/)*[^/:]+:)?/usr/bin:/bin:/usr/sbin:/sbin$"
         },
         "TMPDIR": {"type": "string", "pattern": "^/[^\\u0000-\\u001F\\u007F]*$"},
         "LANG": {"const": "C.UTF-8"},
@@ -112,6 +118,7 @@
       "required": [
         "name",
         "argv",
+        "executable_lookup_path",
         "exit_code",
         "stdout_sha256",
         "stderr_sha256",
@@ -133,6 +140,7 @@
           "minItems": 1,
           "items": {"type": "string", "minLength": 1}
         },
+        "executable_lookup_path": {"$ref": "#/$defs/validationExecutableLookupPath"},
         "exit_code": {"type": "integer", "const": 0},
         "stdout_sha256": {"$ref": "#/$defs/sha256"},
         "stderr_sha256": {"$ref": "#/$defs/sha256"},
