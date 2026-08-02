@@ -134,6 +134,9 @@ _FORBIDDEN_CALL_NAMES = frozenset(
     }
 )
 _PROTECTED_SCOPES = frozenset({"SMOKE", "CALIBRATION", "RELEASE_TEST"})
+_PROJECTED_PACKAGE_ROOTS = frozenset(
+    {"manufacturing_vision_studio", "manufacturing_vision_studio.e1"}
+)
 _RETAIN = (
     "development diagnostic matrix",
     "split guards",
@@ -406,7 +409,12 @@ class _ImportVisitor(ast.NodeVisitor):
         self.references: list[_ImportReference] = []
         self.protected: list[str] = []
         self.forbidden_calls: list[str] = []
+        self.study_forbidden_calls: list[str] = []
+        self.closure_errors: list[str] = []
         self.class_stack: list[str] = []
+        self.function_stack: list[str] = []
+        self.importlib_module_names: set[str] = set()
+        self.import_module_names: set[str] = set()
 
     def visit_If(self, node: ast.If) -> None:
         if _is_type_checking_test(node.test):
@@ -424,8 +432,20 @@ class _ImportVisitor(ast.NodeVisitor):
         self.generic_visit(node)
         self.class_stack.pop()
 
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.function_stack.append(node.name)
+        self.generic_visit(node)
+        self.function_stack.pop()
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.function_stack.append(node.name)
+        self.generic_visit(node)
+        self.function_stack.pop()
+
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
+            if alias.name == "importlib":
+                self.importlib_module_names.add(alias.asname or alias.name)
             target = _nearest_known_module(alias.name, self.known_modules)
             if target is not None:
                 self.references.append(
@@ -433,11 +453,25 @@ class _ImportVisitor(ast.NodeVisitor):
                 )
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.level == 0 and node.module == "importlib":
+            for alias in node.names:
+                if alias.name == "import_module":
+                    self.import_module_names.add(alias.asname or alias.name)
         base = _resolve_import_from_base(self.source_module, node.module, node.level)
         if base is None:
             return
         for alias in node.names:
             candidate = f"{base}.{alias.name}" if alias.name != "*" else base
+            if (
+                base in _PROJECTED_PACKAGE_ROOTS
+                and candidate not in self.known_modules
+                and self.type_checking_depth == 0
+            ):
+                self.closure_errors.append(
+                    f"{self.source_module}:{node.lineno}:unresolved package symbol import: "
+                    f"{candidate}"
+                )
+                continue
             target = _nearest_known_module(candidate, self.known_modules)
             if target is None:
                 target = _nearest_known_module(base, self.known_modules)
@@ -456,6 +490,12 @@ class _ImportVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
+        if _is_dynamic_import_call(
+            node.func,
+            importlib_module_names=self.importlib_module_names,
+            import_module_names=self.import_module_names,
+        ):
+            self._visit_dynamic_import(node)
         name = _call_name(node.func)
         if (
             name == "plan_cases"
@@ -466,12 +506,40 @@ class _ImportVisitor(ast.NodeVisitor):
             )
             and not _is_allowed_legacy_v1_plan(self.source_module, node)
         ):
-            self.forbidden_calls.append(
+            self.study_forbidden_calls.append(
                 f"{self.source_module}:{node.lineno}:plan_cases outside DevelopmentCorpusProvider"
             )
         elif name in _FORBIDDEN_CALL_NAMES or name == "FreeCADExportAdapter":
             self.forbidden_calls.append(f"{self.source_module}:{node.lineno}:{name}")
         self.generic_visit(node)
+
+    def _visit_dynamic_import(self, node: ast.Call) -> None:
+        if not node.args:
+            return
+        target_node = node.args[0]
+        if isinstance(target_node, ast.Constant) and isinstance(target_node.value, str):
+            target = target_node.value
+            if not _is_package_target(target):
+                return
+            if target not in self.known_modules:
+                self.closure_errors.append(
+                    f"{self.source_module}:{node.lineno}:"
+                    f"unresolved dynamic package import: {target}"
+                )
+                return
+            self.references.append(
+                _ImportReference(target, self.type_checking_depth > 0)
+            )
+            return
+        if _is_allowed_lazy_package_import(
+            self.source_module,
+            self.function_stack,
+            node,
+        ):
+            return
+        self.closure_errors.append(
+            f"{self.source_module}:{node.lineno}:non-literal dynamic package import"
+        )
 
 
 def classify_edge(
@@ -499,6 +567,15 @@ def build_study_implementation_projection(
     """Hash the exact sorted, tracked, repository-contained projection."""
 
     root = _verified_repo_root(repo_root)
+    entries, _ = _snapshot_study_implementation_projection(protocol, root=root)
+    return entries
+
+
+def _snapshot_study_implementation_projection(
+    protocol: StudyProtocolV2,
+    *,
+    root: Path,
+) -> tuple[tuple[ProjectionEntry, ...], Mapping[str, bytes]]:
     declared = protocol.implementation_projection_paths()
     document_paths = protocol.document.get("implementation_projection_paths")
     if not isinstance(document_paths, list) or tuple(document_paths) != declared:
@@ -510,6 +587,7 @@ def build_study_implementation_projection(
     missing: list[str] = []
     untracked: list[str] = []
     entries: list[ProjectionEntry] = []
+    payloads: dict[str, bytes] = {}
     for relative in declared:
         path = _projected_path(root, relative)
         if not path.exists():
@@ -523,11 +601,12 @@ def build_study_implementation_projection(
         except StudyArtifactError as exc:
             raise StudyRetentionError(f"projected path is unsafe: {relative}: {exc}") from exc
         entries.append(ProjectionEntry(relative, sha256_bytes(payload)))
+        payloads[relative] = payload
     if missing:
         raise StudyRetentionError(f"missing projected paths: {', '.join(sorted(missing))}")
     if untracked:
         raise StudyRetentionError(f"untracked projected paths: {', '.join(sorted(untracked))}")
-    return tuple(entries)
+    return tuple(entries), MappingProxyType(payloads)
 
 
 def scan_study_dependencies(
@@ -538,7 +617,10 @@ def scan_study_dependencies(
     """Parse the projected source graph without importing or executing it."""
 
     root = _verified_repo_root(repo_root)
-    projection = build_study_implementation_projection(protocol, repo_root=root)
+    projection, projection_payloads = _snapshot_study_implementation_projection(
+        protocol,
+        root=root,
+    )
     projection_sha256 = canonical_json_hash([entry.as_record() for entry in projection])
     module_to_path = _projected_modules(protocol.implementation_projection_paths())
     known_modules = _repository_modules(root)
@@ -559,10 +641,9 @@ def scan_study_dependencies(
         if existing is not None:
             return existing
         relative = module_to_path[module]
-        path = root / relative
         try:
-            tree = ast.parse(path.read_bytes(), filename=relative)
-        except (OSError, SyntaxError, ValueError) as exc:
+            tree = ast.parse(projection_payloads[relative], filename=relative)
+        except (SyntaxError, ValueError) as exc:
             raise StudyRetentionError(f"projected Python could not be parsed: {relative}") from exc
         visitor = _ImportVisitor(source_module=module, known_modules=known_modules)
         visitor.visit(tree)
@@ -576,6 +657,7 @@ def scan_study_dependencies(
     runtime_graph: dict[str, set[str]] = {}
     protected: list[str] = []
     forbidden_calls: list[str] = []
+    closure_errors: list[str] = []
     queue = deque(sorted(study_owned))
     visited: set[str] = set()
     while queue:
@@ -586,7 +668,9 @@ def scan_study_dependencies(
         source_visitor = visitor_for(source)
         if source in study_owned:
             protected.extend(source_visitor.protected)
-            forbidden_calls.extend(source_visitor.forbidden_calls)
+            forbidden_calls.extend(source_visitor.study_forbidden_calls)
+        forbidden_calls.extend(source_visitor.forbidden_calls)
+        closure_errors.extend(source_visitor.closure_errors)
         runtime_targets = runtime_graph.setdefault(source, set())
         for package in _package_initializers(source, known_modules):
             kind = classify_edge(
@@ -612,7 +696,8 @@ def scan_study_dependencies(
             edges.add(DependencyEdge(source, reference.target, kind))
             if not reference.type_checking:
                 runtime_targets.add(reference.target)
-                queue.append(reference.target)
+                if not _has_forbidden_runtime_prefix(reference.target):
+                    queue.append(reference.target)
             if (
                 source in study_owned
                 and not reference.type_checking
@@ -622,6 +707,8 @@ def scan_study_dependencies(
             ):
                 direct_actual[source.rsplit(".", 1)[-1]].add(reference.target)
 
+    if closure_errors:
+        raise StudyRetentionError(sorted(closure_errors)[0])
     if protected:
         raise StudyRetentionError(
             f"protected scope reference: {', '.join(sorted(protected))}"
@@ -1028,6 +1115,45 @@ def _call_name(node: ast.expr) -> str | None:
     return None
 
 
+def _is_dynamic_import_call(
+    node: ast.expr,
+    *,
+    importlib_module_names: set[str],
+    import_module_names: set[str],
+) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id == "__import__" or node.id in import_module_names
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "import_module"
+        and isinstance(node.value, ast.Name)
+        and node.value.id in importlib_module_names
+    )
+
+
+def _is_package_target(value: str) -> bool:
+    return value == "manufacturing_vision_studio" or value.startswith(
+        "manufacturing_vision_studio."
+    )
+
+
+def _is_allowed_lazy_package_import(
+    source_module: str,
+    function_stack: Sequence[str],
+    node: ast.Call,
+) -> bool:
+    return (
+        source_module in _PROJECTED_PACKAGE_ROOTS
+        and tuple(function_stack) == ("__getattr__",)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "import_module"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "module_name"
+        and not node.keywords
+    )
+
+
 def _is_allowed_development_provider_plan(
     source_module: str,
     class_stack: Sequence[str],
@@ -1098,13 +1224,17 @@ def _forbidden_runtime_reachability(graph: Mapping[str, set[str]]) -> tuple[str,
         if source in visited:
             continue
         visited.add(source)
-        if any(
-            source == prefix or source.startswith(f"{prefix}.")
-            for prefix in _FORBIDDEN_RUNTIME_PREFIXES
-        ):
+        if _has_forbidden_runtime_prefix(source):
             forbidden.add(source)
         queue.extend(sorted(graph.get(source, set())))
     return tuple(sorted(forbidden))
+
+
+def _has_forbidden_runtime_prefix(module: str) -> bool:
+    return any(
+        module == prefix or module.startswith(f"{prefix}.")
+        for prefix in _FORBIDDEN_RUNTIME_PREFIXES
+    )
 
 
 def _validate_external_schema(document: Mapping[str, object], schema_path: Path) -> None:

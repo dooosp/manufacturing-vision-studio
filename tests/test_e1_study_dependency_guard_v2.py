@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from manufacturing_vision_studio.e1 import study_retention_v2 as retention_module
 from manufacturing_vision_studio.e1.study_protocol_v2 import (
     PROJECT_ROOT,
     StudyProtocolV2,
@@ -21,6 +22,8 @@ RUNNER_PATH = Path("src/manufacturing_vision_studio/e1/study_runner_v2.py")
 CLI_PATH = Path("src/manufacturing_vision_studio/e1/study_cli_v2.py")
 RETENTION_PATH = Path("src/manufacturing_vision_studio/e1/study_retention_v2.py")
 FEATURE_MAPPING_PATH = Path("src/manufacturing_vision_studio/e1/feature_mapping.py")
+ORACLE_PATH = Path("src/manufacturing_vision_studio/e1/oracle.py")
+DIAGNOSTICS_PATH = Path("src/manufacturing_vision_studio/e1/diagnostics_v2.py")
 
 SYNTHETIC_RUNNER = (
     b"from manufacturing_vision_studio.e1.feature_mapping "
@@ -49,6 +52,11 @@ def _git(repo_root: Path, *args: str) -> str:
 def _complete_repo(tmp_path: Path, protocol: StudyProtocolV2) -> Path:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
+    source_root = PROJECT_ROOT / "src/manufacturing_vision_studio"
+    for source in sorted(source_root.rglob("*.py")):
+        destination = repo_root / source.relative_to(PROJECT_ROOT)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
     for relative in protocol.implementation_projection_paths():
         destination = repo_root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -229,6 +237,28 @@ def test_protected_scope_reference_is_rejected(tmp_path: Path) -> None:
         scan_study_dependencies(protocol, repo_root=repo_root)
 
 
+@pytest.mark.parametrize(
+    "call_name",
+    [
+        "compare_candidates",
+        "load_candidate_selection",
+        "repair_candidate_selection_from_preserved_run",
+        "select_candidate",
+        "FreeCADExportAdapter",
+    ],
+)
+def test_runtime_transitive_forbidden_call_is_rejected(
+    tmp_path: Path,
+    call_name: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, ORACLE_PATH, f"\nFORBIDDEN_RESULT = {call_name}()\n")
+
+    with pytest.raises(StudyRetentionError, match=call_name):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
 def test_plan_cases_outside_development_provider_is_rejected(tmp_path: Path) -> None:
     protocol = load_study_protocol_v2()
     repo_root = _complete_repo(tmp_path, protocol)
@@ -275,6 +305,80 @@ def test_performance_root_cannot_reach_freecad_adapter(tmp_path: Path) -> None:
         scan_study_dependencies(protocol, repo_root=repo_root)
 
 
+def test_root_lazy_export_is_rejected_fail_closed(tmp_path: Path) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\nfrom manufacturing_vision_studio import FreeCADExportAdapter\n",
+    )
+
+    with pytest.raises(
+        StudyRetentionError,
+        match=r"unresolved package symbol import.*FreeCADExportAdapter",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("source", "error"),
+    [
+        (
+            "\nimport importlib\n"
+            "DYNAMIC_MODULE = importlib.import_module("
+            "'manufacturing_vision_studio.adapters')\n",
+            "adapters",
+        ),
+        (
+            "\nfrom importlib import import_module as load_module\n"
+            "DYNAMIC_MODULE = load_module('manufacturing_vision_studio.adapters')\n",
+            "adapters",
+        ),
+        (
+            "\nDYNAMIC_MODULE = __import__('manufacturing_vision_studio.adapters')\n",
+            "adapters",
+        ),
+        (
+            "\nimport importlib\n"
+            "DYNAMIC_MODULE = importlib.import_module("
+            "'manufacturing_vision_studio.not_real')\n",
+            "unresolved dynamic package import.*not_real",
+        ),
+    ],
+)
+def test_literal_dynamic_package_import_is_rejected(
+    tmp_path: Path,
+    source: str,
+    error: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, source)
+
+    with pytest.raises(StudyRetentionError, match=error):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_nonliteral_dynamic_package_import_is_rejected(tmp_path: Path) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\nimport importlib\n"
+        "def load_dynamic(module_name: str) -> object:\n"
+        "    return importlib.import_module(module_name)\n"
+        "DYNAMIC_MODULE = load_dynamic('manufacturing_vision_studio.adapters')\n",
+    )
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="non-literal dynamic package import",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
 def test_scanner_does_not_execute_projected_modules(tmp_path: Path) -> None:
     protocol = load_study_protocol_v2()
     repo_root = _complete_repo(tmp_path, protocol)
@@ -290,6 +394,35 @@ def test_scanner_does_not_execute_projected_modules(tmp_path: Path) -> None:
     assert not sentinel.exists()
 
 
+def test_scanner_parses_the_exact_bounded_bytes_bound_into_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    oracle_path = repo_root / ORACLE_PATH
+    safe_payload = oracle_path.read_bytes()
+    forbidden_payload = safe_payload + b"\nFORBIDDEN_RESULT = compare_candidates()\n"
+    oracle_path.write_bytes(forbidden_payload)
+    original_reader = retention_module.read_bounded_bytes
+    swapped = False
+
+    def swap_after_bounded_read(path: Path, *, maximum: int) -> bytes:
+        nonlocal swapped
+        payload = original_reader(path, maximum=maximum)
+        if path == oracle_path and not swapped:
+            assert payload == forbidden_payload
+            oracle_path.write_bytes(safe_payload)
+            swapped = True
+        return payload
+
+    monkeypatch.setattr(retention_module, "read_bounded_bytes", swap_after_bounded_read)
+
+    with pytest.raises(StudyRetentionError, match="compare_candidates"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+    assert swapped is True
+
+
 def test_fixture_copy_keeps_repository_source_unchanged(tmp_path: Path) -> None:
     protocol = load_study_protocol_v2()
     original = (PROJECT_ROOT / FEATURE_MAPPING_PATH).read_bytes()
@@ -298,3 +431,23 @@ def test_fixture_copy_keeps_repository_source_unchanged(tmp_path: Path) -> None:
 
     assert (PROJECT_ROOT / FEATURE_MAPPING_PATH).read_bytes() == original
     assert (repo_root / FEATURE_MAPPING_PATH).read_bytes() != original
+
+
+def test_complete_repo_preserves_and_rejects_real_unprojected_modules(
+    tmp_path: Path,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    diagnostics = repo_root / DIAGNOSTICS_PATH
+    assert diagnostics.read_bytes() == (PROJECT_ROOT / DIAGNOSTICS_PATH).read_bytes()
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\nfrom manufacturing_vision_studio.e1 import diagnostics_v2\n",
+    )
+
+    with pytest.raises(
+        StudyRetentionError,
+        match=r"unprojected repository import:.*diagnostics_v2",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
