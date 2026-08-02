@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
@@ -14,6 +15,7 @@ from manufacturing_vision_studio.canonical import (
     canonical_json_hash,
     sha256_bytes,
 )
+from manufacturing_vision_studio.e1 import protocol_v2 as legacy_protocol_module
 from manufacturing_vision_studio.e1 import study_retention_v2 as retention_module
 from manufacturing_vision_studio.e1.study_artifacts_v2 import (
     StudyArtifactStore,
@@ -106,6 +108,17 @@ EXPECTED_CLASSIFICATIONS = {
         "any source whose change would invalidate the historical implementation projection",
     ),
 }
+V1_HISTORY_RELATIVE_PATH = Path(
+    "configs/evaluation/e1-v1-history-integrity.json"
+)
+V1_HISTORY_REVISIONS = (
+    ("v0.1.0^{tag}", "67bd8af8d6bfdbcb5ff2654fd37b797dc7c75f3d"),
+    ("v0.1.0^{commit}", "cf7b9ac37d0533f656068199d3275410cf8cc2f8"),
+    (
+        "2f87b885b29c12468effea927279d27424eaa340^{commit}",
+        "2f87b885b29c12468effea927279d27424eaa340",
+    ),
+)
 
 
 @dataclass(slots=True)
@@ -134,6 +147,33 @@ def _git(repo_root: Path, *args: str) -> str:
 def _write(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
+
+
+def _copy_v1_history_tree(repo_root: Path) -> dict[str, object]:
+    source_path = PROJECT_ROOT / V1_HISTORY_RELATIVE_PATH
+    document = load_strict_json_object(source_path.read_bytes())
+    _write(repo_root / V1_HISTORY_RELATIVE_PATH, source_path.read_bytes())
+    artifacts = cast(list[object], document["artifacts"])
+    for raw_artifact in artifacts:
+        artifact = cast(dict[str, object], raw_artifact)
+        relative = Path(cast(str, artifact["path"]))
+        _write(repo_root / relative, (PROJECT_ROOT / relative).read_bytes())
+    return document
+
+
+def _stub_v1_history_git(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[str, ...]]:
+    calls: list[tuple[str, ...]] = []
+    identities = dict(V1_HISTORY_REVISIONS)
+
+    def run_git(_root: Path, *args: str) -> str:
+        calls.append(args)
+        assert args[:1] == ("rev-parse",)
+        return identities[args[1]]
+
+    monkeypatch.setattr(retention_module, "_run_git", run_git)
+    return calls
 
 
 def _copy_projection(repo_root: Path, protocol: StudyProtocolV2) -> None:
@@ -341,8 +381,9 @@ def _build_retention_fixture(
     evidence_commit = _git(repo_root, "rev-parse", "HEAD")
     monkeypatch.setattr(
         retention_module,
-        "verify_e1_v1_history",
-        lambda: {"verdict": "HOLD", "artifact_count": 9},
+        "_verify_e1_v1_history_local",
+        lambda _root: {"verdict": "HOLD", "artifact_count": 9},
+        raising=False,
     )
     return RetentionFixture(
         repo_root=repo_root,
@@ -380,6 +421,139 @@ def _retention_path(fixture: RetentionFixture) -> Path:
     return fixture.protocol.artifact_root / "retention-audit.json"
 
 
+def test_control_plane_git_ignores_inherited_path_config_and_loader_poison(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch Git subprocesses that inherit authority-changing host state."""
+
+    fake_git = tmp_path / "git"
+    fake_git.write_text(
+        """#!/bin/sh
+set -eu
+[ "$PATH" = "/usr/bin:/bin:/usr/sbin:/sbin" ]
+[ "${GIT_CONFIG_NOSYSTEM:-}" = "1" ]
+[ "${GIT_CONFIG_GLOBAL:-}" = "/dev/null" ]
+[ "${GIT_OPTIONAL_LOCKS:-}" = "0" ]
+for name in GIT_DIR GIT_WORK_TREE GIT_EXTERNAL_DIFF GIT_CONFIG_SYSTEM \
+  GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_PAGER PAGER LESS LV \
+  DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH LD_PRELOAD LD_LIBRARY_PATH; do
+  eval 'test -z "${'"$name"'+x}"'
+done
+printf '%s\\n' "$PWD"
+printf '%s\\n' "$*"
+""",
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o700)
+    poison = {
+        "PATH": "/poison/bin",
+        "GIT_DIR": "/poison/git-dir",
+        "GIT_WORK_TREE": "/poison/work-tree",
+        "GIT_EXTERNAL_DIFF": "/poison/external-diff",
+        "GIT_CONFIG_SYSTEM": "/poison/system-config",
+        "GIT_CONFIG_GLOBAL": "/poison/global-config",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.hooksPath",
+        "GIT_CONFIG_VALUE_0": "/poison/hooks",
+        "GIT_PAGER": "/poison/pager",
+        "PAGER": "/poison/pager",
+        "LESS": "-RFX",
+        "LV": "-c",
+        "DYLD_INSERT_LIBRARIES": "/poison/injected.dylib",
+        "DYLD_LIBRARY_PATH": "/poison/dylibs",
+        "LD_PRELOAD": "/poison/injected.so",
+        "LD_LIBRARY_PATH": "/poison/libs",
+    }
+    for name, value in poison.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(
+        retention_module,
+        "_resolve_system_git_executable",
+        lambda: fake_git,
+        raising=False,
+    )
+
+    literal = "rev-parse;touch-should-never-run"
+    output = retention_module._run_git(tmp_path, literal)
+
+    assert output.splitlines() == [
+        os.fspath(tmp_path),
+        f"--no-pager -c core.fsmonitor=false {literal}",
+    ]
+
+
+def test_control_plane_git_disables_repository_fsmonitor(
+    tmp_path: Path,
+) -> None:
+    """Catch repository config that executes a program during read-only status."""
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    _git(repo_root, "init", "-b", "fixture")
+    _git(repo_root, "config", "user.name", "Git Control Test")
+    _git(repo_root, "config", "user.email", "git-control@example.invalid")
+    _write(repo_root / "tracked.txt", b"tracked\n")
+    _git(repo_root, "add", "tracked.txt")
+    _git(repo_root, "commit", "-m", "base")
+    sentinel = tmp_path / "fsmonitor-ran"
+    fsmonitor = tmp_path / "fsmonitor.sh"
+    fsmonitor.write_text(
+        f"#!/bin/sh\ntouch {sentinel!s}\nexit 1\n",
+        encoding="utf-8",
+    )
+    fsmonitor.chmod(0o700)
+    _git(repo_root, "config", "core.fsmonitor", os.fspath(fsmonitor))
+
+    assert retention_module._git_status_paths(repo_root) == ()
+    assert not sentinel.exists()
+
+
+def test_projection_and_lineage_route_every_git_call_through_sanitized_helper(
+    retention_fixture: RetentionFixture,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch one-off tracked/status/ancestry calls that bypass the helper."""
+
+    malformed_config = tmp_path / "malformed.gitconfig"
+    malformed_config.write_text("this is not valid git config\n", encoding="utf-8")
+    poison = {
+        "PATH": "/poison/bin",
+        "GIT_DIR": "/poison/git-dir",
+        "GIT_WORK_TREE": "/poison/work-tree",
+        "GIT_EXTERNAL_DIFF": "/poison/external-diff",
+        "GIT_CONFIG_SYSTEM": os.fspath(malformed_config),
+        "GIT_CONFIG_GLOBAL": os.fspath(malformed_config),
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.hooksPath",
+        "GIT_CONFIG_VALUE_0": "/poison/hooks",
+        "GIT_PAGER": "/poison/pager",
+        "PAGER": "/poison/pager",
+        "DYLD_INSERT_LIBRARIES": "/poison/injected.dylib",
+        "DYLD_LIBRARY_PATH": "/poison/dylibs",
+        "LD_PRELOAD": "/poison/injected.so",
+        "LD_LIBRARY_PATH": "/poison/libs",
+    }
+    for name, value in poison.items():
+        monkeypatch.setenv(name, value)
+
+    projection = build_study_implementation_projection(
+        retention_fixture.protocol,
+        repo_root=retention_fixture.repo_root,
+    )
+    evidence_commit = retention_module._verify_git_lineage(
+        retention_fixture.protocol,
+        repo_root=retention_fixture.repo_root,
+        execution_commit=retention_fixture.execution_commit,
+        evidence_commit=None,
+        require_clean=True,
+    )
+
+    assert len(projection) == 47
+    assert evidence_commit == retention_fixture.evidence_commit
+
+
 def test_real_historical_selection_and_v1_history_are_hold() -> None:
     audit = verify_historical_hold(load_study_protocol_v2())
 
@@ -393,6 +567,73 @@ def test_real_historical_selection_and_v1_history_are_hold() -> None:
     assert audit.selected_candidate_id is None
     assert audit.v1_history_outcome == "HOLD"
     assert audit.v1_history_artifact_count == 9
+
+
+def test_retention_local_v1_history_matches_legacy_public_verifier() -> None:
+    assert retention_module._verify_e1_v1_history_local(PROJECT_ROOT) == (
+        legacy_protocol_module.verify_e1_v1_history()
+    )
+
+
+def test_retention_local_v1_history_ignores_poisoned_legacy_verifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def poisoned_verifier(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("legacy public verifier must not be called")
+
+    monkeypatch.setattr(
+        legacy_protocol_module,
+        "verify_e1_v1_history",
+        poisoned_verifier,
+    )
+
+    assert retention_module._verify_e1_v1_history_local(PROJECT_ROOT) == {
+        "verdict": "HOLD",
+        "artifact_count": 9,
+    }
+
+
+def test_retention_local_v1_history_rejects_artifact_hash_tamper(
+    tmp_path: Path,
+) -> None:
+    document = _copy_v1_history_tree(tmp_path)
+    first = cast(dict[str, object], cast(list[object], document["artifacts"])[0])
+    artifact_path = tmp_path / cast(str, first["path"])
+    artifact_path.write_bytes(artifact_path.read_bytes() + b"\n")
+
+    with pytest.raises(StudyRetentionError, match="hash mismatch"):
+        retention_module._verify_e1_v1_history_local(tmp_path)
+
+
+def test_retention_local_v1_history_rejects_expected_field_tamper(
+    tmp_path: Path,
+) -> None:
+    document = _copy_v1_history_tree(tmp_path)
+    first = cast(dict[str, object], cast(list[object], document["artifacts"])[0])
+    artifact_path = tmp_path / cast(str, first["path"])
+    artifact = load_strict_json_object(artifact_path.read_bytes())
+    artifact["status"] = "poisoned"
+    payload = canonical_json_bytes(artifact)
+    artifact_path.write_bytes(payload)
+    first["sha256"] = sha256_bytes(payload)
+    (tmp_path / V1_HISTORY_RELATIVE_PATH).write_bytes(canonical_json_bytes(document))
+
+    with pytest.raises(StudyRetentionError, match="identity mismatch"):
+        retention_module._verify_e1_v1_history_local(tmp_path)
+
+
+def test_retention_local_v1_history_uses_exact_revision_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _copy_v1_history_tree(tmp_path)
+    calls = _stub_v1_history_git(monkeypatch)
+
+    assert retention_module._verify_e1_v1_history_local(tmp_path) == {
+        "verdict": "HOLD",
+        "artifact_count": 9,
+    }
+    assert calls == [("rev-parse", revision) for revision, _ in V1_HISTORY_REVISIONS]
 
 
 def test_historical_hold_rejects_semantic_selection_tamper(
@@ -420,20 +661,70 @@ def test_historical_hold_rejects_semantic_selection_tamper(
 
 
 def test_historical_hold_requires_all_nine_v1_artifacts(
-    retention_fixture: RetentionFixture,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        retention_module,
-        "verify_e1_v1_history",
-        lambda: {"verdict": "HOLD", "artifact_count": 8},
-    )
+    document = _copy_v1_history_tree(tmp_path)
+    cast(list[object], document["artifacts"]).pop()
+    (tmp_path / V1_HISTORY_RELATIVE_PATH).write_bytes(canonical_json_bytes(document))
+    _stub_v1_history_git(monkeypatch)
 
     with pytest.raises(StudyRetentionError, match="nine"):
-        verify_historical_hold(
-            retention_fixture.protocol,
-            repo_root=retention_fixture.repo_root,
-        )
+        retention_module._verify_e1_v1_history_local(tmp_path)
+
+
+def test_historical_hold_routes_exact_git_identities_through_sanitized_helper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch retained v1 history falling back to ambient protocol Git."""
+
+    _copy_v1_history_tree(tmp_path)
+    fake_git = tmp_path / "git"
+    fake_git.write_text(
+        """#!/bin/sh
+set -eu
+[ "$PATH" = "/usr/bin:/bin:/usr/sbin:/sbin" ]
+[ "${GIT_CONFIG_NOSYSTEM:-}" = "1" ]
+[ "${GIT_CONFIG_GLOBAL:-}" = "/dev/null" ]
+[ "${GIT_OPTIONAL_LOCKS:-}" = "0" ]
+last=""
+for argument in "$@"; do last="$argument"; done
+case "$last" in
+  --show-toplevel) printf '%s\\n' "$PWD" ;;
+  'v0.1.0^{tag}')
+    printf '%s\\n' '67bd8af8d6bfdbcb5ff2654fd37b797dc7c75f3d'
+    ;;
+  'v0.1.0^{commit}')
+    printf '%s\\n' 'cf7b9ac37d0533f656068199d3275410cf8cc2f8'
+    ;;
+  '2f87b885b29c12468effea927279d27424eaa340^{commit}')
+    printf '%s\\n' '2f87b885b29c12468effea927279d27424eaa340'
+    ;;
+  *) exit 91 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o700)
+    monkeypatch.setattr(
+        retention_module,
+        "_resolve_system_git_executable",
+        lambda: fake_git,
+    )
+    for name, value in {
+        "PATH": "/poison/bin",
+        "GIT_DIR": "/poison/git-dir",
+        "GIT_WORK_TREE": "/poison/work-tree",
+        "GIT_CONFIG_GLOBAL": "/poison/global-config",
+        "DYLD_INSERT_LIBRARIES": "/poison/injected.dylib",
+        "LD_PRELOAD": "/poison/injected.so",
+    }.items():
+        monkeypatch.setenv(name, value)
+    assert retention_module._verify_e1_v1_history_local(tmp_path) == {
+        "verdict": "HOLD",
+        "artifact_count": 9,
+    }
 
 
 def test_implementation_validation_is_read_only_and_semantically_verified(

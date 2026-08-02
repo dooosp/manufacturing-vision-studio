@@ -5,7 +5,10 @@ from __future__ import annotations
 import ast
 import os
 import re
+import selectors
+import signal
 import subprocess
+import time
 from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -21,7 +24,9 @@ from manufacturing_vision_studio.canonical import (
     canonical_json_hash,
     sha256_bytes,
 )
-from manufacturing_vision_studio.e1.protocol_v2 import verify_e1_v1_history
+from manufacturing_vision_studio.e1.protocol_v2 import (
+    DEFAULT_V1_HISTORY_INTEGRITY_PATH,
+)
 from manufacturing_vision_studio.e1.study_artifacts_v2 import (
     StudyArtifactError,
     StudyArtifactStore,
@@ -44,11 +49,76 @@ _SHA1_LENGTH = 40
 _SHA256_LENGTH = 64
 _MAX_INPUT_BYTES = 4 * 1024 * 1024
 _MAX_PROJECTED_BYTES = 25 * 1024 * 1024
+_GIT_TIMEOUT_SECONDS = 30
+_GIT_OUTPUT_LIMIT_BYTES = 1024 * 1024
 _STUDY_ID = "e1-feasibility-separability"
 _SOURCE_BRANCH = "codex/e1-v2-scale-feature-remediation"
 _IMPLEMENTATION_VALIDATION_PATH = "implementation-validation.json"
 _RETENTION_AUDIT_PATH = "retention-audit.json"
 _MODES = ("NEAREST", "BILINEAR", "BICUBIC")
+_V1_HISTORY_RELATIVE_PATH = "configs/evaluation/e1-v1-history-integrity.json"
+_V1_HISTORY_ARTIFACT_FIELDS = (
+    (
+        "configs/evaluation/e1-v1.json",
+        (
+            ("protocol_id", "mvs-e1"),
+            ("protocol_version", "1.3.0"),
+            ("status", "frozen_before_test"),
+        ),
+    ),
+    (
+        "schemas/e1-case-manifest.v1.json",
+        (("$schema", "https://json-schema.org/draft/2020-12/schema"),),
+    ),
+    (
+        "schemas/e1-evaluation-protocol.v1.json",
+        (("$schema", "https://json-schema.org/draft/2020-12/schema"),),
+    ),
+    (
+        "schemas/e1-evaluation-result.v1.json",
+        (("$schema", "https://json-schema.org/draft/2020-12/schema"),),
+    ),
+    (
+        "schemas/e1-threshold-lock.v1.json",
+        (("$schema", "https://json-schema.org/draft/2020-12/schema"),),
+    ),
+    (
+        "docs/evaluation/results/e1-mini-v0.2.0-hold.json",
+        (
+            ("profile", "mini"),
+            ("verdict", "HOLD"),
+            ("evaluation_status", "COMPLETED"),
+        ),
+    ),
+    (
+        "docs/evaluation/results/e1-full-v0.2.0-hold.json",
+        (
+            ("profile", "full"),
+            ("verdict", "HOLD"),
+            ("evaluation_status", "CALIBRATION_HOLD"),
+        ),
+    ),
+    ("docs/releases/v0.2.0/E1_HOLD.md", ()),
+    ("docs/releases/v0.1.0/evidence-bundle.zip", ()),
+)
+_V1_HISTORY_PREFLIGHT = MappingProxyType(
+    {
+        "parent_branch": "codex/e1-authoritative-mask-nuisance-evaluation-v0.2.0",
+        "parent_head": "d7254cf8e09561a085def5cb9c914c31d79b9725",
+        "v0_1_tag": "v0.1.0",
+        "v0_1_tag_object": "67bd8af8d6bfdbcb5ff2654fd37b797dc7c75f3d",
+        "v0_1_commit": "cf7b9ac37d0533f656068199d3275410cf8cc2f8",
+        "e1_evaluation_commit": "2f87b885b29c12468effea927279d27424eaa340",
+    }
+)
+_V1_HISTORY_REVISIONS = (
+    ("v0.1.0^{tag}", "67bd8af8d6bfdbcb5ff2654fd37b797dc7c75f3d"),
+    ("v0.1.0^{commit}", "cf7b9ac37d0533f656068199d3275410cf8cc2f8"),
+    (
+        "2f87b885b29c12468effea927279d27424eaa340^{commit}",
+        "2f87b885b29c12468effea927279d27424eaa340",
+    ),
+)
 
 IMPLEMENTATION_VALIDATION_COMMANDS = (
     ("ruff", ("uv", "run", "ruff", "check", ".")),
@@ -459,6 +529,13 @@ class _GitChangeRecord:
         if self.source is None:
             return (self.destination,)
         return (self.source, self.destination)
+
+
+@dataclass(frozen=True, slots=True)
+class _GitCommandResult:
+    returncode: int
+    stdout: bytes
+    stderr: bytes
 
 
 class _ImportVisitor(ast.NodeVisitor):
@@ -1013,7 +1090,7 @@ def verify_historical_hold(
     if document.get("outcome") != "HOLD" or document.get("selected_candidate_id") is not None:
         raise StudyRetentionError("historical selection is not HOLD/null")
     try:
-        history = verify_e1_v1_history()
+        history = _verify_e1_v1_history_local(root)
     except Exception as exc:
         raise StudyRetentionError(f"v1 historical HOLD verification failed: {exc}") from exc
     if history.get("verdict") != "HOLD" or history.get("artifact_count") != 9:
@@ -1026,6 +1103,79 @@ def verify_historical_hold(
         v1_history_outcome="HOLD",
         v1_history_artifact_count=9,
     )
+
+
+def _verify_e1_v1_history_local(root: Path) -> dict[str, object]:
+    """Verify the fixed v1 HOLD inventory without ambient protocol seams."""
+
+    try:
+        bound_relative = DEFAULT_V1_HISTORY_INTEGRITY_PATH.relative_to(
+            PROJECT_ROOT
+        ).as_posix()
+    except ValueError as exc:
+        raise StudyRetentionError("v1 history configuration path is invalid") from exc
+    if bound_relative != _V1_HISTORY_RELATIVE_PATH:
+        raise StudyRetentionError("v1 history configuration path is not fixed")
+    configuration_path = _projected_path(root, _V1_HISTORY_RELATIVE_PATH)
+    try:
+        configuration_payload = read_bounded_bytes(
+            configuration_path,
+            maximum=_MAX_INPUT_BYTES,
+        )
+        document = load_strict_json_object(configuration_payload)
+    except (OSError, StudyArtifactError) as exc:
+        raise StudyRetentionError(f"v1 history configuration is invalid: {exc}") from exc
+    if document.get("schema_version") != "1.0.0":
+        raise StudyRetentionError("v1 history schema version is invalid")
+    raw_artifacts = document.get("artifacts")
+    if not isinstance(raw_artifacts, list) or len(raw_artifacts) != len(
+        _V1_HISTORY_ARTIFACT_FIELDS
+    ):
+        raise StudyRetentionError("v1 history must contain exactly nine artifacts")
+    artifacts = cast(list[object], raw_artifacts)
+    for ordinal, ((fixed_path, fixed_fields), raw_artifact) in enumerate(
+        zip(_V1_HISTORY_ARTIFACT_FIELDS, artifacts, strict=True)
+    ):
+        if not isinstance(raw_artifact, dict):
+            raise StudyRetentionError(f"v1 history artifact {ordinal} is invalid")
+        artifact = cast(dict[str, object], raw_artifact)
+        expected_keys = {"path", "sha256"}
+        if fixed_fields:
+            expected_keys.add("expected_fields")
+        if set(artifact) != expected_keys or artifact.get("path") != fixed_path:
+            raise StudyRetentionError(f"v1 history artifact {ordinal} binding is invalid")
+        expected_sha = artifact.get("sha256")
+        _require_lower_hex(expected_sha, _SHA256_LENGTH, f"v1 history {fixed_path} sha256")
+        expected_fields = dict(fixed_fields)
+        if artifact.get("expected_fields", {}) != expected_fields:
+            raise StudyRetentionError(f"v1 history expected fields changed: {fixed_path}")
+        artifact_path = _projected_path(root, fixed_path)
+        try:
+            payload = read_bounded_bytes(artifact_path, maximum=_MAX_INPUT_BYTES)
+        except (OSError, StudyArtifactError) as exc:
+            raise StudyRetentionError(
+                f"v1 history artifact cannot be read safely: {fixed_path}: {exc}"
+            ) from exc
+        if sha256_bytes(payload) != expected_sha:
+            raise StudyRetentionError(f"v1 history hash mismatch: {fixed_path}")
+        if expected_fields:
+            try:
+                parsed = load_strict_json_object(payload)
+            except StudyArtifactError as exc:
+                raise StudyRetentionError(
+                    f"v1 history identity document is invalid: {fixed_path}: {exc}"
+                ) from exc
+            if any(parsed.get(key) != value for key, value in expected_fields.items()):
+                raise StudyRetentionError(f"v1 history identity mismatch: {fixed_path}")
+    preflight = document.get("preflight")
+    if not isinstance(preflight, dict) or preflight != dict(_V1_HISTORY_PREFLIGHT):
+        raise StudyRetentionError("v1 history preflight identity is invalid")
+    for revision, expected_identity in _V1_HISTORY_REVISIONS:
+        if _run_git(root, "rev-parse", revision) != expected_identity:
+            raise StudyRetentionError(
+                f"v1 history Git identity does not resolve: {revision}"
+            )
+    return {"verdict": "HOLD", "artifact_count": len(artifacts)}
 
 
 def verify_implementation_validation(
@@ -1258,13 +1408,15 @@ def _projected_path(root: Path, relative: str) -> Path:
 
 
 def _git_tracked(root: Path, relative: str) -> bool:
-    completed = subprocess.run(
-        ("git", "-C", os.fspath(root), "ls-files", "--error-unmatch", "--", relative),
-        check=False,
-        capture_output=True,
-        text=True,
+    completed = _run_git_command(
+        root,
+        "ls-files",
+        "--error-unmatch",
+        "--",
+        relative,
+        accepted_returncodes=(0, 1),
     )
-    return completed.returncode == 0 and completed.stdout.strip() == relative
+    return completed.returncode == 0 and os.fsdecode(completed.stdout).strip() == relative
 
 
 def _projected_modules(paths: Sequence[str]) -> dict[str, str]:
@@ -2126,6 +2278,8 @@ def _git_changed_paths(
     output = _run_git_bytes(
         root,
         "diff",
+        "--no-ext-diff",
+        "--no-textconv",
         "--name-status",
         "-z",
         "--find-renames",
@@ -2231,11 +2385,13 @@ def _nul_fields(payload: bytes, *, label: str) -> tuple[bytes, ...]:
 
 
 def _require_ancestor(root: Path, older: str, newer: str) -> None:
-    completed = subprocess.run(
-        ("git", "-C", os.fspath(root), "merge-base", "--is-ancestor", older, newer),
-        check=False,
-        capture_output=True,
-        text=True,
+    completed = _run_git_command(
+        root,
+        "merge-base",
+        "--is-ancestor",
+        older,
+        newer,
+        accepted_returncodes=(0, 1),
     )
     if completed.returncode != 0:
         raise StudyRetentionError(f"git ancestry check failed: {older} is not ancestor of {newer}")
@@ -2249,34 +2405,131 @@ def _require_git_commit(root: Path, commit: str, *, label: str) -> None:
 
 
 def _run_git(root: Path, *args: str) -> str:
-    try:
-        completed = subprocess.run(
-            ("git", "-C", os.fspath(root), *args),
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    except OSError as exc:
-        raise StudyRetentionError(f"git command could not run: {exc}") from exc
-    if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip()
-        raise StudyRetentionError(f"git command failed: {' '.join(args)}: {detail}")
-    return completed.stdout.strip()
+    completed = _run_git_command(root, *args)
+    return os.fsdecode(completed.stdout).strip()
 
 
 def _run_git_bytes(root: Path, *args: str) -> bytes:
+    return _run_git_command(root, *args).stdout
+
+
+def _resolve_system_git_executable() -> Path:
+    for directory in _SYSTEM_PATH_SUFFIX.split(":"):
+        candidate = Path(directory) / "git"
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    raise StudyRetentionError("Git is unavailable in the fixed system path")
+
+
+def _run_git_command(
+    root: Path,
+    *args: str,
+    accepted_returncodes: tuple[int, ...] = (0,),
+) -> _GitCommandResult:
+    """Run one bounded Git control-plane command without inherited authority."""
+
+    lexical_root = Path(os.path.abspath(os.fspath(root.expanduser())))
+    executable = _resolve_system_git_executable()
+    if not executable.is_absolute():
+        raise StudyRetentionError("Git executable lookup did not return an absolute path")
+    environment = {
+        "HOME": os.fspath(lexical_root),
+        "PATH": _SYSTEM_PATH_SUFFIX,
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "TZ": "UTC",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+    }
     try:
-        completed = subprocess.run(
-            ("git", "-C", os.fspath(root), *args),
-            check=False,
-            capture_output=True,
+        process = subprocess.Popen(
+            (
+                os.fspath(executable),
+                "--no-pager",
+                "-c",
+                "core.fsmonitor=false",
+                *args,
+            ),
+            cwd=lexical_root,
+            env=environment,
+            shell=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
         )
     except OSError as exc:
         raise StudyRetentionError(f"git command could not run: {exc}") from exc
-    if completed.returncode != 0:
+
+    stdout, stderr = _drain_git_process(process)
+    completed = _GitCommandResult(cast(int, process.returncode), stdout, stderr)
+    if completed.returncode not in accepted_returncodes:
         detail = os.fsdecode(completed.stderr.strip() or completed.stdout.strip())
         raise StudyRetentionError(f"git command failed: {' '.join(args)}: {detail}")
-    return completed.stdout
+    return completed
+
+
+def _drain_git_process(process: subprocess.Popen[bytes]) -> tuple[bytes, bytes]:
+    if process.stdout is None or process.stderr is None:
+        _kill_process_group(process)
+        raise StudyRetentionError("git command pipes were not created")
+    stdout_fd = process.stdout.fileno()
+    stderr_fd = process.stderr.fileno()
+    pipes = {stdout_fd: process.stdout, stderr_fd: process.stderr}
+    buffers = {stdout_fd: bytearray(), stderr_fd: bytearray()}
+    selector = selectors.DefaultSelector()
+    for descriptor in pipes:
+        os.set_blocking(descriptor, False)
+        selector.register(descriptor, selectors.EVENT_READ)
+    deadline = time.monotonic() + _GIT_TIMEOUT_SECONDS
+    overflow = False
+    timed_out = False
+    try:
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                _kill_process_group(process)
+                remaining = 0.1
+            for key, _ in selector.select(min(max(remaining, 0.0), 0.1)):
+                descriptor = key.fd
+                try:
+                    chunk = os.read(descriptor, 64 * 1024)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    selector.unregister(descriptor)
+                    pipes[descriptor].close()
+                    continue
+                buffer = buffers[descriptor]
+                if not overflow:
+                    buffer.extend(chunk)
+                    if len(buffer) > _GIT_OUTPUT_LIMIT_BYTES:
+                        overflow = True
+                        _kill_process_group(process)
+        process.wait(timeout=1)
+    except (OSError, subprocess.SubprocessError) as exc:
+        _kill_process_group(process)
+        process.wait()
+        raise StudyRetentionError(f"git command output could not be drained: {exc}") from exc
+    finally:
+        selector.close()
+    if timed_out:
+        raise StudyRetentionError("git command timed out")
+    if overflow:
+        raise StudyRetentionError("git command output exceeded the byte limit")
+    return bytes(buffers[stdout_fd]), bytes(buffers[stderr_fd])
+
+
+def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
 
 
 def _require_store_root(protocol: StudyProtocolV2, store: StudyArtifactStore) -> None:

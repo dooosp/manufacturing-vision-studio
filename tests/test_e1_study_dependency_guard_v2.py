@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import subprocess
+import sys
+import textwrap
 from dataclasses import replace
 from pathlib import Path
 
@@ -80,15 +82,152 @@ def _append(repo_root: Path, relative: Path, source: str) -> None:
     path.write_text(path.read_text() + source)
 
 
-def test_real_task_6_checkout_is_missing_only_task_7_roots() -> None:
-    with pytest.raises(StudyRetentionError) as raised:
-        scan_study_dependencies(load_study_protocol_v2())
+def test_real_task_7_checkout_has_the_exact_reviewed_dependency_closure() -> None:
+    protocol = load_study_protocol_v2()
 
-    assert str(raised.value) == (
-        "missing projected paths: "
-        "src/manufacturing_vision_studio/e1/study_cli_v2.py, "
-        "src/manufacturing_vision_studio/e1/study_runner_v2.py"
+    projection = build_study_implementation_projection(protocol)
+    report = scan_study_dependencies(protocol)
+
+    assert len(projection) == 47
+    assert tuple(entry.path for entry in projection) == (
+        protocol.implementation_projection_paths()
     )
+    assert report.forbidden_direct_edges == ()
+    assert report.protected_scope_references == ()
+    allowlist = dict(report.direct_import_allowlist)
+    assert allowlist["study_runner_v2"] == (
+        "manufacturing_vision_studio.canonical_png",
+        "manufacturing_vision_studio.e1.feature_mapping",
+        "manufacturing_vision_studio.e1.metrics_v2",
+        "manufacturing_vision_studio.e1.protocol_v2",
+    )
+    assert allowlist["study_cli_v2"] == ()
+
+    study_modules = {
+        f"manufacturing_vision_studio.e1.{name}"
+        for name in protocol.direct_import_allowlist()
+    }
+    orchestration_roots = {
+        "manufacturing_vision_studio.e1.study_cli_v2",
+        "manufacturing_vision_studio.e1.study_runner_v2",
+    }
+    internal_runtime_edges = {
+        (edge.source, edge.target)
+        for edge in report.edges
+        if edge.kind != "type_checking"
+        and edge.source in orchestration_roots
+        and edge.target in study_modules
+    }
+    assert internal_runtime_edges == {
+        (
+            "manufacturing_vision_studio.e1.study_cli_v2",
+            "manufacturing_vision_studio.e1.study_runner_v2",
+        ),
+        (
+            "manufacturing_vision_studio.e1.study_runner_v2",
+            "manufacturing_vision_studio.e1.known_transform_v2",
+        ),
+        (
+            "manufacturing_vision_studio.e1.study_runner_v2",
+            "manufacturing_vision_studio.e1.study_artifacts_v2",
+        ),
+        (
+            "manufacturing_vision_studio.e1.study_runner_v2",
+            "manufacturing_vision_studio.e1.study_inference_v2",
+        ),
+        (
+            "manufacturing_vision_studio.e1.study_runner_v2",
+            "manufacturing_vision_studio.e1.study_protocol_v2",
+        ),
+        (
+            "manufacturing_vision_studio.e1.study_runner_v2",
+            "manufacturing_vision_studio.e1.study_retention_v2",
+        ),
+        (
+            "manufacturing_vision_studio.e1.study_runner_v2",
+            "manufacturing_vision_studio.e1.study_truth_v2",
+        ),
+    }
+    assert all(source != target for source, target in internal_runtime_edges)
+    assert not any(
+        reverse in internal_runtime_edges
+        for reverse in ((target, source) for source, target in internal_runtime_edges)
+    )
+
+
+@pytest.mark.parametrize(
+    "module_order",
+    [
+        ("study_cli_v2", "study_runner_v2"),
+        ("study_runner_v2", "study_cli_v2"),
+    ],
+)
+def test_real_task_7_import_order_keeps_forbidden_modules_and_exports_out(
+    module_order: tuple[str, str],
+) -> None:
+    source = f"""
+        import importlib
+        import sys
+        import manufacturing_vision_studio.e1 as package
+
+        exports_before = tuple(package.__all__)
+        first = importlib.import_module(
+            "manufacturing_vision_studio.e1.{module_order[0]}"
+        )
+        second = importlib.import_module(
+            "manufacturing_vision_studio.e1.{module_order[1]}"
+        )
+        runner = importlib.import_module(
+            "manufacturing_vision_studio.e1.study_runner_v2"
+        )
+        cli = importlib.import_module(
+            "manufacturing_vision_studio.e1.study_cli_v2"
+        )
+        assert first is sys.modules[first.__name__]
+        assert second is sys.modules[second.__name__]
+        assert cli.study_runner_v2 is runner
+
+        forbidden_prefixes = {(
+            "manufacturing_vision_studio.adapters",
+            "manufacturing_vision_studio.api",
+            "manufacturing_vision_studio.cli",
+            "manufacturing_vision_studio.e1.baseline",
+            "manufacturing_vision_studio.e1.diagnostics_v2",
+            "manufacturing_vision_studio.e1.geometry",
+            "manufacturing_vision_studio.e1.geometry_search",
+            "manufacturing_vision_studio.e1.overlap_v2",
+            "manufacturing_vision_studio.e1.policy",
+            "manufacturing_vision_studio.e1.policy_v2",
+            "manufacturing_vision_studio.e1.runner",
+            "manufacturing_vision_studio.e1.trust_boundaries",
+        )!r}
+        loaded_forbidden = {{
+            name
+            for name in sys.modules
+            if any(
+                name == prefix or name.startswith(prefix + ".")
+                for prefix in forbidden_prefixes
+            )
+        }}
+        assert not loaded_forbidden, loaded_forbidden
+        assert tuple(package.__all__) == exports_before
+        assert {{
+            "StudyRunner",
+            "main",
+            "study_cli_v2",
+            "study_runner_v2",
+        }}.isdisjoint(package.__all__)
+    """
+    result = subprocess.run(
+        (sys.executable, "-c", textwrap.dedent(source)),
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_complete_projection_hashes_every_declared_path(tmp_path: Path) -> None:

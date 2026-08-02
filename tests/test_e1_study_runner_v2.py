@@ -1,0 +1,1578 @@
+from __future__ import annotations
+
+import io
+import os
+from collections.abc import Mapping
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
+from pathlib import Path
+from types import MappingProxyType, SimpleNamespace
+from typing import cast
+
+import pytest
+from PIL import Image
+from test_e1_study_artifacts_v2 import (
+    minimal_valid_decision_record,
+    minimal_valid_development_result_record,
+    minimal_valid_diagnostic_result_record,
+    minimal_valid_feature_oracle_record,
+    minimal_valid_implementation_validation_record,
+    minimal_valid_retention_audit_record,
+    minimal_valid_scope_audit_record,
+)
+
+from manufacturing_vision_studio.e1 import study_runner_v2 as runner_module
+from manufacturing_vision_studio.e1.known_transform_v2 import (
+    AppliedAffineTransform,
+    ResamplingMode,
+)
+from manufacturing_vision_studio.e1.study_artifacts_v2 import (
+    StudyArtifactRecord,
+    StudyArtifactStore,
+    VerifiedStudyJson,
+    begin_phase_execution,
+    finalize_study_record,
+)
+from manufacturing_vision_studio.e1.study_protocol_v2 import (
+    FrozenDiagnosticPlan,
+    load_study_protocol_v2,
+)
+from manufacturing_vision_studio.e1.study_retention_v2 import (
+    IMPLEMENTATION_VALIDATION_COMMANDS,
+    IMPLEMENTATION_VALIDATION_TIMEOUT_SECONDS,
+    ProjectionEntry,
+)
+from manufacturing_vision_studio.e1.study_runner_v2 import (
+    CommandRunner,
+    DiagnosticRenderer,
+    InferenceRunner,
+    NormalizeCallback,
+    OracleRunner,
+    RepositorySnapshot,
+    StudyRunner,
+    StudyStateError,
+    StudyStatus,
+    ValidationCommandRequest,
+    ValidationCommandResult,
+    VerifiedStudyState,
+    run_small_fixture_determinism_control,
+)
+from manufacturing_vision_studio.e1.study_truth_v2 import (
+    DevelopmentCorpus,
+    DevelopmentModeSummary,
+    DiagnosticModeSummary,
+    DiagnosticObservation,
+    FeatureOracleResult,
+    StudyTruthCase,
+)
+
+
+def _runner(tmp_path: Path, *, root_name: str = "artifacts") -> StudyRunner:
+    protocol = replace(
+        load_study_protocol_v2(),
+        artifact_root=tmp_path / root_name,
+    )
+    return StudyRunner(protocol, repo_root=tmp_path)
+
+
+def test_status_on_absent_root_is_pristine_and_creates_nothing(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "missing-artifacts"
+    runner = _runner(tmp_path, root_name="missing-artifacts")
+
+    status = runner.status()
+
+    assert status.study_valid is True
+    assert status.phase1_complete is False
+    assert status.feature_oracle_complete is False
+    assert status.phase2_authorized is False
+    assert status.phase2_complete is False
+    assert status.terminal_decision == "PENDING"
+    assert status.reasons == ()
+    assert not artifact_root.exists()
+
+
+def test_verify_on_absent_root_is_read_only(tmp_path: Path) -> None:
+    runner = _runner(tmp_path, root_name="missing-artifacts")
+
+    report = runner.verify()
+
+    assert report.verified_paths == ()
+    assert report.verify_rate == 0.0
+    assert report.status.terminal_decision == "PENDING"
+    assert not (tmp_path / "missing-artifacts").exists()
+
+
+def test_inventory_rejects_unknown_symlink_and_hardlink_nodes(tmp_path: Path) -> None:
+    for ordinal, create_invalid in enumerate(
+        (
+            lambda root: (root / "unknown.tmp").write_bytes(b"stale"),
+            lambda root: (root / "unknown-link").symlink_to("missing"),
+            lambda root: os.link(
+                root.parent / "hardlink-source",
+                root / "implementation-validation.json",
+            ),
+        )
+    ):
+        case_root = tmp_path / f"case-{ordinal}"
+        case_root.mkdir()
+        if ordinal == 2:
+            (tmp_path / "hardlink-source").write_bytes(b"not-json")
+        create_invalid(case_root)
+        runner = _runner(tmp_path, root_name=f"case-{ordinal}")
+
+        status = runner.status()
+
+        assert status.study_valid is False
+        assert status.terminal_decision == "STUDY_INVALID"
+        assert "ARTIFACT_INVENTORY_INVALID" in status.reasons
+
+
+def test_partial_retained_packet_is_permanently_invalid(tmp_path: Path) -> None:
+    runner = _runner(tmp_path)
+    retained = tmp_path / "artifacts" / "retained-inputs"
+    retained.mkdir(parents=True)
+    (retained / "candidate-a.json").write_bytes(b"partial")
+
+    status = runner.status()
+    report = runner.verify()
+
+    assert status.study_valid is False
+    assert status.terminal_decision == "STUDY_INVALID"
+    assert status.reasons == ("PARTIAL_RETENTION_PACKET",)
+    assert report.status == status
+    assert tuple(sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))) == (
+        "artifacts",
+        "artifacts/retained-inputs",
+        "artifacts/retained-inputs/candidate-a.json",
+    )
+
+
+def test_orphaned_phase1_claim_is_terminal_and_never_removed(tmp_path: Path) -> None:
+    runner = _runner(tmp_path)
+    protocol = runner.protocol
+    store = StudyArtifactStore(protocol.artifact_root, allowed_root=tmp_path)
+    try:
+        claim = begin_phase_execution(
+            phase="phase1",
+            protocol=protocol,
+            execution_commit="a" * 40,
+            eligible_modes=(),
+        )
+        store.publish_json("phase-1-execution-claim.json", claim.as_record())
+    finally:
+        store.close()
+
+    status = runner.status()
+
+    assert status.study_valid is False
+    assert status.terminal_decision == "STUDY_INVALID"
+    assert "PHASE1_CLAIM_RESULT_ORPHAN" in status.reasons
+    assert (protocol.artifact_root / "phase-1-execution-claim.json").is_file()
+
+
+def test_determinism_fixture_uses_two_independent_paths_and_exact_mode_order() -> None:
+    calls: list[tuple[bytes, bytes, object, object]] = []
+
+    def normalize(
+        reference_bytes: bytes,
+        inspection_bytes: bytes,
+        *,
+        reference_sha256: str,
+        inspection_sha256: str,
+        applied_transform: object,
+        resampling: object,
+    ) -> object:
+        assert sha256(reference_bytes).hexdigest() == reference_sha256
+        assert sha256(inspection_bytes).hexdigest() == inspection_sha256
+        digest = sha256(reference_bytes).hexdigest()
+        calls.append((reference_bytes, inspection_bytes, applied_transform, resampling))
+        return SimpleNamespace(
+            normalized_bytes=reference_bytes,
+            normalized_sha256=digest,
+            trace=SimpleNamespace(normalized_sha256=digest),
+        )
+
+    control = run_small_fixture_determinism_control(
+        normalize=cast(NormalizeCallback, normalize)
+    )
+
+    assert control.passed is True
+    assert dict(control.first_projection) == dict(control.second_projection)
+    assert tuple(str(call[3]) for call in calls) == (
+        "NEAREST",
+        "BILINEAR",
+        "BICUBIC",
+        "NEAREST",
+        "BILINEAR",
+        "BICUBIC",
+    )
+    assert calls[0][0] == calls[3][0]
+    assert calls[0][0] is not calls[3][0]
+    with Image.open(io.BytesIO(calls[0][0])) as image:
+        assert image.size == (512, 384)
+        assert image.getpixel((0, 0)) == (17, 23, 31)
+        assert image.getpixel((52, 44)) == (231, 37, 19)
+        assert image.getpixel((177, 161)) == (231, 37, 19)
+        assert image.getpixel((178, 162)) == (17, 23, 31)
+
+
+def _projection(protocol_paths: tuple[str, ...]) -> tuple[ProjectionEntry, ...]:
+    return tuple(
+        ProjectionEntry(path, sha256(path.encode()).hexdigest()) for path in protocol_paths
+    )
+
+
+def _validation_dependencies(
+    tmp_path: Path,
+    *,
+    command_runner: CommandRunner,
+    snapshots: list[RepositorySnapshot] | None = None,
+) -> tuple[StudyRunner, list[tuple[str, str | None]], list[RepositorySnapshot]]:
+    protocol = replace(load_study_protocol_v2(), artifact_root=tmp_path / "artifacts")
+    projection = _projection(protocol.implementation_projection_paths())
+    baseline = RepositorySnapshot("a" * 40, (), projection)
+    observed_snapshots: list[RepositorySnapshot] = []
+
+    def repository_state() -> RepositorySnapshot:
+        if snapshots:
+            snapshot = snapshots.pop(0)
+        elif (protocol.artifact_root / "implementation-validation.json").exists():
+            snapshot = RepositorySnapshot(
+                baseline.head,
+                ("artifacts/implementation-validation.json",),
+                projection,
+            )
+        else:
+            snapshot = baseline
+        observed_snapshots.append(snapshot)
+        return snapshot
+
+    resolver_calls: list[tuple[str, str | None]] = []
+
+    def resolve(name: str, search_path: str | None) -> Path:
+        resolver_calls.append((name, search_path))
+        if name == "uv":
+            return Path("/opt/e1-study/uv/bin/uv")
+        if name == "npm":
+            return Path("/opt/e1-study/npm/bin/npm")
+        if name == "node":
+            return Path("/opt/e1-study/npm/bin/node")
+        raise AssertionError(name)
+
+    def normalize(
+        reference_bytes: bytes,
+        inspection_bytes: bytes,
+        *,
+        reference_sha256: str,
+        inspection_sha256: str,
+        applied_transform: object,
+        resampling: object,
+    ) -> object:
+        del inspection_bytes, reference_sha256, inspection_sha256, applied_transform
+        digest = sha256(reference_bytes).hexdigest()
+        return SimpleNamespace(
+            normalized_bytes=reference_bytes,
+            normalized_sha256=digest,
+            trace=SimpleNamespace(normalized_sha256=digest),
+        )
+
+    runner = StudyRunner(
+        protocol,
+        repo_root=tmp_path,
+        command_runner=command_runner,
+        executable_resolver=resolve,
+        repository_state=repository_state,
+        normalize=cast(NormalizeCallback, normalize),
+        home_directory=Path("/tmp/e1-study-home"),
+        temp_directory=Path("/tmp/e1-study"),
+    )
+    return runner, resolver_calls, observed_snapshots
+
+
+def test_validation_transaction_records_fixed_requests_and_rechecks_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[ValidationCommandRequest] = []
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+
+    def command_runner(request: ValidationCommandRequest) -> ValidationCommandResult:
+        requests.append(request)
+        ordinal = len(requests)
+        return ValidationCommandResult(
+            exit_code=0,
+            stdout=f"stdout-{ordinal}".encode(),
+            stderr=f"stderr-{ordinal}".encode(),
+            started_at_utc=started + timedelta(seconds=ordinal),
+            ended_at_utc=started + timedelta(seconds=ordinal + 1),
+        )
+
+    runner, resolver_calls, snapshots = _validation_dependencies(
+        tmp_path,
+        command_runner=command_runner,
+    )
+    verifier_calls: list[str] = []
+
+    def verify_published(protocol: object, store: StudyArtifactStore, **kwargs: object) -> object:
+        del protocol, kwargs
+        verifier_calls.append("implementation-validation.json")
+        return store.verify_json_result(
+            "implementation-validation.json",
+            expected_record_type="implementation_validation",
+        )
+
+    monkeypatch.setattr(
+        runner_module,
+        "verify_implementation_validation",
+        verify_published,
+    )
+
+    published = runner.validate_implementation()
+
+    assert published.path == "implementation-validation.json"
+    assert tuple((request.name, request.argv) for request in requests) == (
+        IMPLEMENTATION_VALIDATION_COMMANDS
+    )
+    assert tuple(request.timeout_seconds for request in requests) == (
+        IMPLEMENTATION_VALIDATION_TIMEOUT_SECONDS
+    )
+    assert tuple(request.executable_lookup_path.as_posix() for request in requests) == (
+        *("/opt/e1-study/uv/bin/uv" for _ in range(4)),
+        *("/opt/e1-study/npm/bin/npm" for _ in range(2)),
+    )
+    expected_path = (
+        "/opt/e1-study/uv/bin:/opt/e1-study/npm/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    )
+    assert all(request.cwd == tmp_path for request in requests)
+    assert all(request.output_limit_bytes == 4_194_304 for request in requests)
+    assert all(request.environment["PATH"] == expected_path for request in requests)
+    assert all(len(request.environment) == 16 for request in requests)
+    assert all(request.environment == requests[0].environment for request in requests)
+    assert resolver_calls == [
+        ("uv", None),
+        ("npm", None),
+        ("node", expected_path),
+    ]
+    assert len(snapshots) == 15
+    assert snapshots[-1].dirty_paths == (
+        "artifacts/implementation-validation.json",
+    )
+    assert verifier_calls == ["implementation-validation.json"]
+    store = StudyArtifactStore.open_existing(
+        runner.protocol.artifact_root,
+        allowed_root=tmp_path,
+    )
+    assert store is not None
+    try:
+        document = store.verify_json(
+            "implementation-validation.json",
+            expected_record_type="implementation_validation",
+        )
+    finally:
+        store.close()
+    payload = cast(dict[str, object], document["payload"])
+    commands = cast(list[dict[str, object]], payload["commands"])
+    assert [command["stdout_byte_count"] for command in commands] == [8] * 6
+    assert [command["stderr_byte_count"] for command in commands] == [8] * 6
+
+
+def test_existing_valid_implementation_validation_runs_zero_callbacks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol = replace(
+        load_study_protocol_v2(),
+        artifact_root=tmp_path / "artifacts",
+    )
+    protocol.artifact_root.mkdir()
+    callback_calls: list[str] = []
+
+    def forbidden_callback(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        callback_calls.append("called")
+        raise AssertionError("existing evidence must not invoke an execution callback")
+
+    evidence = SimpleNamespace(
+        raw_sha256="1" * 64,
+        raw_bytes=b"{}",
+        record_sha256="2" * 64,
+    )
+    state = VerifiedStudyState(
+        status=StudyStatus(True, False, False, False, False, "PENDING", ()),
+        present_paths=("implementation-validation.json",),
+        invalid_paths=(),
+        verified_json=cast(
+            Mapping[str, VerifiedStudyJson],
+            {"implementation-validation.json": evidence},
+        ),
+    )
+    monkeypatch.setattr(runner_module, "inspect_state", lambda *args, **kwargs: state)
+    monkeypatch.setattr(
+        runner_module,
+        "verify_implementation_validation",
+        lambda *args, **kwargs: evidence,
+    )
+    runner = StudyRunner(
+        protocol,
+        repo_root=tmp_path,
+        command_runner=cast(CommandRunner, forbidden_callback),
+        executable_resolver=cast(runner_module.ExecutableResolver, forbidden_callback),
+        repository_state=cast(runner_module.RepositoryStateReader, forbidden_callback),
+        normalize=cast(NormalizeCallback, forbidden_callback),
+    )
+
+    record = runner.validate_implementation()
+
+    assert record == StudyArtifactRecord(
+        path="implementation-validation.json",
+        sha256="1" * 64,
+        byte_size=2,
+        media_type="application/json",
+        record_sha256="2" * 64,
+    )
+    assert callback_calls == []
+
+
+@pytest.mark.parametrize(
+    "bad_result",
+    (
+        ValidationCommandResult(
+            2,
+            b"",
+            b"failed",
+            datetime(2026, 8, 1, tzinfo=UTC),
+            datetime(2026, 8, 1, 0, 0, 1, tzinfo=UTC),
+        ),
+        ValidationCommandResult(
+            0,
+            b"x" * (4_194_304 + 1),
+            b"",
+            datetime(2026, 8, 1, tzinfo=UTC),
+            datetime(2026, 8, 1, 0, 0, 1, tzinfo=UTC),
+        ),
+        ValidationCommandResult(
+            0,
+            b"",
+            b"",
+            datetime(2026, 8, 1),
+            datetime(2026, 8, 1, 0, 0, 1),
+        ),
+    ),
+)
+def test_validation_failure_publishes_nothing(
+    tmp_path: Path,
+    bad_result: ValidationCommandResult,
+) -> None:
+    calls = 0
+
+    def command_runner(request: ValidationCommandRequest) -> ValidationCommandResult:
+        nonlocal calls
+        del request
+        calls += 1
+        return bad_result
+
+    runner, _, _ = _validation_dependencies(tmp_path, command_runner=command_runner)
+
+    with pytest.raises(StudyStateError):
+        runner.validate_implementation()
+
+    assert calls == 1
+    assert not runner.protocol.artifact_root.exists()
+
+
+def test_validation_head_drift_stops_between_commands_and_publishes_nothing(
+    tmp_path: Path,
+) -> None:
+    protocol = load_study_protocol_v2()
+    projection = _projection(protocol.implementation_projection_paths())
+    snapshots = [
+        RepositorySnapshot("a" * 40, (), projection),
+        RepositorySnapshot("b" * 40, (), projection),
+    ]
+    calls = 0
+
+    def command_runner(request: ValidationCommandRequest) -> ValidationCommandResult:
+        nonlocal calls
+        del request
+        calls += 1
+        return ValidationCommandResult(
+            0,
+            b"",
+            b"",
+            datetime(2026, 8, 1, tzinfo=UTC),
+            datetime(2026, 8, 1, 0, 0, 1, tzinfo=UTC),
+        )
+
+    runner, _, _ = _validation_dependencies(
+        tmp_path,
+        command_runner=command_runner,
+        snapshots=snapshots,
+    )
+
+    with pytest.raises(StudyStateError, match="HEAD"):
+        runner.validate_implementation()
+
+    assert calls == 1
+    assert not runner.protocol.artifact_root.exists()
+
+
+def test_validation_rejects_node_outside_sealed_path_before_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def command_runner(request: ValidationCommandRequest) -> ValidationCommandResult:
+        nonlocal calls
+        del request
+        calls += 1
+        raise AssertionError("command must not run")
+
+    runner, _, _ = _validation_dependencies(tmp_path, command_runner=command_runner)
+
+    def bad_resolver(name: str, search_path: str | None) -> Path:
+        del search_path
+        if name == "uv":
+            return Path("/opt/e1-study/uv/bin/uv")
+        if name == "npm":
+            return Path("/opt/e1-study/npm/bin/npm")
+        return Path("/outside/node")
+
+    monkeypatch.setattr(runner, "_executable_resolver", bad_resolver)
+
+    with pytest.raises(StudyStateError, match="node"):
+        runner.validate_implementation()
+
+    assert calls == 0
+    assert not runner.protocol.artifact_root.exists()
+
+
+def test_phase1_claim_is_reopened_before_first_render(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol = replace(
+        load_study_protocol_v2(),
+        artifact_root=tmp_path / "artifacts",
+    )
+    store = StudyArtifactStore(protocol.artifact_root, allowed_root=tmp_path)
+    events: list[str] = []
+    state = VerifiedStudyState(
+        status=StudyStatus(True, False, False, False, False, "PENDING", ()),
+        present_paths=("implementation-validation.json", "retention-audit.json"),
+        invalid_paths=(),
+        verified_json=cast(
+            Mapping[str, VerifiedStudyJson],
+            {
+                "implementation-validation.json": SimpleNamespace(
+                    document={"execution_commit": "a" * 40}
+                ),
+                "retention-audit.json": SimpleNamespace(document={}),
+            },
+        ),
+    )
+    monkeypatch.setattr(runner_module, "inspect_state", lambda *args, **kwargs: state)
+
+    def no_op_preflight(*args: object, **kwargs: object) -> RepositorySnapshot:
+        del args, kwargs
+        return RepositorySnapshot("b" * 40, (), ())
+
+    monkeypatch.setattr(StudyRunner, "_require_mutating_preflight", no_op_preflight)
+    monkeypatch.setattr(
+        StudyRunner,
+        "_require_phase_publication_state",
+        lambda *args, **kwargs: None,
+    )
+    original_verify = StudyArtifactStore.verify_json_result
+
+    def observe_verify(
+        self: StudyArtifactStore,
+        relative_path: str,
+        *,
+        expected_record_type: str,
+    ) -> object:
+        if relative_path == "phase-1-execution-claim.json":
+            events.append("claim-verified")
+        return original_verify(
+            self,
+            relative_path,
+            expected_record_type=expected_record_type,
+        )
+
+    monkeypatch.setattr(StudyArtifactStore, "verify_json_result", observe_verify)
+
+    def render(*args: object) -> object:
+        del args
+        events.append("render")
+        raise RuntimeError("stop after callback one")
+
+    runner = StudyRunner(
+        protocol,
+        repo_root=tmp_path,
+        store=store,
+        render=cast(DiagnosticRenderer, render),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="callback one"):
+            runner.phase1()
+    finally:
+        store.close()
+
+    assert events == ["claim-verified", "render"]
+    assert (protocol.artifact_root / "phase-1-execution-claim.json").is_file()
+
+
+def test_orphaned_phase1_claim_blocks_rerun_before_render(tmp_path: Path) -> None:
+    runner = _runner(tmp_path)
+    store = StudyArtifactStore(runner.protocol.artifact_root, allowed_root=tmp_path)
+    try:
+        store.publish_json(
+            "phase-1-execution-claim.json",
+            begin_phase_execution(
+                phase="phase1",
+                protocol=runner.protocol,
+                execution_commit="a" * 40,
+                eligible_modes=(),
+            ).as_record(),
+        )
+    finally:
+        store.close()
+    renders = 0
+
+    def render(*args: object) -> object:
+        nonlocal renders
+        del args
+        renders += 1
+        raise AssertionError("orphaned claim must block rendering")
+
+    runner._render = cast(DiagnosticRenderer, render)
+
+    with pytest.raises(StudyStateError, match="Phase 1"):
+        runner.phase1()
+
+    assert renders == 0
+
+
+def test_phase1_executes_exact_case_major_callback_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol = replace(load_study_protocol_v2(), artifact_root=tmp_path / "artifacts")
+    store = StudyArtifactStore(protocol.artifact_root, allowed_root=tmp_path)
+    validation = VerifiedStudyJson(
+        document=MappingProxyType(
+            {
+                "execution_commit": "a" * 40,
+                "artifact_schema_sha256": "b" * 64,
+                "implementation_projection_sha256": "c" * 64,
+            }
+        ),
+        raw_bytes=b"validation",
+        raw_sha256="d" * 64,
+        record_sha256="e" * 64,
+    )
+    retention = VerifiedStudyJson(
+        document=MappingProxyType({}),
+        raw_bytes=b"retention",
+        raw_sha256="f" * 64,
+        record_sha256="1" * 64,
+    )
+    state = VerifiedStudyState(
+        StudyStatus(True, False, False, False, False, "PENDING", ()),
+        ("implementation-validation.json", "retention-audit.json"),
+        (),
+        MappingProxyType(
+            {
+                "implementation-validation.json": validation,
+                "retention-audit.json": retention,
+            }
+        ),
+    )
+    monkeypatch.setattr(runner_module, "inspect_state", lambda *args, **kwargs: state)
+    monkeypatch.setattr(
+        StudyRunner,
+        "_require_mutating_preflight",
+        lambda *args, **kwargs: RepositorySnapshot("b" * 40, (), ()),
+    )
+    monkeypatch.setattr(
+        StudyRunner,
+        "_require_phase_publication_state",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        StudyRunner,
+        "_require_completed_phase",
+        lambda *args, **kwargs: None,
+    )
+    plans = tuple(SimpleNamespace(ordinal=ordinal) for ordinal in range(108))
+    events: list[tuple[str, int, str | None]] = []
+
+    def render(plan: object, *args: object) -> object:
+        del args
+        ordinal = cast(int, cast(SimpleNamespace, plan).ordinal)
+        events.append(("render", ordinal, None))
+        return SimpleNamespace(
+            case_id=f"e1-v2-development-diagnostic-{ordinal:03d}",
+            seed=800000 + ordinal,
+            expected_outcome="ANOMALY" if ordinal >= 84 else "NORMAL",
+            part_id="plate-demo",
+            cad_revision="rev-A",
+            view_id="front",
+            reference_bytes=b"reference",
+            inspection_bytes=b"inspection",
+            authoritative_mask_bytes=b"mask",
+            reference_sha256="2" * 64,
+            inspection_sha256="3" * 64,
+            authoritative_mask_sha256="4" * 64,
+            applied_transform=AppliedAffineTransform(1.01, 0.5, 1.0, -1.0),
+            defect_type="scratch" if ordinal >= 84 else None,
+            defect_severity="MEDIUM" if ordinal >= 84 else None,
+            expected_feature_id="top_face" if ordinal >= 84 else None,
+        )
+
+    def normalize(
+        reference_bytes: bytes,
+        inspection_bytes: bytes,
+        *,
+        reference_sha256: str,
+        inspection_sha256: str,
+        applied_transform: AppliedAffineTransform,
+        resampling: ResamplingMode,
+    ) -> object:
+        del reference_bytes, inspection_bytes, reference_sha256, inspection_sha256
+        del applied_transform
+        ordinal = sum(1 for event in events if event[0] == "render") - 1
+        events.append(("normalize", ordinal, resampling.value))
+        return SimpleNamespace(mode=resampling)
+
+    def infer(value: object) -> object:
+        case, normalized = cast(tuple[object, object], value)
+        ordinal = cast(int, cast(SimpleNamespace, case).seed) - 800000
+        mode = cast(ResamplingMode, cast(SimpleNamespace, normalized).mode)
+        events.append(("inference", ordinal, mode.value))
+        return SimpleNamespace(mode=mode)
+
+    monkeypatch.setattr(runner_module, "raw_identity_difference_mask", lambda case: b"id")
+    monkeypatch.setattr(
+        runner_module,
+        "reference_boundary_band",
+        lambda payload: SimpleNamespace(
+            radius=3,
+            foreground_positive_pixels=1,
+            boundary_positive_pixels=1,
+            band_positive_pixels=1,
+            band_mask_sha256="5" * 64,
+        ),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "make_truth_free_input",
+        lambda case, normalized: (case, normalized),
+    )
+
+    def observe(case: object, result: object, *args: object) -> DiagnosticObservation:
+        del args
+        ordinal = cast(int, cast(SimpleNamespace, case).seed) - 800000
+        mode = cast(ResamplingMode, cast(SimpleNamespace, result).mode)
+        defect = ordinal >= 84
+        return DiagnosticObservation(
+            diagnostic_id=cast(str, cast(SimpleNamespace, case).case_id),
+            seed=800000 + ordinal,
+            mode=mode,
+            defect_row=defect,
+            medium_high_row=defect,
+            actual_outcome="ANOMALY" if defect else "NORMAL",
+            identity_recall=1.0,
+            study_recall=1.0,
+            identity_dice=1.0,
+            study_dice=1.0,
+            study_iou=1.0,
+            total_residual=1 if defect else 0,
+            boundary_residual=0,
+            outside_boundary_residual=1 if defect else 0,
+            record={
+                "diagnostic_id": cast(str, cast(SimpleNamespace, case).case_id),
+                "seed": 800000 + ordinal,
+                "mode": mode.value,
+            },
+        )
+
+    monkeypatch.setattr(runner_module, "diagnostic_observation", observe)
+
+    def reduce(
+        mode: ResamplingMode,
+        rows: object,
+        gates: object,
+    ) -> DiagnosticModeSummary:
+        del gates
+        checked = cast(list[DiagnosticObservation], rows)
+        assert len(checked) == 108
+        assert all(row.mode is mode for row in checked)
+        return DiagnosticModeSummary(mode, 108, 24, 24, 0.0, 0.0, 1.0, True)
+
+    monkeypatch.setattr(runner_module, "reduce_diagnostic_mode", reduce)
+    published_documents: list[dict[str, object]] = []
+    original_publish = StudyArtifactStore.publish_json
+
+    def publish(
+        self: StudyArtifactStore,
+        relative_path: str,
+        document: object,
+    ) -> StudyArtifactRecord:
+        if relative_path == "known-transform-diagnostic-108.json":
+            published_documents.append(cast(dict[str, object], document))
+            return StudyArtifactRecord(relative_path, "6" * 64, 1, "application/json", "7" * 64)
+        return original_publish(self, relative_path, cast(dict[str, object], document))
+
+    monkeypatch.setattr(StudyArtifactStore, "publish_json", publish)
+    runner = StudyRunner(
+        protocol,
+        repo_root=tmp_path,
+        store=store,
+        diagnostic_matrix=lambda: cast(tuple[FrozenDiagnosticPlan, ...], plans),
+        render=cast(DiagnosticRenderer, render),
+        normalize=cast(NormalizeCallback, normalize),
+        inference=cast(InferenceRunner, infer),
+    )
+    try:
+        runner.phase1()
+    finally:
+        store.close()
+
+    assert sum(event[0] == "render" for event in events) == 108
+    assert sum(event[0] == "normalize" for event in events) == 324
+    assert sum(event[0] == "inference" for event in events) == 324
+    assert events[:7] == [
+        ("render", 0, None),
+        ("normalize", 0, "NEAREST"),
+        ("inference", 0, "NEAREST"),
+        ("normalize", 0, "BILINEAR"),
+        ("inference", 0, "BILINEAR"),
+        ("normalize", 0, "BICUBIC"),
+        ("inference", 0, "BICUBIC"),
+    ]
+    assert len(published_documents) == 1
+
+
+def _fake_development_corpus() -> DevelopmentCorpus:
+    cases: list[object] = []
+    for group, count, start in (
+        ("clean", 24, 400000),
+        ("nuisance", 30, 410000),
+        ("defect", 60, 420000),
+        ("trust_boundary", 6, 430000),
+    ):
+        for ordinal in range(count):
+            case_id = f"e1-v2-development-{group}-{ordinal:03d}"
+            cases.append(
+                SimpleNamespace(
+                    case_id=case_id,
+                    seed=start + ordinal,
+                    group=group,
+                    reference_bytes=b"reference",
+                    inspection_bytes=b"inspection",
+                    authoritative_mask_bytes=b"mask",
+                    reference_sha256=sha256(f"{case_id}-reference".encode()).hexdigest(),
+                    inspection_sha256=sha256(f"{case_id}-inspection".encode()).hexdigest(),
+                    authoritative_mask_sha256=sha256(f"{case_id}-mask".encode()).hexdigest(),
+                    case_binding_sha256=sha256(f"{case_id}-binding".encode()).hexdigest(),
+                    applied_transform=AppliedAffineTransform(1.0, 0.0, 0.0, 0.0),
+                    trust_boundary=group == "trust_boundary",
+                    expected_feature_id="top_face" if group == "defect" else None,
+                )
+            )
+    return DevelopmentCorpus(
+        cases=cast(tuple[StudyTruthCase, ...], tuple(cases)),
+        counts={
+            "clean": 24,
+            "nuisance": 30,
+            "defect": 60,
+            "trust_boundary": 6,
+            "total": 120,
+        },
+        scope_projection=("development",),
+        external_request_count=1,
+        internal_membership_validation_count=120,
+    )
+
+
+def _fake_verified(document: dict[str, object]) -> VerifiedStudyJson:
+    finalized = finalize_study_record(document)
+    raw = runner_module._canonical_json_bytes(finalized)
+
+    def freeze(value: object) -> object:
+        if isinstance(value, dict):
+            return MappingProxyType({key: freeze(item) for key, item in value.items()})
+        if isinstance(value, list):
+            return tuple(freeze(item) for item in value)
+        return value
+
+    return VerifiedStudyJson(
+        document=cast(Mapping[str, object], freeze(finalized)),
+        raw_bytes=raw,
+        raw_sha256=sha256(raw).hexdigest(),
+        record_sha256=cast(str, finalized["record_sha256"]),
+    )
+
+
+def _base_phase_evidence() -> tuple[VerifiedStudyJson, VerifiedStudyJson]:
+    validation = _fake_verified(
+        {
+            "execution_commit": "a" * 40,
+            "artifact_schema_sha256": "b" * 64,
+            "implementation_projection_sha256": "c" * 64,
+        }
+    )
+    retention = _fake_verified({})
+    return validation, retention
+
+
+def _intercept_publication(
+    monkeypatch: pytest.MonkeyPatch,
+    events: list[str],
+) -> dict[str, VerifiedStudyJson]:
+    published: dict[str, VerifiedStudyJson] = {}
+
+    def publish(
+        self: StudyArtifactStore,
+        relative_path: str,
+        document: Mapping[str, object],
+    ) -> StudyArtifactRecord:
+        del self
+        events.append(f"publish:{relative_path}")
+        evidence = _fake_verified(dict(document))
+        published[relative_path] = evidence
+        return StudyArtifactRecord(
+            relative_path,
+            evidence.raw_sha256,
+            len(evidence.raw_bytes),
+            "application/json",
+            evidence.record_sha256,
+        )
+
+    def verify(
+        self: StudyArtifactStore,
+        relative_path: str,
+        *,
+        expected_record_type: str,
+    ) -> VerifiedStudyJson:
+        del self, expected_record_type
+        events.append(f"verify:{relative_path}")
+        return published[relative_path]
+
+    monkeypatch.setattr(StudyArtifactStore, "publish_json", publish)
+    monkeypatch.setattr(StudyArtifactStore, "verify_json_result", verify)
+    monkeypatch.setattr(
+        StudyRunner,
+        "_require_mutating_preflight",
+        lambda *args, **kwargs: RepositorySnapshot("f" * 40, (), ()),
+    )
+    monkeypatch.setattr(
+        StudyRunner,
+        "_require_phase_publication_state",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        StudyRunner,
+        "_require_completed_phase",
+        lambda *args, **kwargs: None,
+    )
+    return published
+
+
+def test_feature_oracle_materializes_once_and_never_calls_inference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol = replace(load_study_protocol_v2(), artifact_root=tmp_path / "artifacts")
+    store = StudyArtifactStore(protocol.artifact_root, allowed_root=tmp_path)
+    validation, retention = _base_phase_evidence()
+    phase1_claim = _fake_verified({})
+    diagnostic = _fake_verified({})
+    state = VerifiedStudyState(
+        StudyStatus(True, True, False, False, False, "PENDING", ()),
+        (
+            "implementation-validation.json",
+            "retention-audit.json",
+            "phase-1-execution-claim.json",
+            "known-transform-diagnostic-108.json",
+        ),
+        (),
+        MappingProxyType(
+            {
+                "implementation-validation.json": validation,
+                "retention-audit.json": retention,
+                "phase-1-execution-claim.json": phase1_claim,
+                "known-transform-diagnostic-108.json": diagnostic,
+            }
+        ),
+    )
+    monkeypatch.setattr(runner_module, "inspect_state", lambda *args, **kwargs: state)
+    events: list[str] = []
+    published = _intercept_publication(monkeypatch, events)
+    corpus = _fake_development_corpus()
+    corpus_calls = 0
+    oracle_calls = 0
+
+    def load_corpus() -> DevelopmentCorpus:
+        nonlocal corpus_calls
+        corpus_calls += 1
+        events.append("corpus")
+        return corpus
+
+    def run_oracle(*args: object) -> FeatureOracleResult:
+        nonlocal oracle_calls
+        del args
+        oracle_calls += 1
+        events.append("oracle")
+        records = tuple(
+            {
+                "case_id": case.case_id,
+                "authoritative_mask_sha256": case.authoritative_mask_sha256,
+                "authoritative_positive_pixels": 16,
+                "expected_feature_id": "top_face",
+                "predicted_feature_id": "top_face",
+                "status": "MAPPED",
+                "correct": True,
+                "hash_binding_matches": True,
+                "ownership_map_sha256": protocol.ownership_map_hashes["rev-A/front"],
+                "target_owned_pixels": 16,
+                "owned_pixel_count": 16,
+                "unmapped_pixel_count": 0,
+            }
+            for case in corpus.cases
+            if case.group == "defect"
+        )
+        return FeatureOracleResult(
+            60,
+            60,
+            0,
+            0,
+            0,
+            protocol.ownership_map_hashes,
+            records,
+            True,
+        )
+
+    def forbidden_inference(value: object) -> object:
+        del value
+        raise AssertionError("feature oracle cannot invoke inference")
+
+    runner = StudyRunner(
+        protocol,
+        repo_root=tmp_path,
+        store=store,
+        corpus=load_corpus,
+        oracle=cast(OracleRunner, run_oracle),
+        inference=cast(InferenceRunner, forbidden_inference),
+    )
+    try:
+        runner.feature_oracle()
+    finally:
+        store.close()
+
+    assert corpus_calls == 1
+    assert oracle_calls == 1
+    assert events == [
+        "corpus",
+        "publish:scope-audit.json",
+        "verify:scope-audit.json",
+        "oracle",
+        "publish:feature-ownership-oracle.json",
+    ]
+    assert set(published) == {"scope-audit.json", "feature-ownership-oracle.json"}
+
+
+def test_phase2_is_mode_major_with_114_callbacks_per_eligible_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol = replace(load_study_protocol_v2(), artifact_root=tmp_path / "artifacts")
+    store = StudyArtifactStore(protocol.artifact_root, allowed_root=tmp_path)
+    validation, retention = _base_phase_evidence()
+    corpus = _fake_development_corpus()
+    bindings = runner_module._development_bindings(corpus)
+    evidence = {
+        "implementation-validation.json": validation,
+        "retention-audit.json": retention,
+        "phase-1-execution-claim.json": _fake_verified({}),
+        "known-transform-diagnostic-108.json": _fake_verified(
+            {"payload": {"eligible_modes": ["NEAREST", "BICUBIC"]}}
+        ),
+        "scope-audit.json": _fake_verified({"payload": {"bindings": bindings}}),
+        "feature-ownership-oracle.json": _fake_verified({}),
+    }
+    state = VerifiedStudyState(
+        StudyStatus(True, True, True, True, False, "PENDING", ()),
+        tuple(evidence),
+        (),
+        MappingProxyType(evidence),
+    )
+    monkeypatch.setattr(runner_module, "inspect_state", lambda *args, **kwargs: state)
+    events: list[tuple[str, str, str]] = []
+    publication_events: list[str] = []
+    published = _intercept_publication(monkeypatch, publication_events)
+    corpus_calls = 0
+
+    def load_corpus() -> DevelopmentCorpus:
+        nonlocal corpus_calls
+        corpus_calls += 1
+        return corpus
+
+    def normalize(*args: object, **kwargs: object) -> object:
+        del args
+        mode = cast(ResamplingMode, kwargs["resampling"])
+        case_id = cast(str, kwargs.pop("case_id", ""))
+        del case_id
+        return SimpleNamespace(mode=mode)
+
+    monkeypatch.setattr(
+        runner_module,
+        "make_truth_free_input",
+        lambda case, normalized: (case, normalized),
+    )
+
+    def infer(value: object) -> object:
+        case, normalized = cast(tuple[SimpleNamespace, SimpleNamespace], value)
+        events.append(("inference", normalized.mode.value, case.case_id))
+        return SimpleNamespace(mode=normalized.mode)
+
+    def observe(case: object, result: object) -> object:
+        return SimpleNamespace(case=case, result=result)
+
+    monkeypatch.setattr(runner_module, "observation_from_study", observe)
+    monkeypatch.setattr(
+        runner_module,
+        "_development_inference_record",
+        lambda case, mode, result, observation: {
+            "case_id": case.case_id,
+            "mode": mode.value,
+        },
+    )
+
+    def reduce(mode: ResamplingMode, rows: object, gates: object) -> DevelopmentModeSummary:
+        del gates
+        checked = cast(list[object], rows)
+        assert len(checked) == 114
+        return DevelopmentModeSummary(mode, 120, 114, 6, 1.0, 0.0, 1.0, 1.0, True)
+
+    monkeypatch.setattr(runner_module, "reduce_development_mode", reduce)
+    normalize_events: list[tuple[str, str]] = []
+
+    def counting_normalize(
+        reference_bytes: bytes,
+        inspection_bytes: bytes,
+        *,
+        reference_sha256: str,
+        inspection_sha256: str,
+        applied_transform: AppliedAffineTransform,
+        resampling: ResamplingMode,
+    ) -> object:
+        del reference_bytes, inspection_bytes, reference_sha256, inspection_sha256
+        del applied_transform
+        ordinal = len(normalize_events) % 114
+        normalize_events.append((resampling.value, corpus.cases[ordinal].case_id))
+        return SimpleNamespace(mode=resampling)
+
+    runner = StudyRunner(
+        protocol,
+        repo_root=tmp_path,
+        store=store,
+        corpus=load_corpus,
+        normalize=cast(NormalizeCallback, counting_normalize),
+        inference=cast(InferenceRunner, infer),
+    )
+    try:
+        runner.phase2()
+    finally:
+        store.close()
+
+    assert corpus_calls == 1
+    assert len(normalize_events) == 228
+    assert len(events) == 228
+    assert [mode for mode, _ in normalize_events[:114]] == ["NEAREST"] * 114
+    assert [mode for mode, _ in normalize_events[114:]] == ["BICUBIC"] * 114
+    assert normalize_events[0][1] == "e1-v2-development-clean-000"
+    assert normalize_events[113][1] == "e1-v2-development-defect-059"
+    assert publication_events[0:2] == [
+        "publish:phase-2-execution-claim.json",
+        "verify:phase-2-execution-claim.json",
+    ]
+    assert "known-transform-development-120.json" in published
+    payload = cast(
+        Mapping[str, object],
+        published["known-transform-development-120.json"].document["payload"],
+    )
+    assert len(cast(tuple[object, ...], payload["trust_bindings"])) == 6
+
+
+def _upstream(path: str, evidence: VerifiedStudyJson) -> dict[str, str]:
+    return {
+        "path": path,
+        "raw_sha256": evidence.raw_sha256,
+        "record_sha256": evidence.record_sha256,
+    }
+
+
+def _bind_result_envelope(
+    document: dict[str, object],
+    validation: VerifiedStudyJson,
+    upstreams: list[dict[str, str]],
+) -> None:
+    document["execution_commit"] = validation.document["execution_commit"]
+    document["artifact_schema_sha256"] = validation.document[
+        "artifact_schema_sha256"
+    ]
+    document["implementation_projection_sha256"] = validation.document[
+        "implementation_projection_sha256"
+    ]
+    document["upstream_artifacts"] = upstreams
+
+
+def _publish_semantic_packet(
+    tmp_path: Path,
+    *,
+    tamper_diagnostic_reduction: bool = False,
+    include_decision: bool = True,
+) -> StudyRunner:
+    protocol = replace(load_study_protocol_v2(), artifact_root=tmp_path / "artifacts")
+    store = StudyArtifactStore(protocol.artifact_root, allowed_root=tmp_path)
+    try:
+        validation_document = minimal_valid_implementation_validation_record(protocol)
+        store.publish_json("implementation-validation.json", validation_document)
+        validation = store.verify_json_result(
+            "implementation-validation.json",
+            expected_record_type="implementation_validation",
+        )
+        for path in (
+            "retained-inputs/candidate-a.json",
+            "retained-inputs/candidate-b.json",
+            "retained-inputs/task-4-report.md",
+            "retained-inputs/sdd-progress.md",
+        ):
+            store.publish_bytes(path, b"retained", media_type="application/octet-stream")
+
+        retention_document = minimal_valid_retention_audit_record(protocol)
+        _bind_result_envelope(
+            retention_document,
+            validation,
+            [_upstream("implementation-validation.json", validation)],
+        )
+        store.publish_json("retention-audit.json", retention_document)
+        retention = store.verify_json_result(
+            "retention-audit.json",
+            expected_record_type="retention_audit",
+        )
+
+        phase1_claim_document = begin_phase_execution(
+            phase="phase1",
+            protocol=protocol,
+            execution_commit=cast(str, validation.document["execution_commit"]),
+            eligible_modes=(),
+        ).as_record()
+        store.publish_json("phase-1-execution-claim.json", phase1_claim_document)
+        phase1_claim = store.verify_json_result(
+            "phase-1-execution-claim.json",
+            expected_record_type="phase_execution_claim",
+        )
+
+        diagnostic_document = minimal_valid_diagnostic_result_record(protocol)
+        plans = runner_module.load_frozen_diagnostic_matrix()
+        diagnostic_payload = cast(dict[str, object], diagnostic_document["payload"])
+        cases = cast(list[dict[str, object]], diagnostic_payload["cases"])
+        for case, plan in zip(cases, plans, strict=True):
+            case["cad_revision"] = plan.cad_revision.value
+            case["view_id"] = plan.view_id.value
+            case["applied_transform"] = {
+                "scale_factor": 1.0 + plan.scale_delta,
+                "rotation_degrees": plan.rotation_degrees,
+                "translation_x": float(plan.translation_x),
+                "translation_y": float(plan.translation_y),
+            }
+            case["defect_type"] = plan.defect_type
+            case["defect_severity"] = plan.defect_severity
+            case["expected_feature_id"] = plan.expected_feature_id
+        if tamper_diagnostic_reduction:
+            observations = cast(
+                list[dict[str, object]], diagnostic_payload["observations"]
+            )
+            observations[84 * 3]["study_recall"] = 0.0
+        _bind_result_envelope(
+            diagnostic_document,
+            validation,
+            [
+                _upstream("retention-audit.json", retention),
+                _upstream("phase-1-execution-claim.json", phase1_claim),
+            ],
+        )
+        store.publish_json("known-transform-diagnostic-108.json", diagnostic_document)
+        diagnostic = store.verify_json_result(
+            "known-transform-diagnostic-108.json",
+            expected_record_type="diagnostic_result",
+        )
+
+        scope_document = minimal_valid_scope_audit_record(protocol)
+        _bind_result_envelope(
+            scope_document,
+            validation,
+            [
+                _upstream("retention-audit.json", retention),
+                _upstream("known-transform-diagnostic-108.json", diagnostic),
+            ],
+        )
+        store.publish_json("scope-audit.json", scope_document)
+        scope = store.verify_json_result(
+            "scope-audit.json",
+            expected_record_type="scope_audit",
+        )
+
+        oracle_document = minimal_valid_feature_oracle_record(protocol)
+        _bind_result_envelope(
+            oracle_document,
+            validation,
+            [
+                _upstream("scope-audit.json", scope),
+                _upstream("known-transform-diagnostic-108.json", diagnostic),
+            ],
+        )
+        store.publish_json("feature-ownership-oracle.json", oracle_document)
+        oracle = store.verify_json_result(
+            "feature-ownership-oracle.json",
+            expected_record_type="feature_oracle",
+        )
+
+        eligible = ("NEAREST", "BILINEAR", "BICUBIC")
+        phase2_claim_document = begin_phase_execution(
+            phase="phase2",
+            protocol=protocol,
+            execution_commit=cast(str, validation.document["execution_commit"]),
+            eligible_modes=eligible,
+        ).as_record()
+        store.publish_json("phase-2-execution-claim.json", phase2_claim_document)
+        phase2_claim = store.verify_json_result(
+            "phase-2-execution-claim.json",
+            expected_record_type="phase_execution_claim",
+        )
+
+        development_document = minimal_valid_development_result_record(
+            protocol,
+            eligible_modes=eligible,
+            passing_modes=eligible,
+        )
+        development_payload = cast(dict[str, object], development_document["payload"])
+        inference_records = cast(
+            list[dict[str, object]], development_payload["inference_records"]
+        )
+        for record in inference_records:
+            if record["group"] == "defect":
+                ordinal = int(cast(str, record["case_id"]).rsplit("-", 1)[1])
+                metrics = cast(dict[str, object], record["metrics"])
+                metrics["severity"] = "LOW" if ordinal < 20 else "MEDIUM"
+        _bind_result_envelope(
+            development_document,
+            validation,
+            [
+                _upstream("retention-audit.json", retention),
+                _upstream("known-transform-diagnostic-108.json", diagnostic),
+                _upstream("scope-audit.json", scope),
+                _upstream("feature-ownership-oracle.json", oracle),
+                _upstream("phase-2-execution-claim.json", phase2_claim),
+            ],
+        )
+        store.publish_json(
+            "known-transform-development-120.json",
+            development_document,
+        )
+        development = store.verify_json_result(
+            "known-transform-development-120.json",
+            expected_record_type="development_result",
+        )
+
+        if include_decision:
+            decision_document = minimal_valid_decision_record(protocol)
+            _bind_result_envelope(
+                decision_document,
+                validation,
+                [
+                    _upstream("implementation-validation.json", validation),
+                    _upstream("retention-audit.json", retention),
+                    _upstream("phase-1-execution-claim.json", phase1_claim),
+                    _upstream("known-transform-diagnostic-108.json", diagnostic),
+                    _upstream("scope-audit.json", scope),
+                    _upstream("feature-ownership-oracle.json", oracle),
+                    _upstream("phase-2-execution-claim.json", phase2_claim),
+                    _upstream("known-transform-development-120.json", development),
+                ],
+            )
+            store.publish_json("decision.json", decision_document)
+    finally:
+        store.close()
+    return StudyRunner(protocol, repo_root=tmp_path)
+
+
+def test_semantic_inspection_accepts_complete_schema_valid_packet(tmp_path: Path) -> None:
+    runner = _publish_semantic_packet(tmp_path)
+
+    status = runner.status()
+
+    assert status.study_valid is True
+    assert status.phase1_complete is True
+    assert status.feature_oracle_complete is True
+    assert status.phase2_authorized is True
+    assert status.phase2_complete is True
+    assert status.terminal_decision == "TRANSFORM_ESTIMATION_LIMITED"
+
+
+def test_semantic_inspection_recomputes_diagnostic_reduction(tmp_path: Path) -> None:
+    runner = _publish_semantic_packet(tmp_path, tamper_diagnostic_reduction=True)
+
+    status = runner.status()
+
+    assert status.study_valid is False
+    assert status.terminal_decision == "STUDY_INVALID"
+    assert status.reasons == ("ARTIFACT_VERIFICATION_FAILED",)
+
+
+def test_finalize_rejects_pending_without_creating_artifacts(tmp_path: Path) -> None:
+    runner = _runner(tmp_path, root_name="missing-artifacts")
+
+    with pytest.raises(StudyStateError, match="PENDING"):
+        runner.finalize()
+
+    assert not runner.protocol.artifact_root.exists()
+
+
+def test_finalize_publishes_decision_before_deterministic_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _publish_semantic_packet(tmp_path, include_decision=False)
+    snapshot = RepositorySnapshot(
+        "f" * 40,
+        (),
+        _projection(runner.protocol.implementation_projection_paths()),
+    )
+    monkeypatch.setattr(runner, "_repository_state", lambda: snapshot)
+    monkeypatch.setattr(
+        StudyRunner,
+        "_require_finalization_preflight",
+        lambda *args, **kwargs: snapshot,
+    )
+    monkeypatch.setattr(
+        StudyRunner,
+        "_require_phase_publication_state",
+        lambda *args, **kwargs: None,
+    )
+
+    published = runner.finalize()
+
+    assert published.path == "decision.json"
+    assert runner.protocol.artifact_root.joinpath("decision.json").is_file()
+    assert runner.protocol.artifact_root.joinpath("report.md").is_file()
+    assert runner.status().terminal_decision == "TRANSFORM_ESTIMATION_LIMITED"
+    first_report = runner.protocol.artifact_root.joinpath("report.md").read_bytes()
+
+    repeated = runner.finalize()
+
+    assert repeated.record_sha256 == published.record_sha256
+    assert runner.protocol.artifact_root.joinpath("report.md").read_bytes() == first_report
+
+
+def test_finalize_seals_semantically_invalid_packet_with_honest_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _publish_semantic_packet(
+        tmp_path,
+        tamper_diagnostic_reduction=True,
+        include_decision=False,
+    )
+    before = runner.verify()
+    assert before.status.terminal_decision == "STUDY_INVALID"
+    snapshot = RepositorySnapshot(
+        "f" * 40,
+        (),
+        _projection(runner.protocol.implementation_projection_paths()),
+    )
+    monkeypatch.setattr(
+        StudyRunner,
+        "_require_finalization_preflight",
+        lambda *args, **kwargs: snapshot,
+    )
+    monkeypatch.setattr(
+        StudyRunner,
+        "_require_phase_publication_state",
+        lambda *args, **kwargs: None,
+    )
+    publications: list[str] = []
+    original_publish_json = StudyArtifactStore.publish_json
+    original_publish_bytes = StudyArtifactStore.publish_bytes
+
+    def publish_json(
+        store: StudyArtifactStore,
+        relative_path: str,
+        document: Mapping[str, object],
+    ) -> StudyArtifactRecord:
+        publications.append(f"json:{relative_path}")
+        return original_publish_json(store, relative_path, document)
+
+    def publish_bytes(
+        store: StudyArtifactStore,
+        relative_path: str,
+        payload: bytes,
+        *,
+        media_type: str,
+    ) -> StudyArtifactRecord:
+        publications.append(f"bytes:{relative_path}")
+        return original_publish_bytes(
+            store,
+            relative_path,
+            payload,
+            media_type=media_type,
+        )
+
+    monkeypatch.setattr(StudyArtifactStore, "publish_json", publish_json)
+    monkeypatch.setattr(StudyArtifactStore, "publish_bytes", publish_bytes)
+
+    published = runner.finalize()
+
+    assert publications == [
+        "json:decision.json",
+        "bytes:decision.json",
+        "bytes:report.md",
+    ]
+    store = StudyArtifactStore.open_existing(
+        runner.protocol.artifact_root,
+        allowed_root=tmp_path,
+    )
+    assert store is not None
+    try:
+        decision = store.verify_json_result(
+            "decision.json",
+            expected_record_type="decision",
+        )
+        report = store.read_bytes("report.md").decode("utf-8")
+    finally:
+        store.close()
+    payload = cast(Mapping[str, object], decision.document["payload"])
+    present_paths = cast(tuple[str, ...], payload["present_paths"])
+    invalid_paths = cast(tuple[str, ...], payload["invalid_paths"])
+    assert payload["decision"] == "STUDY_INVALID"
+    assert payload["verified_artifact_count"] == 0
+    assert payload["present_artifact_count"] == 8
+    assert payload["study_artifact_verify_rate"] == 0.0
+    assert invalid_paths == present_paths
+    assert "Verified artifacts: 0/8 (0.0)" in report
+    assert f"Invalid artifacts: {', '.join(invalid_paths)}" in report
+
+    after = runner.verify()
+    assert after.status.terminal_decision == "STUDY_INVALID"
+    assert "decision.json" in after.verified_paths
+    assert "report.md" in after.verified_paths
+    publication_count = len(publications)
+
+    repeated = runner.finalize()
+
+    assert repeated.record_sha256 == published.record_sha256
+    assert len(publications) == publication_count
