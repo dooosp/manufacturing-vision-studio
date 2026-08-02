@@ -82,7 +82,6 @@ EXPECTED_DIRECT_IMPORT_ALLOWLIST = {
     "known_transform_v2": (
         "manufacturing_vision_studio.canonical",
         "manufacturing_vision_studio.canonical_png",
-        "manufacturing_vision_studio.images",
     ),
     "study_artifacts_v2": ("manufacturing_vision_studio.canonical",),
     "study_cli_v2": (),
