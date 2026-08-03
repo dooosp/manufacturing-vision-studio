@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import pwd
 import selectors
 import shutil
 import signal
@@ -133,6 +134,7 @@ _EXPECTED_KINDS = {
 }
 _VALIDATION_OUTPUT_LIMIT_BYTES = 4 * 1024 * 1024
 _SYSTEM_PATH_SUFFIX = "/usr/bin:/bin:/usr/sbin:/sbin"
+_FIXED_PRODUCTION_LOOKUP_ROOTS = ("/opt/homebrew/bin", "/usr/local/bin")
 _ARTIFACT_ROOT_LITERAL = "docs/evaluation/results/e1-feasibility-study"
 _ALLOWED_NEXT_ACTIONS = {
     "STUDY_INVALID": "Repair evidence machinery only; no performance conclusion",
@@ -872,6 +874,16 @@ def _verify_scope_payload(document: Mapping[str, object]) -> None:
     )
     if actual != expected:
         raise StudyStateError("scope bindings do not match the frozen development corpus")
+    case_binding_hashes: list[str] = []
+    for binding in bindings:
+        if not isinstance(binding, Mapping):
+            raise StudyStateError("scope binding is not an object")
+        case_binding_sha256 = binding.get("case_binding_sha256")
+        if not isinstance(case_binding_sha256, str):
+            raise StudyStateError("scope case binding hash is invalid")
+        case_binding_hashes.append(case_binding_sha256)
+    if len(set(case_binding_hashes)) != len(case_binding_hashes):
+        raise StudyStateError("scope case binding hashes are not unique")
 
 
 def _verify_oracle_payload(
@@ -1243,6 +1255,8 @@ def run_small_fixture_determinism_control(
 
 
 def _default_executable_resolver(name: str, search_path: str | None) -> Path:
+    if search_path is None:
+        raise StudyStateError("required executable lookup path is not sealed")
     resolved = shutil.which(name, path=search_path)
     if resolved is None:
         raise StudyStateError(f"required executable is unavailable: {name}")
@@ -1545,12 +1559,13 @@ class StudyRunner:
             )
 
         baseline = self._require_clean_snapshot(self._repository_state())
+        production_search_path = _production_executable_search_path()
         uv_path = _validated_lookup_path(
-            self._executable_resolver("uv", None),
+            self._executable_resolver("uv", production_search_path),
             expected_name="uv",
         )
         npm_path = _validated_lookup_path(
-            self._executable_resolver("npm", None),
+            self._executable_resolver("npm", production_search_path),
             expected_name="npm",
         )
         environment = self._validation_environment(uv_path, npm_path)
@@ -2278,6 +2293,33 @@ class StudyRunner:
 
 def _absolute_lexical(path: Path) -> Path:
     return Path(os.path.abspath(os.fspath(path.expanduser())))
+
+
+def _production_executable_search_path() -> str:
+    """Return reviewed executable roots without ambient PATH or HOME authority."""
+
+    try:
+        account_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (KeyError, OSError) as exc:
+        raise StudyStateError("OS account home is unavailable") from exc
+    if not account_home.is_absolute() or any(
+        part in {"", ".", ".."} for part in account_home.parts[1:]
+    ):
+        raise StudyStateError("OS account home is invalid")
+    roots = (
+        (account_home / ".local/bin").as_posix(),
+        *_FIXED_PRODUCTION_LOOKUP_ROOTS,
+        *_SYSTEM_PATH_SUFFIX.split(":"),
+    )
+    if any(
+        not root
+        or not root.startswith("/")
+        or ":" in root
+        or any(ord(character) < 32 or ord(character) == 127 for character in root)
+        for root in roots
+    ):
+        raise StudyStateError("production executable lookup root is invalid")
+    return ":".join(roots)
 
 
 def _validated_lookup_path(path: Path, *, expected_name: str) -> Path:

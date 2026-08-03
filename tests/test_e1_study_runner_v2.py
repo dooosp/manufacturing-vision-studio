@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import io
 import os
-from collections.abc import Mapping
+import pwd
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -28,6 +29,7 @@ from manufacturing_vision_studio.e1.known_transform_v2 import (
     ResamplingMode,
 )
 from manufacturing_vision_studio.e1.study_artifacts_v2 import (
+    StudyArtifactError,
     StudyArtifactRecord,
     StudyArtifactStore,
     VerifiedStudyJson,
@@ -65,6 +67,19 @@ from manufacturing_vision_studio.e1.study_truth_v2 import (
     DiagnosticObservation,
     FeatureOracleResult,
     StudyTruthCase,
+)
+
+_ACCOUNT_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
+_REVIEWED_PRODUCTION_LOOKUP_PATH = ":".join(
+    (
+        (_ACCOUNT_HOME / ".local/bin").as_posix(),
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    )
 )
 
 
@@ -350,8 +365,8 @@ def test_validation_transaction_records_fixed_requests_and_rechecks_state(
     assert all(len(request.environment) == 16 for request in requests)
     assert all(request.environment == requests[0].environment for request in requests)
     assert resolver_calls == [
-        ("uv", None),
-        ("npm", None),
+        ("uv", _REVIEWED_PRODUCTION_LOOKUP_PATH),
+        ("npm", _REVIEWED_PRODUCTION_LOOKUP_PATH),
         ("node", expected_path),
     ]
     assert len(snapshots) == 15
@@ -546,6 +561,99 @@ def test_validation_rejects_node_outside_sealed_path_before_commands(
 
     assert calls == 0
     assert not runner.protocol.artifact_root.exists()
+
+
+def _write_fake_executable(path: Path) -> None:
+    path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    path.chmod(0o700)
+
+
+def test_production_validation_resolution_ignores_ambient_path_and_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    poison_bin = tmp_path / "poison-bin"
+    poison_bin.mkdir()
+    for name in ("uv", "npm", "node"):
+        _write_fake_executable(poison_bin / name)
+    monkeypatch.setenv("PATH", poison_bin.as_posix())
+    monkeypatch.setenv("HOME", (tmp_path / "poison-home").as_posix())
+
+    protocol = replace(load_study_protocol_v2(), artifact_root=tmp_path / "artifacts")
+    snapshot = RepositorySnapshot(
+        "a" * 40,
+        (),
+        _projection(protocol.implementation_projection_paths()),
+    )
+    requests: list[ValidationCommandRequest] = []
+
+    def stop_after_lookup(request: ValidationCommandRequest) -> ValidationCommandResult:
+        requests.append(request)
+        raise RuntimeError("stop after executable lookup")
+
+    runner = StudyRunner(
+        protocol,
+        repo_root=tmp_path,
+        command_runner=stop_after_lookup,
+        repository_state=lambda: snapshot,
+        home_directory=tmp_path / "sealed-home",
+        temp_directory=tmp_path / "sealed-tmp",
+    )
+
+    with pytest.raises(StudyStateError, match="validation command failed"):
+        runner.validate_implementation()
+
+    assert len(requests) == 1
+    assert requests[0].executable_lookup_path.parent != poison_bin
+    assert poison_bin.as_posix() not in requests[0].environment["PATH"].split(":")
+    assert not protocol.artifact_root.exists()
+
+
+def test_reviewed_production_lookup_finds_real_checkout_tools() -> None:
+    uv_path = runner_module._validated_lookup_path(
+        runner_module._default_executable_resolver(
+            "uv",
+            _REVIEWED_PRODUCTION_LOOKUP_PATH,
+        ),
+        expected_name="uv",
+    )
+    npm_path = runner_module._validated_lookup_path(
+        runner_module._default_executable_resolver(
+            "npm",
+            _REVIEWED_PRODUCTION_LOOKUP_PATH,
+        ),
+        expected_name="npm",
+    )
+    runner = _runner(_ACCOUNT_HOME)
+    environment = runner._validation_environment(uv_path, npm_path)
+    node_path = runner_module._validated_lookup_path(
+        runner_module._default_executable_resolver("node", environment["PATH"]),
+        expected_name="node",
+    )
+
+    assert uv_path == _ACCOUNT_HOME / ".local/bin/uv"
+    assert npm_path == Path("/opt/homebrew/bin/npm")
+    assert node_path == Path("/opt/homebrew/bin/node")
+    assert environment["PATH"] == (
+        f"{_ACCOUNT_HOME.as_posix()}/.local/bin:/opt/homebrew/bin:"
+        "/usr/bin:/bin:/usr/sbin:/sbin"
+    )
+
+
+@pytest.mark.parametrize("tool_state", ("missing", "unusable"))
+def test_production_resolver_fails_closed_for_missing_or_unusable_tool(
+    tmp_path: Path,
+    tool_state: str,
+) -> None:
+    lookup_root = tmp_path / "reviewed-bin"
+    lookup_root.mkdir()
+    if tool_state == "unusable":
+        tool = lookup_root / "uv"
+        tool.write_text("not executable\n", encoding="utf-8")
+        tool.chmod(0o600)
+
+    with pytest.raises(StudyStateError, match="required executable is unavailable"):
+        runner_module._default_executable_resolver("uv", lookup_root.as_posix())
 
 
 def test_phase1_claim_is_reopened_before_first_render(
@@ -1207,6 +1315,88 @@ def test_phase2_is_mode_major_with_114_callbacks_per_eligible_mode(
     assert len(cast(tuple[object, ...], payload["trust_bindings"])) == 6
 
 
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    (
+        ("case_id", "e1-v2-development-clean-999"),
+        ("seed", 999999),
+        ("group", "nuisance"),
+        ("reference_sha256", sha256(b"changed-reference").hexdigest()),
+        ("inspection_sha256", sha256(b"changed-inspection").hexdigest()),
+        ("authoritative_mask_sha256", sha256(b"changed-mask").hexdigest()),
+        ("case_binding_sha256", sha256(b"changed-binding").hexdigest()),
+    ),
+)
+def test_phase2_rejects_every_scope_binding_drift_before_compute_callback_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    bad_value: object,
+) -> None:
+    protocol = replace(load_study_protocol_v2(), artifact_root=tmp_path / "artifacts")
+    store = StudyArtifactStore(protocol.artifact_root, allowed_root=tmp_path)
+    validation, retention = _base_phase_evidence()
+    corpus = _fake_development_corpus()
+    bindings = runner_module._development_bindings(corpus)
+    mutated_bindings = [dict(binding) for binding in bindings]
+    mutated_bindings[0][field] = bad_value
+    evidence = {
+        "implementation-validation.json": validation,
+        "retention-audit.json": retention,
+        "phase-1-execution-claim.json": _fake_verified({}),
+        "known-transform-diagnostic-108.json": _fake_verified(
+            {"payload": {"eligible_modes": ["NEAREST"]}}
+        ),
+        "scope-audit.json": _fake_verified(
+            {"payload": {"bindings": mutated_bindings}}
+        ),
+        "feature-ownership-oracle.json": _fake_verified({}),
+    }
+    state = VerifiedStudyState(
+        StudyStatus(True, True, True, True, False, "PENDING", ()),
+        tuple(evidence),
+        (),
+        MappingProxyType(evidence),
+    )
+    monkeypatch.setattr(runner_module, "inspect_state", lambda *args, **kwargs: state)
+    publication_events: list[str] = []
+    _intercept_publication(monkeypatch, publication_events)
+    corpus_calls = 0
+    compute_calls = 0
+
+    def load_corpus() -> DevelopmentCorpus:
+        nonlocal corpus_calls
+        corpus_calls += 1
+        return corpus
+
+    def forbidden_compute(*args: object, **kwargs: object) -> object:
+        nonlocal compute_calls
+        del args, kwargs
+        compute_calls += 1
+        raise AssertionError("scope mismatch must stop before normalization/inference")
+
+    runner = StudyRunner(
+        protocol,
+        repo_root=tmp_path,
+        store=store,
+        corpus=load_corpus,
+        normalize=cast(NormalizeCallback, forbidden_compute),
+        inference=cast(InferenceRunner, forbidden_compute),
+    )
+    try:
+        with pytest.raises(StudyStateError, match="corpus does not match"):
+            runner.phase2()
+    finally:
+        store.close()
+
+    assert corpus_calls == 1
+    assert compute_calls == 0
+    assert publication_events[:2] == [
+        "publish:phase-2-execution-claim.json",
+        "verify:phase-2-execution-claim.json",
+    ]
+
+
 def _upstream(path: str, evidence: VerifiedStudyJson) -> dict[str, str]:
     return {
         "path": path,
@@ -1235,6 +1425,7 @@ def _publish_semantic_packet(
     *,
     tamper_diagnostic_reduction: bool = False,
     include_decision: bool = True,
+    scope_mutation: Callable[[dict[str, object]], None] | None = None,
 ) -> StudyRunner:
     protocol = replace(load_study_protocol_v2(), artifact_root=tmp_path / "artifacts")
     store = StudyArtifactStore(protocol.artifact_root, allowed_root=tmp_path)
@@ -1313,6 +1504,8 @@ def _publish_semantic_packet(
         )
 
         scope_document = minimal_valid_scope_audit_record(protocol)
+        if scope_mutation is not None:
+            scope_mutation(scope_document)
         _bind_result_envelope(
             scope_document,
             validation,
@@ -1432,6 +1625,124 @@ def test_semantic_inspection_recomputes_diagnostic_reduction(tmp_path: Path) -> 
     assert status.study_valid is False
     assert status.terminal_decision == "STUDY_INVALID"
     assert status.reasons == ("ARTIFACT_VERIFICATION_FAILED",)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    (
+        ("member_count", 119),
+        ("group_counts.clean", 23),
+        ("group_counts.nuisance", 29),
+        ("group_counts.defect", 59),
+        ("group_counts.trust_boundary", 5),
+        ("group_counts.total", 119),
+        ("scope_projection", []),
+        ("external_request_count", 2),
+        ("internal_membership_validation_count", 119),
+        ("protected_emission_count", 1),
+        ("legacy_v1_planning_caveat", "REAUTHORED"),
+        ("passed", False),
+    ),
+)
+def test_scope_store_rejects_every_fixed_payload_constant_mutation(
+    tmp_path: Path,
+    field: str,
+    bad_value: object,
+) -> None:
+    protocol = replace(load_study_protocol_v2(), artifact_root=tmp_path / "artifacts")
+    document = minimal_valid_scope_audit_record(protocol)
+    payload = cast(dict[str, object], document["payload"])
+    if field.startswith("group_counts."):
+        group = field.rsplit(".", 1)[1]
+        cast(dict[str, object], payload["group_counts"])[group] = bad_value
+    else:
+        payload[field] = bad_value
+    store = StudyArtifactStore(protocol.artifact_root, allowed_root=tmp_path)
+    try:
+        with pytest.raises(StudyArtifactError, match="schema"):
+            store.publish_json("scope-audit.json", document)
+        assert store.inventory() == ()
+    finally:
+        store.close()
+
+
+def _remove_later_phase_evidence(runner: StudyRunner) -> None:
+    for relative in (
+        "phase-2-execution-claim.json",
+        "known-transform-development-120.json",
+        "decision.json",
+    ):
+        (runner.protocol.artifact_root / relative).unlink()
+
+
+def test_scope_defect_mask_reauthoring_is_rejected_against_existing_oracle(
+    tmp_path: Path,
+) -> None:
+    def mutate(document: dict[str, object]) -> None:
+        payload = cast(dict[str, object], document["payload"])
+        bindings = cast(list[dict[str, object]], payload["bindings"])
+        bindings[54]["authoritative_mask_sha256"] = sha256(
+            b"reauthored-defect-mask"
+        ).hexdigest()
+
+    runner = _publish_semantic_packet(tmp_path, scope_mutation=mutate)
+    _remove_later_phase_evidence(runner)
+
+    status = runner.status()
+
+    assert status.study_valid is False
+    assert status.terminal_decision == "STUDY_INVALID"
+    assert status.reasons == ("ARTIFACT_VERIFICATION_FAILED",)
+
+
+def test_scope_case_bindings_must_be_unique_before_phase2(
+    tmp_path: Path,
+) -> None:
+    def mutate(document: dict[str, object]) -> None:
+        payload = cast(dict[str, object], document["payload"])
+        bindings = cast(list[dict[str, object]], payload["bindings"])
+        bindings[1]["case_binding_sha256"] = bindings[0]["case_binding_sha256"]
+
+    runner = _publish_semantic_packet(tmp_path, scope_mutation=mutate)
+    _remove_later_phase_evidence(runner)
+
+    status = runner.status()
+
+    assert status.study_valid is False
+    assert status.terminal_decision == "STUDY_INVALID"
+    assert status.reasons == ("ARTIFACT_VERIFICATION_FAILED",)
+
+
+def test_status_and_verify_use_no_execution_or_subprocess_seam(tmp_path: Path) -> None:
+    published = _publish_semantic_packet(tmp_path)
+    calls: list[str] = []
+
+    def forbidden(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        calls.append("called")
+        raise AssertionError("read-only inspection invoked an execution seam")
+
+    runner = StudyRunner(
+        published.protocol,
+        repo_root=tmp_path,
+        command_runner=cast(CommandRunner, forbidden),
+        executable_resolver=cast(runner_module.ExecutableResolver, forbidden),
+        repository_state=cast(runner_module.RepositoryStateReader, forbidden),
+        normalize=cast(NormalizeCallback, forbidden),
+        diagnostic_matrix=cast(runner_module.DiagnosticMatrixLoader, forbidden),
+        render=cast(DiagnosticRenderer, forbidden),
+        corpus=cast(runner_module.CorpusLoader, forbidden),
+        oracle=cast(OracleRunner, forbidden),
+        inference=cast(InferenceRunner, forbidden),
+        e1_protocol_loader=cast(Callable[[], object], forbidden),
+    )
+
+    status = runner.status()
+    report = runner.verify()
+
+    assert status.terminal_decision == "TRANSFORM_ESTIMATION_LIMITED"
+    assert report.status == status
+    assert calls == []
 
 
 def test_finalize_rejects_pending_without_creating_artifacts(tmp_path: Path) -> None:
