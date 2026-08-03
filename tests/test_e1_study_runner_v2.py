@@ -268,11 +268,11 @@ def _validation_dependencies(
     def resolve(name: str, search_path: str | None) -> Path:
         resolver_calls.append((name, search_path))
         if name == "uv":
-            return Path("/opt/e1-study/uv/bin/uv")
+            return Path("/opt/homebrew/bin/uv")
         if name == "npm":
-            return Path("/opt/e1-study/npm/bin/npm")
+            return Path("/usr/local/bin/npm")
         if name == "node":
-            return Path("/opt/e1-study/npm/bin/node")
+            return Path("/usr/local/bin/node")
         raise AssertionError(name)
 
     def normalize(
@@ -353,11 +353,11 @@ def test_validation_transaction_records_fixed_requests_and_rechecks_state(
         IMPLEMENTATION_VALIDATION_TIMEOUT_SECONDS
     )
     assert tuple(request.executable_lookup_path.as_posix() for request in requests) == (
-        *("/opt/e1-study/uv/bin/uv" for _ in range(4)),
-        *("/opt/e1-study/npm/bin/npm" for _ in range(2)),
+        *("/opt/homebrew/bin/uv" for _ in range(4)),
+        *("/usr/local/bin/npm" for _ in range(2)),
     )
     expected_path = (
-        "/opt/e1-study/uv/bin:/opt/e1-study/npm/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     )
     assert all(request.cwd == tmp_path for request in requests)
     assert all(request.output_limit_bytes == 4_194_304 for request in requests)
@@ -549,14 +549,64 @@ def test_validation_rejects_node_outside_sealed_path_before_commands(
     def bad_resolver(name: str, search_path: str | None) -> Path:
         del search_path
         if name == "uv":
-            return Path("/opt/e1-study/uv/bin/uv")
+            return Path("/opt/homebrew/bin/uv")
         if name == "npm":
-            return Path("/opt/e1-study/npm/bin/npm")
+            return Path("/usr/local/bin/npm")
         return Path("/outside/node")
 
     monkeypatch.setattr(runner, "_executable_resolver", bad_resolver)
 
     with pytest.raises(StudyStateError, match="node"):
+        runner.validate_implementation()
+
+    assert calls == 0
+    assert not runner.protocol.artifact_root.exists()
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "unreviewed_path"),
+    (
+        ("uv", Path("/tmp/unreviewed-tools/uv")),
+        ("npm", Path("/opt/homebrew/bin/nested/npm")),
+    ),
+)
+def test_validation_rejects_unreviewed_resolver_result_before_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tool_name: str,
+    unreviewed_path: Path,
+) -> None:
+    calls = 0
+
+    def command_runner(request: ValidationCommandRequest) -> ValidationCommandResult:
+        nonlocal calls
+        del request
+        calls += 1
+        raise AssertionError("unreviewed executable must stop before command 1")
+
+    runner, _, _ = _validation_dependencies(tmp_path, command_runner=command_runner)
+
+    def bad_resolver(name: str, search_path: str | None) -> Path:
+        del search_path
+        uv_path = (
+            unreviewed_path
+            if tool_name == "uv"
+            else Path("/opt/homebrew/bin/uv")
+        )
+        npm_path = (
+            unreviewed_path
+            if tool_name == "npm"
+            else Path("/usr/local/bin/npm")
+        )
+        if name == "uv":
+            return uv_path
+        if name == "npm":
+            return npm_path
+        return npm_path.parent / "node"
+
+    monkeypatch.setattr(runner, "_executable_resolver", bad_resolver)
+
+    with pytest.raises(StudyStateError, match="reviewed executable root"):
         runner.validate_implementation()
 
     assert calls == 0
@@ -1420,6 +1470,23 @@ def _bind_result_envelope(
     document["upstream_artifacts"] = upstreams
 
 
+def _bind_reviewed_validation_executables(document: dict[str, object]) -> None:
+    payload = cast(dict[str, object], document["payload"])
+    commands = cast(list[dict[str, object]], payload["commands"])
+    expected_path = (
+        f"{_ACCOUNT_HOME.as_posix()}/.local/bin:/opt/homebrew/bin:"
+        "/usr/bin:/bin:/usr/sbin:/sbin"
+    )
+    for ordinal, command in enumerate(commands):
+        command["executable_lookup_path"] = (
+            (_ACCOUNT_HOME / ".local/bin/uv").as_posix()
+            if ordinal < 4
+            else "/opt/homebrew/bin/npm"
+        )
+        environment = cast(dict[str, object], command["sanitized_environment"])
+        environment["PATH"] = expected_path
+
+
 def _publish_semantic_packet(
     tmp_path: Path,
     *,
@@ -1431,6 +1498,7 @@ def _publish_semantic_packet(
     store = StudyArtifactStore(protocol.artifact_root, allowed_root=tmp_path)
     try:
         validation_document = minimal_valid_implementation_validation_record(protocol)
+        _bind_reviewed_validation_executables(validation_document)
         store.publish_json("implementation-validation.json", validation_document)
         validation = store.verify_json_result(
             "implementation-validation.json",

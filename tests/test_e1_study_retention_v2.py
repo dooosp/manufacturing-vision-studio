@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import pwd
 import subprocess
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
@@ -45,17 +46,24 @@ EXPECTED_COMMANDS = (
     ("playwright", ("npm", "--prefix", "web", "run", "test:e2e")),
 )
 EXPECTED_COMMAND_TIMEOUTS = (300, 300, 600, 1800, 600, 900)
+_ACCOUNT_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
+_ACCOUNT_LOCAL_BIN = _ACCOUNT_HOME / ".local/bin"
+_ACCOUNT_UV = (_ACCOUNT_LOCAL_BIN / "uv").as_posix()
+_HOMEBREW_NPM = "/opt/homebrew/bin/npm"
 EXPECTED_EXECUTABLE_LOOKUP_PATHS = (
-    "/opt/e1-study/uv/bin/uv",
-    "/opt/e1-study/uv/bin/uv",
-    "/opt/e1-study/uv/bin/uv",
-    "/opt/e1-study/uv/bin/uv",
-    "/opt/e1-study/npm/bin/npm",
-    "/opt/e1-study/npm/bin/npm",
+    _ACCOUNT_UV,
+    _ACCOUNT_UV,
+    _ACCOUNT_UV,
+    _ACCOUNT_UV,
+    _HOMEBREW_NPM,
+    _HOMEBREW_NPM,
 )
 EXPECTED_SANITIZED_ENVIRONMENT = {
     "HOME": "/tmp/e1-study-home",
-    "PATH": "/opt/e1-study/uv/bin:/opt/e1-study/npm/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "PATH": (
+        f"{_ACCOUNT_LOCAL_BIN.as_posix()}:/opt/homebrew/bin:"
+        "/usr/bin:/bin:/usr/sbin:/sbin"
+    ),
     "TMPDIR": "/tmp/e1-study",
     "LANG": "C.UTF-8",
     "LC_ALL": "C.UTF-8",
@@ -745,6 +753,30 @@ def test_implementation_validation_is_read_only_and_semantically_verified(
     assert verified.raw_sha256 == sha256_bytes(_validation_path(retention_fixture).read_bytes())
 
 
+def test_implementation_validation_rejects_self_consistent_unreviewed_executable_roots(
+    retention_fixture: RetentionFixture,
+) -> None:
+    document = load_strict_json_object(_validation_path(retention_fixture).read_bytes())
+    payload = cast(dict[str, object], document["payload"])
+    commands = cast(list[dict[str, object]], payload["commands"])
+    _set_validation_executable_contract(
+        commands,
+        uv_lookup_path="/tmp/unreviewed-tools/uv",
+        npm_lookup_path="/tmp/unreviewed-tools/npm",
+        environment_path=(
+            "/tmp/unreviewed-tools:/usr/bin:/bin:/usr/sbin:/sbin"
+        ),
+    )
+    _rewrite_json(_validation_path(retention_fixture), document)
+
+    with pytest.raises(StudyRetentionError, match="reviewed executable root"):
+        verify_implementation_validation(
+            retention_fixture.protocol,
+            retention_fixture.store,
+            repo_root=retention_fixture.repo_root,
+        )
+
+
 def test_task_7a_fix1_validation_command_audit_contract_returns_verified_metadata() -> None:
     commands = retention_module._verify_validation_commands(_audited_validation_commands())
 
@@ -834,22 +866,25 @@ def test_task_7a_fix2_validation_commands_reject_unbound_path_prefix() -> None:
     ("uv_lookup_path", "npm_lookup_path", "environment_path"),
     [
         (
-            "/opt/e1-uv/bin/uv",
-            "/opt/e1-node/bin/npm",
-            "/opt/e1-uv/bin:/opt/e1-node/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            _ACCOUNT_UV,
+            _HOMEBREW_NPM,
+            (
+                f"{_ACCOUNT_LOCAL_BIN.as_posix()}:/opt/homebrew/bin:"
+                "/usr/bin:/bin:/usr/sbin:/sbin"
+            ),
         ),
         (
-            "/opt/e1-tools/bin/uv",
-            "/opt/e1-tools/bin/npm",
-            "/opt/e1-tools/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "/usr/local/bin/uv",
+            "/usr/local/bin/npm",
+            "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
         ),
         (
-            "/Users/study/.local/bin/uv",
-            "/opt/homebrew/bin/npm",
-            "/Users/study/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "/usr/bin/uv",
+            "/bin/npm",
+            "/usr/bin:/bin:/usr/bin:/bin:/usr/sbin:/sbin",
         ),
     ],
-    ids=("distinct-parents", "same-parent", "homebrew-lexical-path"),
+    ids=("account-homebrew", "usr-local", "system-roots"),
 )
 def test_task_7a_fix2_validation_commands_accept_bound_executable_paths(
     uv_lookup_path: str,
@@ -891,6 +926,7 @@ def test_task_7a_fix2_validation_commands_accept_bound_executable_paths(
         "empty_component_lookup_path",
         "dot_component_lookup_path",
         "dot_dot_component_lookup_path",
+        "nested_reviewed_root",
         "wrong_basename",
         "one_uv_lookup_drift",
         "one_npm_lookup_drift",
@@ -925,12 +961,16 @@ def test_task_7a_fix2_validation_commands_reject_executable_environment_drift(
         commands[0]["executable_lookup_path"] = "/opt/e1-study/./bin/uv"
     elif variant == "dot_dot_component_lookup_path":
         commands[0]["executable_lookup_path"] = "/opt/e1-study/tools/../bin/uv"
+    elif variant == "nested_reviewed_root":
+        commands[0]["executable_lookup_path"] = "/opt/homebrew/bin/nested/uv"
     elif variant == "wrong_basename":
-        commands[0]["executable_lookup_path"] = "/opt/e1-study/uv/bin/npm"
+        commands[0]["executable_lookup_path"] = (
+            _ACCOUNT_LOCAL_BIN / "npm"
+        ).as_posix()
     elif variant == "one_uv_lookup_drift":
-        commands[1]["executable_lookup_path"] = "/opt/other-uv/bin/uv"
+        commands[1]["executable_lookup_path"] = "/usr/local/bin/uv"
     elif variant == "one_npm_lookup_drift":
-        commands[5]["executable_lookup_path"] = "/opt/other-npm/bin/npm"
+        commands[5]["executable_lookup_path"] = "/usr/local/bin/npm"
     elif variant == "extra_path_prefix":
         for command in commands:
             environment = cast(dict[str, object], command["sanitized_environment"])
@@ -938,31 +978,34 @@ def test_task_7a_fix2_validation_commands_reject_executable_environment_drift(
     elif variant == "missing_uv_parent":
         for command in commands:
             environment = cast(dict[str, object], command["sanitized_environment"])
-            environment["PATH"] = "/opt/e1-study/npm/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            environment["PATH"] = (
+                "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            )
     elif variant == "reordered_dynamic_parents":
         for command in commands:
             environment = cast(dict[str, object], command["sanitized_environment"])
             environment["PATH"] = (
-                "/opt/e1-study/npm/bin:/opt/e1-study/uv/bin:"
+                f"/opt/homebrew/bin:{_ACCOUNT_LOCAL_BIN.as_posix()}:"
                 "/usr/bin:/bin:/usr/sbin:/sbin"
             )
     elif variant == "uv_parent_substitution":
         for command in commands:
             environment = cast(dict[str, object], command["sanitized_environment"])
             environment["PATH"] = (
-                "/tmp/substitute:/opt/e1-study/npm/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+                "/tmp/substitute:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
             )
     elif variant == "npm_parent_substitution":
         for command in commands:
             environment = cast(dict[str, object], command["sanitized_environment"])
             environment["PATH"] = (
-                "/opt/e1-study/uv/bin:/tmp/substitute:/usr/bin:/bin:/usr/sbin:/sbin"
+                f"{_ACCOUNT_LOCAL_BIN.as_posix()}:/tmp/substitute:"
+                "/usr/bin:/bin:/usr/sbin:/sbin"
             )
     elif variant == "fixed_suffix_drift":
         for command in commands:
             environment = cast(dict[str, object], command["sanitized_environment"])
             environment["PATH"] = (
-                "/opt/e1-study/uv/bin:/opt/e1-study/npm/bin:"
+                f"{_ACCOUNT_LOCAL_BIN.as_posix()}:/opt/homebrew/bin:"
                 "/usr/bin:/bin:/usr/sbin:/usr/local/sbin"
             )
     elif variant == "one_command_path_drift":

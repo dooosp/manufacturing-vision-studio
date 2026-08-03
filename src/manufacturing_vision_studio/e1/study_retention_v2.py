@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import os
+import pwd
 import re
 import selectors
 import signal
@@ -166,7 +167,8 @@ _FIXED_SANITIZED_ENVIRONMENT = {
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_CONFIG_GLOBAL": "/dev/null",
 }
-_SYSTEM_PATH_SUFFIX = "/usr/bin:/bin:/usr/sbin:/sbin"
+VALIDATION_SYSTEM_PATH_SUFFIX = "/usr/bin:/bin:/usr/sbin:/sbin"
+_FIXED_VALIDATION_EXECUTABLE_ROOTS = ("/opt/homebrew/bin", "/usr/local/bin")
 NOT_APPLICABLE_CONTROLS = (
     ("bundle_verify_reimport_rate", "STUDY_PUBLISHES_NO_BUNDLE"),
     ("dataset_split_hash_overlap", "PROTECTED_SPLIT_MEMBERS_NOT_ENUMERATED"),
@@ -273,6 +275,40 @@ _RFC3339_UTC = re.compile(
 
 class StudyRetentionError(ValueError):
     """Retention evidence or the audited repository boundary is invalid."""
+
+
+def reviewed_validation_executable_roots() -> tuple[str, ...]:
+    """Return the only roots authorized for validation executables."""
+
+    try:
+        account_home_value = pwd.getpwuid(os.getuid()).pw_dir
+    except (KeyError, OSError) as exc:
+        raise StudyRetentionError("OS account home is unavailable") from exc
+    account_home = PurePosixPath(account_home_value)
+    if (
+        not account_home_value.startswith("/")
+        or len(account_home_value) > 4096
+        or ":" in account_home_value
+        or any(ord(character) < 32 or ord(character) == 127 for character in account_home_value)
+        or any(component in {"", ".", ".."} for component in account_home_value.split("/")[1:])
+        or not account_home.is_absolute()
+        or account_home.as_posix() != account_home_value
+    ):
+        raise StudyRetentionError("OS account home is invalid")
+    roots = (
+        (account_home / ".local/bin").as_posix(),
+        *_FIXED_VALIDATION_EXECUTABLE_ROOTS,
+        *VALIDATION_SYSTEM_PATH_SUFFIX.split(":"),
+    )
+    if any(
+        not root.startswith("/")
+        or ":" in root
+        or any(ord(character) < 32 or ord(character) == 127 for character in root)
+        or PurePosixPath(root).as_posix() != root
+        for root in roots
+    ):
+        raise StudyRetentionError("reviewed executable root is invalid")
+    return roots
 
 
 @dataclass(frozen=True, slots=True)
@@ -1838,7 +1874,7 @@ def _expected_validation_environment_path(lookup_paths: tuple[str, ...]) -> str:
         parent = PurePosixPath(lookup_path).parent.as_posix()
         if parent not in dynamic_parents:
             dynamic_parents.append(parent)
-    return f"{':'.join(dynamic_parents)}:{_SYSTEM_PATH_SUFFIX}"
+    return f"{':'.join(dynamic_parents)}:{VALIDATION_SYSTEM_PATH_SUFFIX}"
 
 
 def _validation_byte_count(command: Mapping[str, object], field_name: str) -> int:
@@ -1853,6 +1889,7 @@ def _verify_validation_commands(value: object) -> tuple[ValidationCommand, ...]:
         raise StudyRetentionError("implementation validation commands are incomplete")
     raw_commands: list[dict[str, object]] = []
     lookup_paths: list[str] = []
+    reviewed_roots = frozenset(reviewed_validation_executable_roots())
     for ordinal, ((expected_name, expected_argv), raw) in enumerate(
         zip(IMPLEMENTATION_VALIDATION_COMMANDS, value, strict=True)
     ):
@@ -1863,12 +1900,16 @@ def _verify_validation_commands(value: object) -> tuple[ValidationCommand, ...]:
             raise StudyRetentionError(
                 f"implementation validation command {ordinal} does not match"
             )
-        lookup_paths.append(
-            _verify_executable_lookup_path(
-                command.get("executable_lookup_path"),
-                expected_name=expected_argv[0],
-            )
+        lookup_path = _verify_executable_lookup_path(
+            command.get("executable_lookup_path"),
+            expected_name=expected_argv[0],
         )
+        if PurePosixPath(lookup_path).parent.as_posix() not in reviewed_roots:
+            raise StudyRetentionError(
+                "implementation validation executable lookup path is outside "
+                "a reviewed executable root"
+            )
+        lookup_paths.append(lookup_path)
         raw_commands.append(command)
     expected_environment_path = _expected_validation_environment_path(tuple(lookup_paths))
     commands: list[ValidationCommand] = []
@@ -2414,7 +2455,7 @@ def _run_git_bytes(root: Path, *args: str) -> bytes:
 
 
 def _resolve_system_git_executable() -> Path:
-    for directory in _SYSTEM_PATH_SUFFIX.split(":"):
+    for directory in VALIDATION_SYSTEM_PATH_SUFFIX.split(":"):
         candidate = Path(directory) / "git"
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return candidate
@@ -2434,7 +2475,7 @@ def _run_git_command(
         raise StudyRetentionError("Git executable lookup did not return an absolute path")
     environment = {
         "HOME": os.fspath(lexical_root),
-        "PATH": _SYSTEM_PATH_SUFFIX,
+        "PATH": VALIDATION_SYSTEM_PATH_SUFFIX,
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "TZ": "UTC",

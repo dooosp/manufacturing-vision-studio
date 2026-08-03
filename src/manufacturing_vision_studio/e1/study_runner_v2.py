@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import platform
-import pwd
 import selectors
 import shutil
 import signal
@@ -61,12 +60,15 @@ from manufacturing_vision_studio.e1.study_retention_v2 import (
     IMPLEMENTATION_VALIDATION_COMMANDS,
     IMPLEMENTATION_VALIDATION_TIMEOUT_SECONDS,
     NOT_APPLICABLE_CONTROLS,
+    VALIDATION_SYSTEM_PATH_SUFFIX,
     ProjectionEntry,
+    StudyRetentionError,
     _git_status_paths,
     _run_git,
     _run_git_bytes,
     _verify_git_lineage,
     build_study_implementation_projection,
+    reviewed_validation_executable_roots,
     run_retention_audit,
     verify_implementation_validation,
     verify_retention_audit,
@@ -133,8 +135,6 @@ _EXPECTED_KINDS = {
     **{path: "file" for path in _RETAINED_FILES},
 }
 _VALIDATION_OUTPUT_LIMIT_BYTES = 4 * 1024 * 1024
-_SYSTEM_PATH_SUFFIX = "/usr/bin:/bin:/usr/sbin:/sbin"
-_FIXED_PRODUCTION_LOOKUP_ROOTS = ("/opt/homebrew/bin", "/usr/local/bin")
 _ARTIFACT_ROOT_LITERAL = "docs/evaluation/results/e1-feasibility-study"
 _ALLOWED_NEXT_ACTIONS = {
     "STUDY_INVALID": "Repair evidence machinery only; no performance conclusion",
@@ -1560,6 +1560,7 @@ class StudyRunner:
 
         baseline = self._require_clean_snapshot(self._repository_state())
         production_search_path = _production_executable_search_path()
+        reviewed_roots = frozenset(production_search_path.split(":"))
         uv_path = _validated_lookup_path(
             self._executable_resolver("uv", production_search_path),
             expected_name="uv",
@@ -1568,6 +1569,12 @@ class StudyRunner:
             self._executable_resolver("npm", production_search_path),
             expected_name="npm",
         )
+        if any(
+            path.parent.as_posix() not in reviewed_roots for path in (uv_path, npm_path)
+        ):
+            raise StudyStateError(
+                "validation executable lookup path is outside a reviewed executable root"
+            )
         environment = self._validation_environment(uv_path, npm_path)
         node_path = _validated_lookup_path(
             self._executable_resolver("node", environment["PATH"]),
@@ -2237,7 +2244,7 @@ class StudyRunner:
         for parent in (uv_path.parent.as_posix(), npm_path.parent.as_posix()):
             if parent not in parents:
                 parents.append(parent)
-        path = ":".join((*parents, _SYSTEM_PATH_SUFFIX))
+        path = ":".join((*parents, VALIDATION_SYSTEM_PATH_SUFFIX))
         return MappingProxyType(
             {
                 "HOME": self._home_directory.as_posix(),
@@ -2299,27 +2306,9 @@ def _production_executable_search_path() -> str:
     """Return reviewed executable roots without ambient PATH or HOME authority."""
 
     try:
-        account_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
-    except (KeyError, OSError) as exc:
-        raise StudyStateError("OS account home is unavailable") from exc
-    if not account_home.is_absolute() or any(
-        part in {"", ".", ".."} for part in account_home.parts[1:]
-    ):
-        raise StudyStateError("OS account home is invalid")
-    roots = (
-        (account_home / ".local/bin").as_posix(),
-        *_FIXED_PRODUCTION_LOOKUP_ROOTS,
-        *_SYSTEM_PATH_SUFFIX.split(":"),
-    )
-    if any(
-        not root
-        or not root.startswith("/")
-        or ":" in root
-        or any(ord(character) < 32 or ord(character) == 127 for character in root)
-        for root in roots
-    ):
-        raise StudyStateError("production executable lookup root is invalid")
-    return ":".join(roots)
+        return ":".join(reviewed_validation_executable_roots())
+    except StudyRetentionError as exc:
+        raise StudyStateError("production executable lookup root is invalid") from exc
 
 
 def _validated_lookup_path(path: Path, *, expected_name: str) -> Path:
