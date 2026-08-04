@@ -135,7 +135,6 @@ _EXPECTED_KINDS = {
     **{path: "file" for path in _RETAINED_FILES},
 }
 _VALIDATION_OUTPUT_LIMIT_BYTES = 4 * 1024 * 1024
-_ARTIFACT_ROOT_LITERAL = "docs/evaluation/results/e1-feasibility-study"
 _ALLOWED_NEXT_ACTIONS = {
     "STUDY_INVALID": "Repair evidence machinery only; no performance conclusion",
     "FEATURE_CONTRACT_FAILED": "New protocol/ownership design; do not alter model",
@@ -539,7 +538,6 @@ def _verify_semantic_packet(
         validation_document,
         execution_commit=cast(str, validation_document.get("execution_commit")),
         validation=validation,
-        artifact_root=protocol.artifact_root.as_posix(),
     )
     if _plain_json(validation_document.get("upstream_artifacts")) != []:
         raise StudyStateError("implementation validation has upstream artifacts")
@@ -552,7 +550,6 @@ def _verify_semantic_packet(
             retention.document,
             execution_commit=execution_commit,
             validation=validation,
-            artifact_root=protocol.artifact_root.as_posix(),
         )
         _verify_upstream_records(
             retention.document,
@@ -691,13 +688,12 @@ def _verify_common_identity(
     *,
     execution_commit: str,
     validation: VerifiedStudyJson,
-    artifact_root: str,
 ) -> None:
     if (
         document.get("base_commit") != protocol.base_commit
         or document.get("execution_commit") != execution_commit
         or document.get("protocol_sha256") != protocol.configuration_sha256
-        or document.get("artifact_root") != artifact_root
+        or document.get("artifact_root") != protocol.artifact_root_identity
     ):
         raise StudyStateError("study envelope identity changed")
     if document is not validation.document and (
@@ -721,7 +717,6 @@ def _verify_result_identity(
         result.document,
         execution_commit=execution_commit,
         validation=validation,
-        artifact_root=_ARTIFACT_ROOT_LITERAL,
     )
 
 
@@ -1629,7 +1624,7 @@ class StudyRunner:
             "base_commit": self.protocol.base_commit,
             "execution_commit": baseline.head,
             "protocol_sha256": self.protocol.configuration_sha256,
-            "artifact_root": self.protocol.artifact_root.as_posix(),
+            "artifact_root": self.protocol.artifact_root_identity,
             "artifact_schema_sha256": schema_sha256,
             "implementation_projection_sha256": projection_sha256,
             "upstream_artifacts": [],
@@ -2573,7 +2568,7 @@ def _result_envelope(
         "base_commit": protocol.base_commit,
         "execution_commit": execution_commit,
         "protocol_sha256": protocol.configuration_sha256,
-        "artifact_root": _ARTIFACT_ROOT_LITERAL,
+        "artifact_root": protocol.artifact_root_identity,
         "artifact_schema_sha256": artifact_schema_sha256,
         "implementation_projection_sha256": projection_sha256,
         "upstream_artifacts": upstream_records,

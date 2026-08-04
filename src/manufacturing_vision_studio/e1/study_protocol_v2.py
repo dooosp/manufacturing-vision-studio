@@ -27,6 +27,8 @@ DEFAULT_DIAGNOSTIC_MATRIX_PATH = (
 STUDY_SCHEMA_PATH = PROJECT_ROOT / "schemas" / "e1-feasibility-study-config.v1.json"
 _MAX_JSON_BYTES = 4 * 1024 * 1024
 _EXPECTED_BASE_COMMIT = "9fd6d0c600206083fde4fafc874e0226b5df60b3"
+_EXPECTED_ARTIFACT_ROOT_IDENTITY = "docs/evaluation/results/e1-feasibility-study"
+_EXPECTED_RAW_DATA_ROOT_IDENTITY = "data/e1-feasibility-study"
 _EXPECTED_PHASE_1_MODES = ("NEAREST", "BILINEAR", "BICUBIC")
 _EXPECTED_PHASE_2_COUNTS = {
     "clean": 24,
@@ -208,6 +210,8 @@ class StudyProtocolV2:
     _document: dict[str, Any] = field(repr=False)
     configuration_sha256: str
     diagnostic_matrix_sha256: str
+    artifact_root_identity: str
+    raw_data_root_identity: str
     artifact_root: Path
     raw_data_root: Path
     phase_1_modes: tuple[str, ...]
@@ -237,14 +241,18 @@ class StudyProtocolV2:
         diagnostic = _object(document, "diagnostic_gates")
         development = _object(document, "development_gates")
         allowlist = _object(document, "direct_import_allowlist")
+        artifact_root_identity = _string(paths, "artifact_root")
+        raw_data_root_identity = _string(paths, "raw_data_root")
         return cls(
             source_path=path,
             schema_path=schema_path,
             _document=document,
             configuration_sha256=canonical_json_hash(document),
             diagnostic_matrix_sha256=matrix_sha256,
-            artifact_root=_project_path(_string(paths, "artifact_root")),
-            raw_data_root=_project_path(_string(paths, "raw_data_root")),
+            artifact_root_identity=artifact_root_identity,
+            raw_data_root_identity=raw_data_root_identity,
+            artifact_root=_project_path(artifact_root_identity),
+            raw_data_root=_project_path(raw_data_root_identity),
             phase_1_modes=tuple(_string_list(phase_1, "modes")),
             phase_1_limits=MappingProxyType(_numeric_mapping(_object(phase_1, "limits"))),
             phase_2_counts=MappingProxyType(_integer_mapping(_object(phase_2, "counts"))),
@@ -318,8 +326,17 @@ def _validate_protocol_document(document: Mapping[str, Any]) -> str:
     if document.get("base_commit") != _EXPECTED_BASE_COMMIT:
         raise StudyProtocolError("study base commit is not the frozen E1 v2 HOLD commit")
     paths = _object(document, "paths")
-    for name in ("artifact_root", "raw_data_root"):
-        _project_path(_string(paths, name))
+    path_identities = {
+        "artifact_root": _string(paths, "artifact_root"),
+        "raw_data_root": _string(paths, "raw_data_root"),
+    }
+    if path_identities != {
+        "artifact_root": _EXPECTED_ARTIFACT_ROOT_IDENTITY,
+        "raw_data_root": _EXPECTED_RAW_DATA_ROOT_IDENTITY,
+    }:
+        raise StudyProtocolError("study path identities changed")
+    for identity in path_identities.values():
+        _project_path(identity)
     phase_1 = _object(document, "phase_1")
     if tuple(_string_list(phase_1, "modes")) != _EXPECTED_PHASE_1_MODES:
         raise StudyProtocolError("phase 1 resampling modes or ordering changed")

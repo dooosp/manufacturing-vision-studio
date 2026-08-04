@@ -251,7 +251,7 @@ def begin_phase_execution(
         inference_rows = 114
         trust_rows = 6
 
-    artifact_root = protocol.artifact_root.as_posix()
+    artifact_root = protocol.artifact_root_identity
     if not artifact_root:
         raise StudyArtifactError("artifact root is empty")
     return ExecutionClaim(

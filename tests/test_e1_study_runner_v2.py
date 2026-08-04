@@ -1685,6 +1685,43 @@ def test_semantic_inspection_accepts_complete_schema_valid_packet(tmp_path: Path
     assert status.terminal_decision == "TRANSFORM_ESTIMATION_LIMITED"
 
 
+def test_runtime_store_packet_uses_one_portable_artifact_root_identity(tmp_path: Path) -> None:
+    """Catch runner inspection accepting checkout paths mixed with portable result roots."""
+
+    runner = _publish_semantic_packet(tmp_path)
+    assert runner.status().study_valid is True
+    store = StudyArtifactStore.open_existing(
+        runner.protocol.artifact_root,
+        allowed_root=tmp_path,
+    )
+    assert store is not None
+    record_types = {
+        "implementation-validation.json": "implementation_validation",
+        "retention-audit.json": "retention_audit",
+        "phase-1-execution-claim.json": "phase_execution_claim",
+        "known-transform-diagnostic-108.json": "diagnostic_result",
+        "scope-audit.json": "scope_audit",
+        "feature-ownership-oracle.json": "feature_oracle",
+        "phase-2-execution-claim.json": "phase_execution_claim",
+        "known-transform-development-120.json": "development_result",
+        "decision.json": "decision",
+    }
+    try:
+        identities = {
+            store.verify_json_result(path, expected_record_type=record_type).document[
+                "artifact_root"
+            ]
+            for path, record_type in record_types.items()
+        }
+    finally:
+        store.close()
+
+    assert runner.protocol.artifact_root_identity == (
+        "docs/evaluation/results/e1-feasibility-study"
+    )
+    assert identities == {runner.protocol.artifact_root_identity}
+
+
 def test_semantic_inspection_recomputes_diagnostic_reduction(tmp_path: Path) -> None:
     runner = _publish_semantic_packet(tmp_path, tamper_diagnostic_reduction=True)
 

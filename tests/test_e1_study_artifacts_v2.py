@@ -4,7 +4,7 @@ import inspect
 import json
 import os
 from copy import deepcopy
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -183,7 +183,7 @@ def minimal_valid_implementation_validation_record(
         "base_commit": protocol.base_commit,
         "execution_commit": EXECUTION_COMMIT,
         "protocol_sha256": protocol.configuration_sha256,
-        "artifact_root": protocol.artifact_root.as_posix(),
+        "artifact_root": protocol.artifact_root_identity,
         "artifact_schema_sha256": _nonzero_sha("artifact-schema"),
         "implementation_projection_sha256": _nonzero_sha("implementation-projection"),
         "upstream_artifacts": [],
@@ -224,7 +224,7 @@ def minimal_valid_retention_audit_record(
         "execution_commit": EXECUTION_COMMIT,
         "evidence_commit": "b" * 40,
         "protocol_sha256": protocol.configuration_sha256,
-        "artifact_root": protocol.artifact_root.as_posix(),
+        "artifact_root": protocol.artifact_root_identity,
         "artifact_schema_sha256": _nonzero_sha("artifact-schema"),
         "implementation_projection_sha256": projection_sha256,
         "upstream_artifacts": [
@@ -384,7 +384,7 @@ def test_phase_1_execution_claim_binds_exact_contract(protocol: StudyProtocolV2)
     assert claim.phase == "phase1"
     assert claim.execution_commit == EXECUTION_COMMIT
     assert claim.protocol_sha256 == protocol.configuration_sha256
-    assert claim.artifact_root == protocol.artifact_root.as_posix()
+    assert claim.artifact_root == protocol.artifact_root_identity
     assert claim.expected_members == 108
     assert claim.expected_modes == ("NEAREST", "BILINEAR", "BICUBIC")
     assert claim.expected_mode_count == 3
@@ -401,6 +401,27 @@ def test_phase_1_execution_claim_binds_exact_contract(protocol: StudyProtocolV2)
     assert record["release_claim_allowed"] is False
     assert record["base_commit"] == protocol.base_commit
     assert set(cast(dict[str, object], record["payload"])) == EXPECTED_PAYLOAD_FIELDS
+
+
+def test_execution_claim_keeps_portable_identity_when_runtime_root_is_replaced(
+    tmp_path: Path,
+    protocol: StudyProtocolV2,
+) -> None:
+    """Catch a claim that records its active checkout path instead of portable identity."""
+
+    runtime_protocol = replace(protocol, artifact_root=tmp_path / "artifacts")
+
+    claim = begin_phase_execution(
+        phase="phase1",
+        protocol=runtime_protocol,
+        execution_commit=EXECUTION_COMMIT,
+        eligible_modes=(),
+    )
+
+    assert runtime_protocol.artifact_root_identity == (
+        "docs/evaluation/results/e1-feasibility-study"
+    )
+    assert claim.artifact_root == runtime_protocol.artifact_root_identity
 
 
 def test_phase_2_execution_claim_binds_exact_eligible_subset(
@@ -1140,7 +1161,6 @@ def test_task_7a_verified_json_result_exposes_one_read_evidence(
     ) == expected
 
 
-TASK_7A_ARTIFACT_ROOT = "docs/evaluation/results/e1-feasibility-study"
 TASK_7A_OWNERSHIP_HASHES = {
     "rev-A/front": "eadc490b04f8240e8356b3e20e75db08d79dfc5e27af180574d707836b3b776f",
     "rev-A/oblique_left": "2d2a52ecae44ccae98455180211aaf528078707948dbf83f792223c550d3a074",
@@ -1186,7 +1206,7 @@ def _task_7a_result_record(
         "base_commit": protocol.base_commit,
         "execution_commit": EXECUTION_COMMIT,
         "protocol_sha256": protocol.configuration_sha256,
-        "artifact_root": TASK_7A_ARTIFACT_ROOT,
+        "artifact_root": protocol.artifact_root_identity,
         "artifact_schema_sha256": _nonzero_sha("task-7a-artifact-schema"),
         "implementation_projection_sha256": _nonzero_sha("task-7a-projection"),
         "upstream_artifacts": [_task_7a_upstream(path) for path in upstream_paths],
@@ -1822,6 +1842,70 @@ def test_task_7a_full_cardinality_result_variants_validate(
     builder: Any,
 ) -> None:
     validate_study_schema(finalize_study_record(builder(protocol)))
+
+
+PORTABLE_ROOT_RECORD_BUILDERS = (
+    ("phase_execution_claim", minimal_valid_execution_claim_record),
+    ("implementation_validation", minimal_valid_implementation_validation_record),
+    ("retention_audit", minimal_valid_retention_audit_record),
+    ("scope_audit", minimal_valid_scope_audit_record),
+    ("diagnostic_result", minimal_valid_diagnostic_result_record),
+    ("feature_oracle", minimal_valid_feature_oracle_record),
+    ("development_result", minimal_valid_development_result_record),
+    ("decision", minimal_valid_decision_record),
+)
+
+
+@pytest.mark.parametrize(("record_type", "builder"), PORTABLE_ROOT_RECORD_BUILDERS)
+@pytest.mark.parametrize(
+    "wrong_root",
+    (
+        "/tmp/checkout/docs/evaluation/results/e1-feasibility-study",
+        "docs/evaluation/results/alternate-e1-study",
+    ),
+    ids=("absolute-checkout", "second-relative-root"),
+)
+def test_every_artifact_schema_family_rejects_nonportable_root_identity(
+    protocol: StudyProtocolV2,
+    record_type: str,
+    builder: Any,
+    wrong_root: str,
+) -> None:
+    """Catch any closed artifact variant that still permits a mixed root identity."""
+
+    document = builder(protocol)
+    assert document["record_type"] == record_type
+    document["artifact_root"] = wrong_root
+
+    with pytest.raises(StudyArtifactError, match="schema"):
+        validate_study_schema(finalize_study_record(document))
+
+
+@pytest.mark.parametrize(("record_type", "builder"), PORTABLE_ROOT_RECORD_BUILDERS)
+@pytest.mark.parametrize(
+    "wrong_root",
+    (
+        "/tmp/checkout/docs/evaluation/results/e1-feasibility-study",
+        "docs/evaluation/results/alternate-e1-study",
+    ),
+    ids=("absolute-checkout", "second-relative-root"),
+)
+def test_store_verifier_rejects_nonportable_root_in_every_artifact_family(
+    tmp_path: Path,
+    protocol: StudyProtocolV2,
+    record_type: str,
+    builder: Any,
+    wrong_root: str,
+) -> None:
+    """Catch a real store verification path that accepts mixed envelope identity."""
+
+    document = builder(protocol)
+    document["artifact_root"] = wrong_root
+    _write_direct(tmp_path, "record.json", canonical_json_bytes(finalize_study_record(document)))
+    store = StudyArtifactStore(tmp_path)
+
+    with pytest.raises(StudyArtifactError, match="schema"):
+        store.verify_json_result("record.json", expected_record_type=record_type)
 
 
 def test_task_7a_negative_performance_results_remain_valid_records(

@@ -27,6 +27,8 @@ from manufacturing_vision_studio.e1.study_protocol_v2 import (
 )
 
 MAX_STUDY_INPUT_BYTES = 4 * 1024 * 1024
+EXPECTED_ARTIFACT_ROOT_IDENTITY = "docs/evaluation/results/e1-feasibility-study"
+EXPECTED_RAW_DATA_ROOT_IDENTITY = "data/e1-feasibility-study"
 
 EXPECTED_IMPLEMENTATION_PROJECTION = (
     "Makefile",
@@ -177,6 +179,77 @@ def test_study_protocol_pins_base_commit_modes_and_hashes() -> None:
     assert protocol.source_hashes["selection_record_sha256"] == (
         "3d4aa7e95240ed2bd4c018fb0762fdf788f919069cfbb935fd228de4b67dc2fe"
     )
+
+
+def test_study_protocol_separates_portable_path_identity_from_runtime_paths() -> None:
+    """Catch a protocol that exposes checkout-specific paths as portable evidence identity."""
+
+    protocol = load_study_protocol_v2()
+
+    assert protocol.artifact_root_identity == EXPECTED_ARTIFACT_ROOT_IDENTITY
+    assert protocol.raw_data_root_identity == EXPECTED_RAW_DATA_ROOT_IDENTITY
+    assert protocol.artifact_root == STUDY_PROJECT_ROOT / EXPECTED_ARTIFACT_ROOT_IDENTITY
+    assert protocol.raw_data_root == STUDY_PROJECT_ROOT / EXPECTED_RAW_DATA_ROOT_IDENTITY
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("artifact_root", "docs/evaluation/results/alternate-e1-study"),
+        ("raw_data_root", "data/alternate-e1-study"),
+    ),
+)
+def test_study_protocol_schema_rejects_valid_relative_path_drift(
+    tmp_path: Path,
+    field: str,
+    replacement: str,
+) -> None:
+    """Catch a config schema that permits another otherwise-safe relative study path."""
+
+    fixture_dir, config_path, document = _project_local_protocol_copy(tmp_path)
+    try:
+        paths = document["paths"]
+        assert isinstance(paths, dict)
+        paths[field] = replacement
+        config_path.write_text(json.dumps(document))
+
+        with pytest.raises(StudyProtocolError):
+            load_study_protocol_v2(config_path)
+    finally:
+        shutil.rmtree(fixture_dir)
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("artifact_root", "docs/evaluation/results/alternate-e1-study"),
+        ("raw_data_root", "data/alternate-e1-study"),
+    ),
+)
+def test_study_protocol_semantics_reject_path_drift_even_with_relaxed_schema(
+    tmp_path: Path,
+    field: str,
+    replacement: str,
+) -> None:
+    """Catch removal of the production semantic pin behind the config schema."""
+
+    fixture_dir, config_path, document = _project_local_protocol_copy(tmp_path)
+    try:
+        paths = document["paths"]
+        assert isinstance(paths, dict)
+        paths[field] = replacement
+        config_path.write_text(json.dumps(document))
+
+        schema_path = fixture_dir / "schema.json"
+        schema = json.loads(STUDY_SCHEMA_PATH.read_text())
+        schema_paths = schema["properties"]["paths"]["properties"]
+        schema_paths[field] = {"type": "string", "minLength": 1}
+        schema_path.write_text(json.dumps(schema))
+
+        with pytest.raises(StudyProtocolError, match="path"):
+            load_study_protocol_v2(config_path)
+    finally:
+        shutil.rmtree(fixture_dir)
 
 
 def test_study_protocol_pins_immutable_ownership_map_hashes() -> None:

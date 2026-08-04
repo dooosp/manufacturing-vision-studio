@@ -11,7 +11,7 @@
     "base_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "paths": {
       "type": "object", "additionalProperties": false, "required": ["artifact_root", "raw_data_root"],
-      "properties": {"artifact_root": {"type": "string", "minLength": 1}, "raw_data_root": {"type": "string", "minLength": 1}}
+      "properties": {"artifact_root": {"const": "docs/evaluation/results/e1-feasibility-study"}, "raw_data_root": {"const": "data/e1-feasibility-study"}}
     },
     "diagnostic_matrix": {
       "type": "object", "additionalProperties": false, "required": ["path", "sha256"],

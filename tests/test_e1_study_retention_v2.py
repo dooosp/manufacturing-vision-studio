@@ -271,7 +271,7 @@ def _validation_document(
         "base_commit": protocol.base_commit,
         "execution_commit": execution_commit,
         "protocol_sha256": protocol.configuration_sha256,
-        "artifact_root": protocol.artifact_root.as_posix(),
+        "artifact_root": protocol.artifact_root_identity,
         "artifact_schema_sha256": sha256_bytes(
             (repo_root / "schemas/e1-feasibility-study-artifact.v1.json").read_bytes()
         ),
@@ -328,8 +328,6 @@ def _build_retention_fixture(
     real = load_study_protocol_v2()
     document = real.document
     document["base_commit"] = base_commit
-    cast(dict[str, object], document["paths"])["artifact_root"] = "artifacts"
-    cast(dict[str, object], document["paths"])["raw_data_root"] = "raw"
     source_hashes = dict(real.source_hashes)
     source_hashes.update(
         {
@@ -753,6 +751,23 @@ def test_implementation_validation_is_read_only_and_semantically_verified(
     assert verified.raw_sha256 == sha256_bytes(_validation_path(retention_fixture).read_bytes())
 
 
+def test_validation_evidence_uses_portable_artifact_root_identity(
+    retention_fixture: RetentionFixture,
+) -> None:
+    """Catch validation evidence that serializes its temporary runtime store path."""
+
+    verified = verify_implementation_validation(
+        retention_fixture.protocol,
+        retention_fixture.store,
+        repo_root=retention_fixture.repo_root,
+    )
+
+    assert retention_fixture.protocol.artifact_root_identity == (
+        "docs/evaluation/results/e1-feasibility-study"
+    )
+    assert verified.artifact_root == retention_fixture.protocol.artifact_root_identity
+
+
 def test_implementation_validation_rejects_self_consistent_unreviewed_executable_roots(
     retention_fixture: RetentionFixture,
 ) -> None:
@@ -1118,6 +1133,29 @@ def test_retention_record_binds_projection_dependency_seed_and_classifications(
         expected_record_type="retention_audit",
     )
     assert stored == finalize_study_record(audit.as_record())
+
+
+def test_retention_evidence_uses_portable_artifact_root_identity(
+    retention_fixture: RetentionFixture,
+) -> None:
+    """Catch a retention envelope that records its temporary runtime store path."""
+
+    audit = run_retention_audit(
+        retention_fixture.protocol,
+        retention_fixture.store,
+        execution_commit=retention_fixture.execution_commit,
+        repo_root=retention_fixture.repo_root,
+    )
+
+    assert retention_fixture.protocol.artifact_root_identity == (
+        "docs/evaluation/results/e1-feasibility-study"
+    )
+    assert audit.artifact_root == retention_fixture.protocol.artifact_root_identity
+    stored = retention_fixture.store.verify_json(
+        "retention-audit.json",
+        expected_record_type="retention_audit",
+    )
+    assert stored["artifact_root"] == retention_fixture.protocol.artifact_root_identity
 
 
 def test_run_retention_requires_validation_execution_commit_match(

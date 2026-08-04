@@ -12,6 +12,7 @@
     {"$ref": "#/$defs/decision"}
   ],
   "$defs": {
+    "artifactRootIdentity": {"const": "docs/evaluation/results/e1-feasibility-study"},
     "sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "path": {
@@ -240,7 +241,7 @@
         "base_commit": {"$ref": "#/$defs/sha1"},
         "execution_commit": {"$ref": "#/$defs/sha1"},
         "protocol_sha256": {"$ref": "#/$defs/sha256"},
-        "artifact_root": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "artifact_root": {"$ref": "#/$defs/artifactRootIdentity"},
         "artifact_schema_sha256": {"$ref": "#/$defs/sha256"},
         "implementation_projection_sha256": {"$ref": "#/$defs/sha256"},
         "upstream_artifacts": {"type": "array", "maxItems": 0},
@@ -475,7 +476,7 @@
         "execution_commit": {"$ref": "#/$defs/sha1"},
         "evidence_commit": {"$ref": "#/$defs/sha1"},
         "protocol_sha256": {"$ref": "#/$defs/sha256"},
-        "artifact_root": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "artifact_root": {"$ref": "#/$defs/artifactRootIdentity"},
         "artifact_schema_sha256": {"$ref": "#/$defs/sha256"},
         "implementation_projection_sha256": {"$ref": "#/$defs/sha256"},
         "upstream_artifacts": {
@@ -547,7 +548,7 @@
         "base_commit": {"$ref": "#/$defs/sha1"},
         "execution_commit": {"$ref": "#/$defs/sha1"},
         "protocol_sha256": {"$ref": "#/$defs/sha256"},
-        "artifact_root": {"const": "docs/evaluation/results/e1-feasibility-study"},
+        "artifact_root": {"$ref": "#/$defs/artifactRootIdentity"},
         "artifact_schema_sha256": {"$ref": "#/$defs/sha256"},
         "implementation_projection_sha256": {"$ref": "#/$defs/sha256"},
         "upstream_artifacts": {
@@ -1950,7 +1951,7 @@
         "base_commit": {"$ref": "#/$defs/sha1"},
         "execution_commit": {"$ref": "#/$defs/sha1"},
         "protocol_sha256": {"$ref": "#/$defs/sha256"},
-        "artifact_root": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "artifact_root": {"$ref": "#/$defs/artifactRootIdentity"},
         "payload": {
           "oneOf": [
             {"$ref": "#/$defs/phase1Payload"},
