@@ -1223,7 +1223,10 @@ def test_run_retention_rejects_non_evidence_git_lineage(
     _git(retention_fixture.repo_root, "add", "unrelated.txt")
     _git(retention_fixture.repo_root, "commit", "-m", "unrelated change")
 
-    with pytest.raises(StudyRetentionError, match="evidence-only lineage"):
+    with pytest.raises(
+        StudyRetentionError,
+        match="git monotonic evidence history contains non-artifact paths",
+    ):
         run_retention_audit(
             retention_fixture.protocol,
             retention_fixture.store,
@@ -1246,7 +1249,10 @@ def test_run_retention_preserves_committed_rename_source_identity(
     )
     _git(retention_fixture.repo_root, "commit", "-m", "rename source into evidence")
 
-    with pytest.raises(StudyRetentionError, match="non-artifact paths"):
+    with pytest.raises(
+        StudyRetentionError,
+        match="git monotonic evidence history rejects non-add evidence status",
+    ):
         run_retention_audit(
             retention_fixture.protocol,
             retention_fixture.store,
@@ -1270,7 +1276,10 @@ def test_run_retention_preserves_committed_copy_source_identity(
     )
     _git(retention_fixture.repo_root, "commit", "-m", "copy source into evidence")
 
-    with pytest.raises(StudyRetentionError, match="non-artifact paths"):
+    with pytest.raises(
+        StudyRetentionError,
+        match="git monotonic evidence history rejects non-add evidence status",
+    ):
         run_retention_audit(
             retention_fixture.protocol,
             retention_fixture.store,
@@ -1292,7 +1301,10 @@ def test_run_retention_rejects_fixed_source_copied_to_wrong_artifact_destination
     _git(retention_fixture.repo_root, "add", "artifacts/wrong-candidate-a.json")
     _git(retention_fixture.repo_root, "commit", "-m", "copy fixed source wrongly")
 
-    with pytest.raises(StudyRetentionError, match="non-artifact paths"):
+    with pytest.raises(
+        StudyRetentionError,
+        match="git monotonic evidence history rejects non-add evidence status",
+    ):
         retention_module._verify_git_lineage(
             retention_fixture.protocol,
             repo_root=retention_fixture.repo_root,
@@ -1320,7 +1332,10 @@ def test_git_lineage_rejects_wrong_source_copied_to_fixed_retained_destination(
     )
     _git(retention_fixture.repo_root, "commit", "-m", "copy wrong source to fixed path")
 
-    with pytest.raises(StudyRetentionError, match="non-artifact paths"):
+    with pytest.raises(
+        StudyRetentionError,
+        match="git monotonic evidence history rejects non-add evidence status",
+    ):
         retention_module._verify_git_lineage(
             retention_fixture.protocol,
             repo_root=retention_fixture.repo_root,
@@ -1342,7 +1357,10 @@ def test_git_lineage_never_exempts_fixed_retained_pair_rename(
     _git(retention_fixture.repo_root, "mv", source, destination)
     _git(retention_fixture.repo_root, "commit", "-m", "rename fixed retained pair")
 
-    with pytest.raises(StudyRetentionError, match="non-artifact paths"):
+    with pytest.raises(
+        StudyRetentionError,
+        match="git monotonic evidence history rejects non-add evidence status",
+    ):
         retention_module._verify_git_lineage(
             retention_fixture.protocol,
             repo_root=retention_fixture.repo_root,
@@ -1393,7 +1411,10 @@ def test_run_retention_rejects_committed_modify_and_delete_statuses(
     _git(retention_fixture.repo_root, "add", "-A", "lineage-source.txt")
     _git(retention_fixture.repo_root, "commit", "-m", f"{change} source")
 
-    with pytest.raises(StudyRetentionError, match="non-artifact paths"):
+    with pytest.raises(
+        StudyRetentionError,
+        match="git monotonic evidence history rejects non-add evidence status",
+    ):
         run_retention_audit(
             retention_fixture.protocol,
             retention_fixture.store,
