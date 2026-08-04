@@ -41,10 +41,16 @@ decision/report pair is idempotent.
 ## Claims and interrupted runs
 
 The Phase 1 and Phase 2 execution claims are permanent on-disk evidence that a
-phase started. Each claim is published and reopened before the first render,
-normalization, corpus, oracle, or inference callback. A phase must not be rerun
-once its claim exists, even when the result is absent. Repairing evidence does
-not authorize repeating study computation.
+phase started. Phase 1 publishes and reopens its claim before the first render,
+normalization, or inference callback. Before the Phase 2 claim, the runner may
+materialize the deterministic development corpus once only to compare all
+seven bindings with the verified scope, then it rereads the six prerequisite
+artifacts and repeats the repository/store preflight. This authorization step
+does not normalize images, run inference or metrics, or invoke a result
+callback. A scope/corpus authorization failure publishes nothing and can be
+retried. Once Phase 2 publishes and reopens its claim, normalization,
+inference, metrics, and result callbacks begin; any later failure leaves the
+claim as permanent orphan evidence and the phase must not be rerun.
 
 Any partial or orphaned packet is invalid. Examples include a phase claim
 without its result, a result without its claim, only one of the scope/oracle

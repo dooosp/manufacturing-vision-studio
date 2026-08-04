@@ -5,6 +5,7 @@ import json
 import os
 from copy import deepcopy
 from dataclasses import FrozenInstanceError, replace
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -1515,11 +1516,28 @@ def minimal_valid_diagnostic_result_record(
     )
 
 
+def _task_8_frozen_oracle_layout(ordinal: int) -> tuple[str, str]:
+    source_case_id = f"e1-development-defect-{ordinal:03d}"
+    revision_digest = sha256(
+        f"mvs-e1-planner-v1\0{source_case_id}\0revision".encode()
+    ).digest()
+    view_digest = sha256(f"mvs-e1-planner-v1\0{source_case_id}\0view".encode()).digest()
+    return (
+        ("rev-A", "rev-B")[int.from_bytes(revision_digest[:8], "big") % 2],
+        ("front", "oblique_left", "oblique_right")[
+            int.from_bytes(view_digest[:8], "big") % 3
+        ],
+    )
+
+
 def _task_7a_oracle_record(ordinal: int, *, correct: bool = True) -> dict[str, object]:
     case_id = f"e1-v2-development-defect-{ordinal:03d}"
+    cad_revision, view_id = _task_8_frozen_oracle_layout(ordinal)
     return {
         "case_id": case_id,
         "seed": 420000 + ordinal,
+        "cad_revision": cad_revision,
+        "view_id": view_id,
         "authoritative_mask_sha256": _nonzero_sha(f"{case_id}-mask"),
         "authoritative_positive_pixels": 16,
         "expected_feature_id": "top_face",
@@ -1527,7 +1545,9 @@ def _task_7a_oracle_record(ordinal: int, *, correct: bool = True) -> dict[str, o
         "status": "MAPPED",
         "correct": correct,
         "hash_binding_matches": True,
-        "ownership_map_sha256": TASK_7A_OWNERSHIP_HASHES["rev-A/front"],
+        "ownership_map_sha256": TASK_7A_OWNERSHIP_HASHES[
+            f"{cad_revision}/{view_id}"
+        ],
         "target_owned_pixels": 16,
         "owned_pixel_count": 16,
         "unmapped_pixel_count": 0,
@@ -1560,6 +1580,21 @@ def minimal_valid_feature_oracle_record(
             "passed": passed,
         },
     )
+
+
+def _task_8_move_first_oracle_row_to_another_allowed_layout(
+    document: dict[str, object],
+) -> dict[str, object]:
+    payload = cast(dict[str, object], document["payload"])
+    first = cast(list[dict[str, object]], payload["records"])[0]
+    current_hash = cast(str, first["ownership_map_sha256"])
+    wrong_layout, wrong_hash = next(
+        item for item in TASK_7A_OWNERSHIP_HASHES.items() if item[1] != current_hash
+    )
+    first["ownership_map_sha256"] = wrong_hash
+    if "cad_revision" in first and "view_id" in first:
+        first["cad_revision"], first["view_id"] = wrong_layout.split("/", 1)
+    return first
 
 
 def _task_7a_set_first_oracle_class(
@@ -2188,6 +2223,47 @@ def test_task_7a_fix1_oracle_row_contract_accepts_each_legal_negative_class(
     _task_7a_set_first_oracle_class(record, classification)
 
     validate_study_schema(finalize_study_record(record))
+
+
+def test_oracle_schema_rejects_coherent_wrong_allowed_layout_hash(
+    protocol: StudyProtocolV2,
+) -> None:
+    document = minimal_valid_feature_oracle_record(protocol)
+    _task_8_move_first_oracle_row_to_another_allowed_layout(document)
+
+    with pytest.raises(StudyArtifactError, match="oracle"):
+        validate_study_schema(finalize_study_record(document))
+
+
+def test_oracle_store_rejects_coherent_wrong_allowed_layout_hash(
+    tmp_path: Path,
+    protocol: StudyProtocolV2,
+) -> None:
+    document = minimal_valid_feature_oracle_record(protocol)
+    _task_8_move_first_oracle_row_to_another_allowed_layout(document)
+    store = StudyArtifactStore(tmp_path)
+    try:
+        with pytest.raises(StudyArtifactError, match="oracle"):
+            store.publish_json("feature-ownership-oracle.json", document)
+        assert store.inventory() == ()
+    finally:
+        store.close()
+
+
+def test_oracle_hash_binding_match_is_recomputed_not_trusted(
+    protocol: StudyProtocolV2,
+) -> None:
+    document = minimal_valid_feature_oracle_record(protocol)
+    payload = cast(dict[str, object], document["payload"])
+    first = cast(list[dict[str, object]], payload["records"])[0]
+    first["hash_binding_matches"] = False
+    first["correct"] = False
+    payload["correct_cases"] = 59
+    payload["wrong_cases"] = 1
+    payload["passed"] = False
+
+    with pytest.raises(StudyArtifactError, match="oracle"):
+        validate_study_schema(finalize_study_record(document))
 
 
 @pytest.mark.parametrize(

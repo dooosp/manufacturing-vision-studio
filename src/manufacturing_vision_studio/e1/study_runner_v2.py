@@ -41,6 +41,7 @@ from manufacturing_vision_studio.e1.study_artifacts_v2 import (
     StudyArtifactStore,
     StudyGateRecord,
     VerifiedStudyJson,
+    _frozen_oracle_layout_projection,
     begin_phase_execution,
     finalize_study_record,
 )
@@ -896,16 +897,32 @@ def _verify_oracle_payload(
     ):
         raise StudyStateError("oracle ownership hashes changed")
     records = _record_sequence(payload, "records")
-    for binding, record in zip(defect_bindings, records, strict=True):
+    layouts = _frozen_oracle_layout_projection()
+    for binding, record, layout in zip(defect_bindings, records, layouts, strict=True):
         if not isinstance(binding, Mapping) or not isinstance(record, Mapping):
             raise StudyStateError("oracle binding is not an object")
+        case_id, seed, cad_revision, view_id = layout
         if (
-            record.get("case_id") != binding.get("case_id")
-            or record.get("seed") != binding.get("seed")
+            record.get("case_id") != case_id
+            or record.get("seed") != seed
+            or binding.get("case_id") != case_id
+            or binding.get("seed") != seed
             or record.get("authoritative_mask_sha256")
             != binding.get("authoritative_mask_sha256")
+            or record.get("cad_revision") != cad_revision
+            or record.get("view_id") != view_id
         ):
             raise StudyStateError("oracle row is not bound to its scope member")
+        expected_hash = protocol.ownership_map_hashes.get(f"{cad_revision}/{view_id}")
+        hash_binding_matches = (
+            isinstance(expected_hash, str)
+            and record.get("ownership_map_sha256") == expected_hash
+        )
+        if (
+            record.get("hash_binding_matches") is not hash_binding_matches
+            or not hash_binding_matches
+        ):
+            raise StudyStateError("oracle ownership hash is not bound to its frozen layout")
     return cast(bool, payload["passed"])
 
 
@@ -1922,7 +1939,7 @@ class StudyRunner:
                 ("scope-audit.json",),
             )
             oracle = self._oracle(corpus, e1_protocol, self.protocol)
-            records = _oracle_records(corpus, oracle)
+            records = _oracle_records(self.protocol, corpus, oracle)
             oracle_document = _result_envelope(
                 self.protocol,
                 state,
@@ -1979,6 +1996,35 @@ class StudyRunner:
             raise StudyStateError("Phase 2 is not authorized by verified evidence")
         baseline = self._require_mutating_preflight(state, expected_paths=expected)
         execution_commit = _state_execution_commit(state)
+        scope_bindings = _scope_bindings(state)
+        e1_protocol = self._e1_protocol_loader()
+        corpus = self._load_corpus(e1_protocol)
+        bindings = _development_bindings(corpus)
+        if bindings != scope_bindings:
+            raise StudyStateError("Phase 2 corpus does not match the verified scope")
+
+        refreshed_state = inspect_state(
+            self.protocol,
+            repo_root=self.repo_root,
+            store=self._store,
+        )
+        refreshed_baseline = self._require_mutating_preflight(
+            refreshed_state,
+            expected_paths=expected,
+        )
+        refreshed_execution_commit = _state_execution_commit(refreshed_state)
+        refreshed_eligible = _state_eligible_modes(refreshed_state)
+        refreshed_scope_bindings = _scope_bindings(refreshed_state)
+        if (
+            not refreshed_state.status.phase2_authorized
+            or refreshed_execution_commit != execution_commit
+            or refreshed_eligible != eligible
+            or refreshed_scope_bindings != scope_bindings
+            or bindings != refreshed_scope_bindings
+        ):
+            raise StudyStateError("Phase 2 authorization evidence changed before claim")
+        state = refreshed_state
+        baseline = refreshed_baseline
         store, owned = self._write_store()
         try:
             store.verify_lexical_root_identity()
@@ -2002,12 +2048,6 @@ class StudyRunner:
                 baseline,
                 ("phase-2-execution-claim.json",),
             )
-
-            e1_protocol = self._e1_protocol_loader()
-            corpus = self._load_corpus(e1_protocol)
-            bindings = _development_bindings(corpus)
-            if bindings != _scope_bindings(state):
-                raise StudyStateError("Phase 2 corpus does not match the verified scope")
             inference = self._phase_inference(e1_protocol)
             applicable_cases = tuple(
                 case for case in corpus.cases if not case.trust_boundary
@@ -2655,22 +2695,40 @@ def _development_bindings(corpus: DevelopmentCorpus) -> list[dict[str, object]]:
 
 
 def _oracle_records(
+    protocol: StudyProtocolV2,
     corpus: DevelopmentCorpus,
     oracle: FeatureOracleResult,
 ) -> list[dict[str, object]]:
     defects = tuple(case for case in corpus.cases if case.group == "defect")
     if len(defects) != 60 or len(oracle.records) != 60 or oracle.case_count != 60:
         raise StudyStateError("feature oracle row count changed")
+    if dict(oracle.ownership_hashes) != dict(protocol.ownership_map_hashes):
+        raise StudyStateError("feature oracle ownership hashes changed")
     records: list[dict[str, object]] = []
-    for case, source in zip(defects, oracle.records, strict=True):
+    layouts = _frozen_oracle_layout_projection()
+    for case, source, layout in zip(defects, oracle.records, layouts, strict=True):
         record = dict(source)
+        case_id, seed, cad_revision, view_id = layout
         if (
-            record.get("case_id") != case.case_id
+            (case.case_id, case.seed, case.cad_revision, case.view_id) != layout
+            or record.get("case_id") != case_id
+            or record.get("cad_revision") != cad_revision
+            or record.get("view_id") != view_id
             or record.get("authoritative_mask_sha256")
             != case.authoritative_mask_sha256
             or record.get("expected_feature_id") != case.expected_feature_id
         ):
-            raise StudyStateError("feature oracle record is not bound to its case")
+            raise StudyStateError("feature oracle record layout is not bound to its case")
+        expected_hash = protocol.ownership_map_hashes.get(f"{cad_revision}/{view_id}")
+        hash_binding_matches = (
+            isinstance(expected_hash, str)
+            and record.get("ownership_map_sha256") == expected_hash
+        )
+        if (
+            record.get("hash_binding_matches") is not hash_binding_matches
+            or not hash_binding_matches
+        ):
+            raise StudyStateError("feature oracle ownership hash binding changed")
         positive = record.get("authoritative_positive_pixels")
         owned = record.get("owned_pixel_count")
         unmapped = record.get("unmapped_pixel_count")
@@ -2680,7 +2738,18 @@ def _oracle_records(
             and type(unmapped) is int
             and owned + unmapped == positive
         )
-        record["seed"] = case.seed
+        target_owned = record.get("target_owned_pixels")
+        expected_correct = (
+            record.get("status") == "MAPPED"
+            and record.get("predicted_feature_id") == record.get("expected_feature_id")
+            and type(target_owned) is int
+            and target_owned >= 8
+            and conserved
+            and hash_binding_matches
+        )
+        if record.get("correct") is not expected_correct:
+            raise StudyStateError("feature oracle correct-case declaration changed")
+        record["seed"] = seed
         record["conserved"] = conserved
         records.append(record)
     correct = sum(record.get("correct") is True for record in records)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import pwd
 import subprocess
@@ -24,6 +25,7 @@ from test_e1_study_artifacts_v2 import (
     minimal_valid_scope_audit_record,
 )
 
+from manufacturing_vision_studio.e1 import study_artifacts_v2 as artifacts_module
 from manufacturing_vision_studio.e1 import study_runner_v2 as runner_module
 from manufacturing_vision_studio.e1.known_transform_v2 import (
     AppliedAffineTransform,
@@ -40,6 +42,7 @@ from manufacturing_vision_studio.e1.study_artifacts_v2 import (
 )
 from manufacturing_vision_studio.e1.study_protocol_v2 import (
     FrozenDiagnosticPlan,
+    StudyProtocolV2,
     load_study_protocol_v2,
 )
 from manufacturing_vision_studio.e1.study_retention_v2 import (
@@ -468,10 +471,16 @@ def _projection(protocol_paths: tuple[str, ...]) -> tuple[ProjectionEntry, ...]:
 
 def _validation_dependencies(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     *,
     command_runner: CommandRunner,
     snapshots: list[RepositorySnapshot] | None = None,
 ) -> tuple[StudyRunner, list[tuple[str, str | None]], list[RepositorySnapshot]]:
+    monkeypatch.setattr(
+        runner_module,
+        "_verify_pristine_artifact_history",
+        lambda *args, **kwargs: None,
+    )
     protocol = replace(load_study_protocol_v2(), artifact_root=tmp_path / "artifacts")
     projection = _projection(protocol.implementation_projection_paths())
     baseline = RepositorySnapshot("a" * 40, (), projection)
@@ -553,6 +562,7 @@ def test_validation_transaction_records_fixed_requests_and_rechecks_state(
 
     runner, resolver_calls, snapshots = _validation_dependencies(
         tmp_path,
+        monkeypatch,
         command_runner=command_runner,
     )
     verifier_calls: list[str] = []
@@ -705,6 +715,7 @@ def test_existing_valid_implementation_validation_runs_zero_callbacks(
 )
 def test_validation_failure_publishes_nothing(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     bad_result: ValidationCommandResult,
 ) -> None:
     calls = 0
@@ -715,7 +726,11 @@ def test_validation_failure_publishes_nothing(
         calls += 1
         return bad_result
 
-    runner, _, _ = _validation_dependencies(tmp_path, command_runner=command_runner)
+    runner, _, _ = _validation_dependencies(
+        tmp_path,
+        monkeypatch,
+        command_runner=command_runner,
+    )
 
     with pytest.raises(StudyStateError):
         runner.validate_implementation()
@@ -726,6 +741,7 @@ def test_validation_failure_publishes_nothing(
 
 def test_validation_head_drift_stops_between_commands_and_publishes_nothing(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     protocol = load_study_protocol_v2()
     projection = _projection(protocol.implementation_projection_paths())
@@ -749,6 +765,7 @@ def test_validation_head_drift_stops_between_commands_and_publishes_nothing(
 
     runner, _, _ = _validation_dependencies(
         tmp_path,
+        monkeypatch,
         command_runner=command_runner,
         snapshots=snapshots,
     )
@@ -772,7 +789,11 @@ def test_validation_rejects_node_outside_sealed_path_before_commands(
         calls += 1
         raise AssertionError("command must not run")
 
-    runner, _, _ = _validation_dependencies(tmp_path, command_runner=command_runner)
+    runner, _, _ = _validation_dependencies(
+        tmp_path,
+        monkeypatch,
+        command_runner=command_runner,
+    )
 
     def bad_resolver(name: str, search_path: str | None) -> Path:
         del search_path
@@ -812,7 +833,11 @@ def test_validation_rejects_unreviewed_resolver_result_before_commands(
         calls += 1
         raise AssertionError("unreviewed executable must stop before command 1")
 
-    runner, _, _ = _validation_dependencies(tmp_path, command_runner=command_runner)
+    runner, _, _ = _validation_dependencies(
+        tmp_path,
+        monkeypatch,
+        command_runner=command_runner,
+    )
 
     def bad_resolver(name: str, search_path: str | None) -> Path:
         del search_path
@@ -850,6 +875,11 @@ def test_production_validation_resolution_ignores_ambient_path_and_home(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        runner_module,
+        "_verify_pristine_artifact_history",
+        lambda *args, **kwargs: None,
+    )
     poison_bin = tmp_path / "poison-bin"
     poison_bin.mkdir()
     for name in ("uv", "npm", "node"):
@@ -1243,6 +1273,12 @@ def test_phase1_executes_exact_case_major_callback_order(
 
 def _fake_development_corpus() -> DevelopmentCorpus:
     cases: list[object] = []
+    defect_layouts = {
+        ordinal: (cad_revision, view_id)
+        for ordinal, (_, _, cad_revision, view_id) in enumerate(
+            artifacts_module._frozen_oracle_layout_projection()
+        )
+    }
     for group, count, start in (
         ("clean", 24, 400000),
         ("nuisance", 30, 410000),
@@ -1251,6 +1287,9 @@ def _fake_development_corpus() -> DevelopmentCorpus:
     ):
         for ordinal in range(count):
             case_id = f"e1-v2-development-{group}-{ordinal:03d}"
+            cad_revision, view_id = (
+                defect_layouts[ordinal] if group == "defect" else ("rev-A", "front")
+            )
             cases.append(
                 SimpleNamespace(
                     case_id=case_id,
@@ -1263,6 +1302,8 @@ def _fake_development_corpus() -> DevelopmentCorpus:
                     inspection_sha256=sha256(f"{case_id}-inspection".encode()).hexdigest(),
                     authoritative_mask_sha256=sha256(f"{case_id}-mask".encode()).hexdigest(),
                     case_binding_sha256=sha256(f"{case_id}-binding".encode()).hexdigest(),
+                    cad_revision=cad_revision,
+                    view_id=view_id,
                     applied_transform=AppliedAffineTransform(1.0, 0.0, 0.0, 0.0),
                     trust_boundary=group == "trust_boundary",
                     expected_feature_id="top_face" if group == "defect" else None,
@@ -1280,6 +1321,51 @@ def _fake_development_corpus() -> DevelopmentCorpus:
         scope_projection=("development",),
         external_request_count=1,
         internal_membership_validation_count=120,
+    )
+
+
+def _fake_feature_oracle_result(
+    protocol: StudyProtocolV2,
+    corpus: DevelopmentCorpus,
+) -> FeatureOracleResult:
+    records: list[dict[str, object]] = []
+    for case in corpus.cases:
+        if case.group != "defect":
+            continue
+        cad_revision = getattr(case, "cad_revision", None)
+        view_id = getattr(case, "view_id", None)
+        layout = (
+            f"{cad_revision}/{view_id}"
+            if isinstance(cad_revision, str) and isinstance(view_id, str)
+            else "rev-A/front"
+        )
+        records.append(
+            {
+                "case_id": case.case_id,
+                "cad_revision": cad_revision,
+                "view_id": view_id,
+                "authoritative_mask_sha256": case.authoritative_mask_sha256,
+                "authoritative_positive_pixels": 16,
+                "expected_feature_id": "top_face",
+                "predicted_feature_id": "top_face",
+                "status": "MAPPED",
+                "correct": True,
+                "hash_binding_matches": True,
+                "ownership_map_sha256": protocol.ownership_map_hashes[layout],
+                "target_owned_pixels": 16,
+                "owned_pixel_count": 16,
+                "unmapped_pixel_count": 0,
+            }
+        )
+    return FeatureOracleResult(
+        60,
+        60,
+        0,
+        0,
+        0,
+        protocol.ownership_map_hashes,
+        tuple(records),
+        True,
     )
 
 
@@ -1367,6 +1453,73 @@ def _intercept_publication(
     return published
 
 
+def _track_real_publication(
+    monkeypatch: pytest.MonkeyPatch,
+    events: list[str],
+) -> None:
+    publish_json = StudyArtifactStore.publish_json
+    verify_json_result = StudyArtifactStore.verify_json_result
+
+    def publish(
+        self: StudyArtifactStore,
+        relative_path: str,
+        document: Mapping[str, object],
+    ) -> StudyArtifactRecord:
+        events.append(f"publish:{relative_path}")
+        return publish_json(self, relative_path, document)
+
+    def verify(
+        self: StudyArtifactStore,
+        relative_path: str,
+        *,
+        expected_record_type: str,
+    ) -> VerifiedStudyJson:
+        events.append(f"verify:{relative_path}")
+        return verify_json_result(
+            self,
+            relative_path,
+            expected_record_type=expected_record_type,
+        )
+
+    monkeypatch.setattr(StudyArtifactStore, "publish_json", publish)
+    monkeypatch.setattr(StudyArtifactStore, "verify_json_result", verify)
+    monkeypatch.setattr(
+        StudyRunner,
+        "_require_mutating_preflight",
+        lambda *args, **kwargs: RepositorySnapshot("f" * 40, (), ()),
+    )
+    monkeypatch.setattr(
+        StudyRunner,
+        "_require_phase_publication_state",
+        lambda *args, **kwargs: None,
+    )
+
+
+def _seed_phase2_prerequisite_packet(store: StudyArtifactStore) -> None:
+    for relative_path in runner_module._PRE_DECISION_PATHS[:6]:
+        (store.root / relative_path).write_bytes(b"verified-prerequisite\n")
+
+
+def _stored_paths(store: StudyArtifactStore) -> tuple[str, ...]:
+    return tuple(entry.path for entry in store.inventory())
+
+
+def _move_first_oracle_row_to_another_allowed_layout(
+    document: dict[str, object],
+    protocol: StudyProtocolV2,
+) -> None:
+    payload = cast(dict[str, object], document["payload"])
+    first = cast(list[dict[str, object]], payload["records"])[0]
+    ownership_hashes = cast(Mapping[str, str], protocol.ownership_map_hashes)
+    current_hash = cast(str, first["ownership_map_sha256"])
+    wrong_layout, wrong_hash = next(
+        item for item in ownership_hashes.items() if item[1] != current_hash
+    )
+    first["ownership_map_sha256"] = wrong_hash
+    if "cad_revision" in first and "view_id" in first:
+        first["cad_revision"], first["view_id"] = wrong_layout.split("/", 1)
+
+
 def test_feature_oracle_materializes_once_and_never_calls_inference(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1412,34 +1565,7 @@ def test_feature_oracle_materializes_once_and_never_calls_inference(
         del args
         oracle_calls += 1
         events.append("oracle")
-        records = tuple(
-            {
-                "case_id": case.case_id,
-                "authoritative_mask_sha256": case.authoritative_mask_sha256,
-                "authoritative_positive_pixels": 16,
-                "expected_feature_id": "top_face",
-                "predicted_feature_id": "top_face",
-                "status": "MAPPED",
-                "correct": True,
-                "hash_binding_matches": True,
-                "ownership_map_sha256": protocol.ownership_map_hashes["rev-A/front"],
-                "target_owned_pixels": 16,
-                "owned_pixel_count": 16,
-                "unmapped_pixel_count": 0,
-            }
-            for case in corpus.cases
-            if case.group == "defect"
-        )
-        return FeatureOracleResult(
-            60,
-            60,
-            0,
-            0,
-            0,
-            protocol.ownership_map_hashes,
-            records,
-            True,
-        )
+        return _fake_feature_oracle_result(protocol, corpus)
 
     def forbidden_inference(value: object) -> object:
         del value
@@ -1470,6 +1596,35 @@ def test_feature_oracle_materializes_once_and_never_calls_inference(
     assert set(published) == {"scope-audit.json", "feature-ownership-oracle.json"}
 
 
+def test_oracle_generation_rejects_forged_allowed_layout_hash(
+    tmp_path: Path,
+) -> None:
+    protocol = replace(load_study_protocol_v2(), artifact_root=tmp_path / "artifacts")
+    corpus = _fake_development_corpus()
+    oracle = _fake_feature_oracle_result(protocol, corpus)
+    records = [dict(record) for record in oracle.records]
+    current_hash = cast(str, records[0]["ownership_map_sha256"])
+    wrong_layout, wrong_hash = next(
+        item for item in protocol.ownership_map_hashes.items() if item[1] != current_hash
+    )
+    records[0]["ownership_map_sha256"] = wrong_hash
+    if "cad_revision" in records[0] and "view_id" in records[0]:
+        records[0]["cad_revision"], records[0]["view_id"] = wrong_layout.split("/", 1)
+    forged = FeatureOracleResult(
+        oracle.case_count,
+        oracle.correct_cases,
+        oracle.ambiguous_cases,
+        oracle.null_cases,
+        oracle.wrong_cases,
+        oracle.ownership_hashes,
+        tuple(records),
+        oracle.passed,
+    )
+
+    with pytest.raises(StudyStateError, match=r"oracle.*(layout|ownership|binding)"):
+        runner_module._oracle_records(protocol, corpus, forged)
+
+
 def test_phase2_is_mode_major_with_114_callbacks_per_eligible_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1495,15 +1650,42 @@ def test_phase2_is_mode_major_with_114_callbacks_per_eligible_mode(
         (),
         MappingProxyType(evidence),
     )
-    monkeypatch.setattr(runner_module, "inspect_state", lambda *args, **kwargs: state)
+    authorization_events: list[str] = []
+    state_reads = 0
+
+    def inspect(*args: object, **kwargs: object) -> VerifiedStudyState:
+        nonlocal state_reads
+        del args, kwargs
+        state_reads += 1
+        authorization_events.append("state")
+        return state
+
+    monkeypatch.setattr(runner_module, "inspect_state", inspect)
     events: list[tuple[str, str, str]] = []
-    publication_events: list[str] = []
-    published = _intercept_publication(monkeypatch, publication_events)
+    published = _intercept_publication(monkeypatch, authorization_events)
+    preflight_calls = 0
+
+    def preflight(*args: object, **kwargs: object) -> RepositorySnapshot:
+        nonlocal preflight_calls
+        del args, kwargs
+        preflight_calls += 1
+        authorization_events.append("preflight")
+        return RepositorySnapshot("f" * 40, (), ())
+
+    monkeypatch.setattr(StudyRunner, "_require_mutating_preflight", preflight)
+    protocol_calls = 0
     corpus_calls = 0
+
+    def load_e1_protocol() -> E1V2Protocol:
+        nonlocal protocol_calls
+        protocol_calls += 1
+        authorization_events.append("protocol")
+        return runner_module.load_e1_v2_protocol()
 
     def load_corpus() -> DevelopmentCorpus:
         nonlocal corpus_calls
         corpus_calls += 1
+        authorization_events.append("corpus")
         return corpus
 
     def normalize(*args: object, **kwargs: object) -> object:
@@ -1558,6 +1740,7 @@ def test_phase2_is_mode_major_with_114_callbacks_per_eligible_mode(
         del reference_bytes, inspection_bytes, reference_sha256, inspection_sha256
         del applied_transform
         ordinal = len(normalize_events) % 114
+        authorization_events.append("normalize")
         normalize_events.append((resampling.value, corpus.cases[ordinal].case_id))
         return SimpleNamespace(mode=resampling)
 
@@ -1568,12 +1751,16 @@ def test_phase2_is_mode_major_with_114_callbacks_per_eligible_mode(
         corpus=load_corpus,
         normalize=cast(NormalizeCallback, counting_normalize),
         inference=cast(InferenceRunner, infer),
+        e1_protocol_loader=load_e1_protocol,
     )
     try:
         runner.phase2()
     finally:
         store.close()
 
+    assert state_reads == 2
+    assert preflight_calls == 2
+    assert protocol_calls == 1
     assert corpus_calls == 1
     assert len(normalize_events) == 228
     assert len(events) == 228
@@ -1581,9 +1768,16 @@ def test_phase2_is_mode_major_with_114_callbacks_per_eligible_mode(
     assert [mode for mode, _ in normalize_events[114:]] == ["BICUBIC"] * 114
     assert normalize_events[0][1] == "e1-v2-development-clean-000"
     assert normalize_events[113][1] == "e1-v2-development-defect-059"
-    assert publication_events[0:2] == [
+    assert authorization_events[:9] == [
+        "state",
+        "preflight",
+        "protocol",
+        "corpus",
+        "state",
+        "preflight",
         "publish:phase-2-execution-claim.json",
         "verify:phase-2-execution-claim.json",
+        "normalize",
     ]
     assert "known-transform-development-120.json" in published
     payload = cast(
@@ -1613,6 +1807,7 @@ def test_phase2_rejects_every_scope_binding_drift_before_compute_callback_one(
 ) -> None:
     protocol = replace(load_study_protocol_v2(), artifact_root=tmp_path / "artifacts")
     store = StudyArtifactStore(protocol.artifact_root, allowed_root=tmp_path)
+    _seed_phase2_prerequisite_packet(store)
     validation, retention = _base_phase_evidence()
     corpus = _fake_development_corpus()
     bindings = runner_module._development_bindings(corpus)
@@ -1638,19 +1833,26 @@ def test_phase2_rejects_every_scope_binding_drift_before_compute_callback_one(
     )
     monkeypatch.setattr(runner_module, "inspect_state", lambda *args, **kwargs: state)
     publication_events: list[str] = []
-    _intercept_publication(monkeypatch, publication_events)
+    _track_real_publication(monkeypatch, publication_events)
     corpus_calls = 0
-    compute_calls = 0
+    normalization_calls = 0
+    inference_calls = 0
 
     def load_corpus() -> DevelopmentCorpus:
         nonlocal corpus_calls
         corpus_calls += 1
         return corpus
 
-    def forbidden_compute(*args: object, **kwargs: object) -> object:
-        nonlocal compute_calls
+    def forbidden_normalize(*args: object, **kwargs: object) -> object:
+        nonlocal normalization_calls
         del args, kwargs
-        compute_calls += 1
+        normalization_calls += 1
+        raise AssertionError("scope mismatch must stop before normalization/inference")
+
+    def forbidden_inference(*args: object, **kwargs: object) -> object:
+        nonlocal inference_calls
+        del args, kwargs
+        inference_calls += 1
         raise AssertionError("scope mismatch must stop before normalization/inference")
 
     runner = StudyRunner(
@@ -1658,21 +1860,191 @@ def test_phase2_rejects_every_scope_binding_drift_before_compute_callback_one(
         repo_root=tmp_path,
         store=store,
         corpus=load_corpus,
-        normalize=cast(NormalizeCallback, forbidden_compute),
-        inference=cast(InferenceRunner, forbidden_compute),
+        normalize=cast(NormalizeCallback, forbidden_normalize),
+        inference=cast(InferenceRunner, forbidden_inference),
     )
     try:
         with pytest.raises(StudyStateError, match="corpus does not match"):
             runner.phase2()
+        assert corpus_calls == 1
+        assert normalization_calls == 0
+        assert inference_calls == 0
+        assert publication_events == []
+        assert not (protocol.artifact_root / "phase-2-execution-claim.json").exists()
+        assert frozenset(_stored_paths(store)) == frozenset(
+            runner_module._PRE_DECISION_PATHS[:6]
+        )
     finally:
         store.close()
 
-    assert corpus_calls == 1
-    assert compute_calls == 0
-    assert publication_events[:2] == [
-        "publish:phase-2-execution-claim.json",
-        "verify:phase-2-execution-claim.json",
-    ]
+
+def test_phase2_corpus_loader_failure_publishes_nothing_and_is_retryable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol = replace(load_study_protocol_v2(), artifact_root=tmp_path / "artifacts")
+    store = StudyArtifactStore(protocol.artifact_root, allowed_root=tmp_path)
+    _seed_phase2_prerequisite_packet(store)
+    validation, retention = _base_phase_evidence()
+    corpus = _fake_development_corpus()
+    bindings = runner_module._development_bindings(corpus)
+    evidence = {
+        "implementation-validation.json": validation,
+        "retention-audit.json": retention,
+        "phase-1-execution-claim.json": _fake_verified({}),
+        "known-transform-diagnostic-108.json": _fake_verified(
+            {"payload": {"eligible_modes": ["NEAREST"]}}
+        ),
+        "scope-audit.json": _fake_verified({"payload": {"bindings": bindings}}),
+        "feature-ownership-oracle.json": _fake_verified({}),
+    }
+    state = VerifiedStudyState(
+        StudyStatus(True, True, True, True, False, "PENDING", ()),
+        tuple(evidence),
+        (),
+        MappingProxyType(evidence),
+    )
+    monkeypatch.setattr(runner_module, "inspect_state", lambda *args, **kwargs: state)
+    publication_events: list[str] = []
+    _track_real_publication(monkeypatch, publication_events)
+    corpus_calls = 0
+    inference_calls = 0
+
+    def unavailable_corpus() -> DevelopmentCorpus:
+        nonlocal corpus_calls
+        corpus_calls += 1
+        raise RuntimeError("development corpus unavailable")
+
+    def forbidden_inference(value: object) -> object:
+        nonlocal inference_calls
+        del value
+        inference_calls += 1
+        raise AssertionError("corpus authorization failure reached inference")
+
+    runner = StudyRunner(
+        protocol,
+        repo_root=tmp_path,
+        store=store,
+        corpus=unavailable_corpus,
+        inference=cast(InferenceRunner, forbidden_inference),
+    )
+    try:
+        for _ in range(2):
+            with pytest.raises(RuntimeError, match="development corpus unavailable"):
+                runner.phase2()
+        assert corpus_calls == 2
+        assert inference_calls == 0
+        assert publication_events == []
+        assert not (protocol.artifact_root / "phase-2-execution-claim.json").exists()
+        assert frozenset(_stored_paths(store)) == frozenset(
+            runner_module._PRE_DECISION_PATHS[:6]
+        )
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("drift", ("execution_commit", "eligible_modes", "scope_binding"))
+def test_phase2_rechecks_authorization_state_before_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    drift: str,
+) -> None:
+    protocol = replace(load_study_protocol_v2(), artifact_root=tmp_path / "artifacts")
+    store = StudyArtifactStore(protocol.artifact_root, allowed_root=tmp_path)
+    _seed_phase2_prerequisite_packet(store)
+    validation, retention = _base_phase_evidence()
+    corpus = _fake_development_corpus()
+    bindings = runner_module._development_bindings(corpus)
+
+    def evidence_packet() -> dict[str, VerifiedStudyJson]:
+        return {
+            "implementation-validation.json": validation,
+            "retention-audit.json": retention,
+            "phase-1-execution-claim.json": _fake_verified({}),
+            "known-transform-diagnostic-108.json": _fake_verified(
+                {"payload": {"eligible_modes": ["NEAREST"]}}
+            ),
+            "scope-audit.json": _fake_verified({"payload": {"bindings": bindings}}),
+            "feature-ownership-oracle.json": _fake_verified({}),
+        }
+
+    initial_evidence = evidence_packet()
+    refreshed_evidence = evidence_packet()
+    if drift == "execution_commit":
+        refreshed_evidence["implementation-validation.json"] = _fake_verified(
+            {
+                "execution_commit": "9" * 40,
+                "artifact_schema_sha256": "b" * 64,
+                "implementation_projection_sha256": "c" * 64,
+            }
+        )
+    elif drift == "eligible_modes":
+        refreshed_evidence["known-transform-diagnostic-108.json"] = _fake_verified(
+            {"payload": {"eligible_modes": ["BILINEAR"]}}
+        )
+    else:
+        changed_bindings = [dict(binding) for binding in bindings]
+        changed_bindings[0]["case_binding_sha256"] = sha256(
+            b"authorization-state-drift"
+        ).hexdigest()
+        refreshed_evidence["scope-audit.json"] = _fake_verified(
+            {"payload": {"bindings": changed_bindings}}
+        )
+
+    states = iter(
+        (
+            VerifiedStudyState(
+                StudyStatus(True, True, True, True, False, "PENDING", ()),
+                tuple(initial_evidence),
+                (),
+                MappingProxyType(initial_evidence),
+            ),
+            VerifiedStudyState(
+                StudyStatus(True, True, True, True, False, "PENDING", ()),
+                tuple(refreshed_evidence),
+                (),
+                MappingProxyType(refreshed_evidence),
+            ),
+        )
+    )
+    monkeypatch.setattr(runner_module, "inspect_state", lambda *args, **kwargs: next(states))
+    publication_events: list[str] = []
+    _track_real_publication(monkeypatch, publication_events)
+    normalization_calls = 0
+    inference_calls = 0
+
+    def forbidden_normalize(*args: object, **kwargs: object) -> object:
+        nonlocal normalization_calls
+        del args, kwargs
+        normalization_calls += 1
+        raise AssertionError("authorization drift reached normalization")
+
+    def forbidden_inference(value: object) -> object:
+        nonlocal inference_calls
+        del value
+        inference_calls += 1
+        raise AssertionError("authorization drift reached inference")
+
+    runner = StudyRunner(
+        protocol,
+        repo_root=tmp_path,
+        store=store,
+        corpus=lambda: corpus,
+        normalize=cast(NormalizeCallback, forbidden_normalize),
+        inference=cast(InferenceRunner, forbidden_inference),
+    )
+    try:
+        with pytest.raises(StudyStateError, match=r"authorization.*changed"):
+            runner.phase2()
+        assert normalization_calls == 0
+        assert inference_calls == 0
+        assert publication_events == []
+        assert not (protocol.artifact_root / "phase-2-execution-claim.json").exists()
+        assert frozenset(_stored_paths(store)) == frozenset(
+            runner_module._PRE_DECISION_PATHS[:6]
+        )
+    finally:
+        store.close()
 
 
 def _upstream(path: str, evidence: VerifiedStudyJson) -> dict[str, str]:
@@ -2006,6 +2378,31 @@ def _remove_later_phase_evidence(runner: StudyRunner) -> None:
         "decision.json",
     ):
         (runner.protocol.artifact_root / relative).unlink()
+
+
+def test_status_rejects_coherent_wrong_oracle_layout_without_generic_semantics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _publish_semantic_packet(tmp_path)
+    _remove_later_phase_evidence(runner)
+    oracle_path = runner.protocol.artifact_root / "feature-ownership-oracle.json"
+    oracle_document = cast(dict[str, object], json.loads(oracle_path.read_bytes()))
+    _move_first_oracle_row_to_another_allowed_layout(oracle_document, runner.protocol)
+    oracle_path.write_bytes(
+        runner_module._canonical_json_bytes(finalize_study_record(oracle_document))
+    )
+    monkeypatch.setattr(
+        artifacts_module,
+        "_validate_oracle_semantics",
+        lambda payload: None,
+    )
+
+    status = runner.status()
+
+    assert status.study_valid is False
+    assert status.terminal_decision == "STUDY_INVALID"
+    assert status.reasons == ("ARTIFACT_VERIFICATION_FAILED",)
 
 
 def test_scope_defect_mask_reauthoring_is_rejected_against_existing_oracle(

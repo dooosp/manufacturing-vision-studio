@@ -41,6 +41,8 @@ _ZERO_SHA256 = "0" * _SHA256_LENGTH
 _STUDY_ID = "e1-feasibility-separability"
 _PHASE_1_MODES = ("NEAREST", "BILINEAR", "BICUBIC")
 _FEATURE_IDS = ("bottom_edge", "hole_left", "hole_right", "top_edge", "top_face")
+_FROZEN_ORACLE_REVISIONS = ("rev-A", "rev-B")
+_FROZEN_ORACLE_VIEWS = ("front", "oblique_left", "oblique_right")
 _RESULT_RECORD_TYPES = {
     "scope_audit",
     "diagnostic_result",
@@ -73,6 +75,37 @@ _PERFORMANCE_DECISION_BRANCHES = {
         "DEVELOPMENT_MODE_PASSED",
     ),
 }
+
+
+def _frozen_oracle_layout_projection() -> tuple[tuple[str, int, str, str], ...]:
+    """Derive the v2 defect layouts from their frozen v1 template identities."""
+
+    projection: list[tuple[str, int, str, str]] = []
+    for ordinal in range(60):
+        source_case_id = f"e1-development-defect-{ordinal:03d}"
+        revision_digest = bytes.fromhex(
+            sha256_bytes(
+                f"mvs-e1-planner-v1\0{source_case_id}\0revision".encode()
+            )
+        )
+        view_digest = bytes.fromhex(
+            sha256_bytes(f"mvs-e1-planner-v1\0{source_case_id}\0view".encode())
+        )
+        revision = _FROZEN_ORACLE_REVISIONS[
+            int.from_bytes(revision_digest[:8], "big") % len(_FROZEN_ORACLE_REVISIONS)
+        ]
+        view = _FROZEN_ORACLE_VIEWS[
+            int.from_bytes(view_digest[:8], "big") % len(_FROZEN_ORACLE_VIEWS)
+        ]
+        projection.append(
+            (
+                f"e1-v2-development-defect-{ordinal:03d}",
+                420000 + ordinal,
+                revision,
+                view,
+            )
+        )
+    return tuple(projection)
 
 
 class StudyArtifactError(ValueError):
@@ -986,17 +1019,19 @@ def _validate_diagnostic_semantics(payload: Mapping[str, object]) -> None:
 
 def _validate_oracle_semantics(payload: Mapping[str, object]) -> None:
     records = cast(list[dict[str, object]], payload["records"])
-    expected = tuple(
-        (f"e1-v2-development-defect-{ordinal:03d}", 420000 + ordinal)
-        for ordinal in range(60)
-    )
+    expected = _frozen_oracle_layout_projection()
     actual = tuple(
-        (cast(str, record["case_id"]), cast(int, record["seed"])) for record in records
+        (
+            cast(str, record["case_id"]),
+            cast(int, record["seed"]),
+            cast(str, record["cad_revision"]),
+            cast(str, record["view_id"]),
+        )
+        for record in records
     )
     if actual != expected:
-        raise StudyArtifactError("feature oracle record order or identity is invalid")
+        raise StudyArtifactError("feature oracle record order, identity, or layout is invalid")
     ownership_hashes = cast(dict[str, str], payload["ownership_hashes"])
-    allowed_ownership_hashes = frozenset(ownership_hashes.values())
     minimum_winner_pixels = cast(int, payload["minimum_winner_pixels"])
     for record in records:
         status = cast(str, record["status"])
@@ -1021,14 +1056,22 @@ def _validate_oracle_semantics(payload: Mapping[str, object]) -> None:
         conserved = owned + unmapped == authoritative
         if record["conserved"] is not conserved:
             raise StudyArtifactError("feature oracle conservation declaration is invalid")
-        if record["ownership_map_sha256"] not in allowed_ownership_hashes:
-            raise StudyArtifactError("feature oracle ownership hash is invalid")
+        layout_key = f"{record['cad_revision']}/{record['view_id']}"
+        expected_ownership_hash = ownership_hashes.get(layout_key)
+        hash_binding_matches = (
+            isinstance(expected_ownership_hash, str)
+            and record["ownership_map_sha256"] == expected_ownership_hash
+        )
+        if record["hash_binding_matches"] is not hash_binding_matches:
+            raise StudyArtifactError("feature oracle hash-binding declaration is invalid")
+        if not hash_binding_matches:
+            raise StudyArtifactError("feature oracle ownership hash does not match its layout")
         expected_correct = (
             status == "MAPPED"
             and predicted_feature == expected_feature
             and target_owned >= minimum_winner_pixels
             and conserved
-            and record["hash_binding_matches"] is True
+            and hash_binding_matches
         )
         if record["correct"] is not expected_correct:
             raise StudyArtifactError("feature oracle correct-case declaration is invalid")

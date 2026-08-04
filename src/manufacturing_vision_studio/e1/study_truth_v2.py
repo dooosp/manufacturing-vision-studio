@@ -761,6 +761,7 @@ def run_feature_ownership_oracle(
             {
                 "authoritative_mask_sha256": case.authoritative_mask_sha256,
                 "authoritative_positive_pixels": mapping.final_positive_pixel_count,
+                "cad_revision": case.cad_revision,
                 "case_id": case.case_id,
                 "correct": correct,
                 "expected_feature_id": case.expected_feature_id,
@@ -771,6 +772,7 @@ def run_feature_ownership_oracle(
                 "status": mapping.status,
                 "target_owned_pixels": target_pixels,
                 "unmapped_pixel_count": mapping.unmapped_pixel_count,
+                "view_id": case.view_id,
             }
         )
     passed = (

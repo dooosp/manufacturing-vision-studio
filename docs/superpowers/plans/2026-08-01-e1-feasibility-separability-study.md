@@ -1703,11 +1703,13 @@ eligible. It materializes the exact 120 development bindings, publishes
 `scope-audit.json` and `feature-ownership-oracle.json`, and never calls image
 inference.
 
-`phase2()` verifies Phase 0, at least one eligible mode, and oracle PASS before
-publishing its claim. It materializes the 120 bindings once, checks them against
-the oracle/scope upstream hashes, records six trust rows with identity geometry
-and `evaluation_status=NOT_APPLICABLE`, and calls the adapter exactly 114 times
-per eligible mode. It records all modes; it does not rank or select one.
+`phase2()` verifies Phase 0, at least one eligible mode, and oracle PASS, then
+materializes the 120 bindings once for authorization and checks all seven fields
+against the verified scope. It rereads the six-path prerequisite packet and
+repeats mutating preflight before publishing its claim, then reuses that same
+corpus for computation. It records six trust rows with identity geometry and
+`evaluation_status=NOT_APPLICABLE`, and calls the adapter exactly 114 times per
+eligible mode. It records all modes; it does not rank or select one.
 
 - [ ] **Step 4: Add the CLI entry point and per-phase subcommands**
 

@@ -14,6 +14,7 @@ from PIL import Image
 import manufacturing_vision_studio.e1.study_truth_v2 as truth_module
 from manufacturing_vision_studio.canonical import sha256_bytes
 from manufacturing_vision_studio.canonical_png import encode_png
+from manufacturing_vision_studio.e1 import study_artifacts_v2 as artifacts_module
 from manufacturing_vision_studio.e1.diagnostics_v2 import (
     _render_diagnostic as historical_render_diagnostic,
 )
@@ -636,10 +637,11 @@ def test_feature_oracle_requires_exact_target_feature_agreement(
     development_corpus: DevelopmentCorpus,
 ) -> None:
     e1_protocol = load_e1_v2_protocol()
+    study_protocol = load_study_protocol_v2()
     oracle = run_feature_ownership_oracle(
         development_corpus,
         e1_protocol,
-        load_study_protocol_v2(),
+        study_protocol,
     )
     assert oracle.passed is True
     assert oracle.case_count == 60
@@ -655,6 +657,36 @@ def test_feature_oracle_requires_exact_target_feature_agreement(
         + cast(int, record["unmapped_pixel_count"])
         == cast(int, record["authoritative_positive_pixels"])
         for record in oracle.records
+    )
+    defects = tuple(case for case in development_corpus.cases if case.group == "defect")
+    assert tuple(
+        (
+            record["case_id"],
+            record["cad_revision"],
+            record["view_id"],
+            record["ownership_map_sha256"],
+            record["hash_binding_matches"],
+        )
+        for record in oracle.records
+    ) == tuple(
+        (
+            case.case_id,
+            case.cad_revision,
+            case.view_id,
+            study_protocol.ownership_map_hashes[f"{case.cad_revision}/{case.view_id}"],
+            True,
+        )
+        for case in defects
+    )
+
+
+def test_generic_oracle_layout_projection_matches_frozen_v1_templates(
+    development_corpus: DevelopmentCorpus,
+) -> None:
+    defects = tuple(case for case in development_corpus.cases if case.group == "defect")
+
+    assert artifacts_module._frozen_oracle_layout_projection() == tuple(
+        (case.case_id, case.seed, case.cad_revision, case.view_id) for case in defects
     )
 
 

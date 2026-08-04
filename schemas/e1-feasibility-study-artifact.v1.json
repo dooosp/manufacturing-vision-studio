@@ -1244,6 +1244,8 @@
       "required": [
         "case_id",
         "seed",
+        "cad_revision",
+        "view_id",
         "authoritative_mask_sha256",
         "authoritative_positive_pixels",
         "expected_feature_id",
@@ -1263,6 +1265,8 @@
           "pattern": "^e1-v2-development-defect-[0-9]{3}$"
         },
         "seed": {"type": "integer", "minimum": 420000, "maximum": 420059},
+        "cad_revision": {"enum": ["rev-A", "rev-B"]},
+        "view_id": {"enum": ["front", "oblique_left", "oblique_right"]},
         "authoritative_mask_sha256": {"$ref": "#/$defs/sha256"},
         "authoritative_positive_pixels": {"type": "integer", "minimum": 1},
         "expected_feature_id": {"$ref": "#/$defs/fixedFeatureId"},
