@@ -359,21 +359,32 @@ def validate_study_schema(document: Mapping[str, object]) -> None:
 
 
 def read_bounded_bytes(path: Path, *, maximum: int) -> bytes:
-    """Read stable regular-file bytes without following a final symlink."""
+    """Read stable regular-file bytes through a pinned parent directory."""
 
     if maximum < 1:
         raise ValueError("maximum must be positive")
     source_path = _absolute_lexical(path)
+    leaf = source_path.name
+    if not leaf or leaf in {".", ".."} or "/" in leaf or "\x00" in leaf:
+        raise StudyArtifactError("input path leaf is unsafe")
+    parent_descriptor: int | None = None
     descriptor: int | None = None
     try:
-        before = source_path.lstat()
+        parent_descriptor = _open_existing_absolute_directory(source_path.parent)
+        if parent_descriptor is None:
+            raise StudyArtifactError("input parent directory is missing")
+        before = os.stat(leaf, dir_fd=parent_descriptor, follow_symlinks=False)
         if stat.S_ISLNK(before.st_mode):
             raise StudyArtifactError("input path is a symlink")
         if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
             raise StudyArtifactError("input path is not a single-link regular file")
         if before.st_size > maximum:
             raise StudyArtifactError("input exceeds byte limit")
-        descriptor = os.open(source_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(
+            leaf,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_descriptor,
+        )
         opened = os.fstat(descriptor)
         if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
             raise StudyArtifactError("input changed during validation")
@@ -393,8 +404,12 @@ def read_bounded_bytes(path: Path, *, maximum: int) -> bytes:
     except OSError as exc:
         raise StudyArtifactError(f"input could not be read safely: {exc}") from exc
     finally:
-        if descriptor is not None:
-            os.close(descriptor)
+        try:
+            if descriptor is not None:
+                os.close(descriptor)
+        finally:
+            if parent_descriptor is not None:
+                os.close(parent_descriptor)
 
 
 class StudyArtifactStore:

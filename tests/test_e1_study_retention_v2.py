@@ -17,6 +17,7 @@ from manufacturing_vision_studio.canonical import (
     sha256_bytes,
 )
 from manufacturing_vision_studio.e1 import protocol_v2 as legacy_protocol_module
+from manufacturing_vision_studio.e1 import study_artifacts_v2 as artifacts_module
 from manufacturing_vision_studio.e1 import study_retention_v2 as retention_module
 from manufacturing_vision_studio.e1.study_artifacts_v2 import (
     StudyArtifactStore,
@@ -1606,3 +1607,104 @@ def test_retention_reverification_accepts_later_artifact_only_commit(
 
     assert verified == original
     assert verified.evidence_commit == retention_fixture.evidence_commit
+
+
+def test_v1_history_rejects_intermediate_parent_swap_before_configuration_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The historical HOLD verifier must not accept an outside configuration."""
+
+    _copy_v1_history_tree(tmp_path)
+    original_parent = tmp_path / "configs/evaluation"
+    source_path = tmp_path / V1_HISTORY_RELATIVE_PATH
+    outside_parent = tmp_path / "outside-evaluation"
+    outside_parent.mkdir()
+    for source in original_parent.iterdir():
+        assert source.is_file()
+        _write(outside_parent / source.name, source.read_bytes())
+    outside_configuration = load_strict_json_object(source_path.read_bytes())
+    outside_configuration["outside_parent_swap_marker"] = "outside"
+    outside_payload = canonical_json_bytes(outside_configuration)
+    (outside_parent / source_path.name).write_bytes(outside_payload)
+    original_absolute = artifacts_module._absolute_lexical
+    swapped = False
+
+    def swap_parent_after_normalization(path: Path) -> Path:
+        nonlocal swapped
+        absolute = original_absolute(path)
+        if absolute == source_path and not swapped:
+            original_parent.rename(tmp_path / "evaluation-pinned")
+            original_parent.symlink_to(outside_parent, target_is_directory=True)
+            swapped = True
+        return absolute
+
+    monkeypatch.setattr(
+        artifacts_module,
+        "_absolute_lexical",
+        swap_parent_after_normalization,
+    )
+    _stub_v1_history_git(monkeypatch)
+
+    try:
+        history = retention_module._verify_e1_v1_history_local(tmp_path)
+    except StudyRetentionError:
+        pass
+    else:
+        assert history != {"verdict": "HOLD", "artifact_count": 9}
+    assert swapped is True
+    assert (outside_parent / source_path.name).read_bytes() == outside_payload
+
+
+def test_retained_input_preflight_rejects_intermediate_parent_swap(
+    retention_fixture: RetentionFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prepared retained input bytes must never bind an outside replacement."""
+
+    original_parent = retention_fixture.repo_root / "data/e1-v2-development"
+    source_path = original_parent / "candidate-a.json"
+    outside_parent = retention_fixture.repo_root / "outside-inputs"
+    outside_parent.mkdir()
+    for source in original_parent.iterdir():
+        assert source.is_file()
+        _write(outside_parent / source.name, source.read_bytes())
+    outside_payload = b'{"candidate":"OUTSIDE","outcome":"HOLD"}'
+    (outside_parent / source_path.name).write_bytes(outside_payload)
+    source_hashes = dict(retention_fixture.protocol.source_hashes)
+    source_hashes["candidate_a_raw_sha256"] = sha256_bytes(outside_payload)
+    protocol = replace(
+        retention_fixture.protocol,
+        source_hashes=MappingProxyType(source_hashes),
+    )
+    original_absolute = artifacts_module._absolute_lexical
+    swapped = False
+
+    def swap_parent_after_normalization(path: Path) -> Path:
+        nonlocal swapped
+        absolute = original_absolute(path)
+        if absolute == source_path and not swapped:
+            original_parent.rename(retention_fixture.repo_root / "inputs-pinned")
+            original_parent.symlink_to(outside_parent, target_is_directory=True)
+            swapped = True
+        return absolute
+
+    monkeypatch.setattr(
+        artifacts_module,
+        "_absolute_lexical",
+        swap_parent_after_normalization,
+    )
+
+    try:
+        prepared = retention_module._prepare_retained_inputs(
+            protocol,
+            root=retention_fixture.repo_root,
+        )
+    except StudyRetentionError:
+        pass
+    else:
+        assert all(item.payload != outside_payload for item in prepared)
+    assert swapped is True
+    assert not (
+        retention_fixture.protocol.artifact_root / "retained-inputs/candidate-a.json"
+    ).exists()

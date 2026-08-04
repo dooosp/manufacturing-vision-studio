@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from manufacturing_vision_studio.e1 import study_artifacts_v2 as artifacts_module
 from manufacturing_vision_studio.e1 import study_retention_v2 as retention_module
 from manufacturing_vision_studio.e1.study_protocol_v2 import (
     PROJECT_ROOT,
@@ -955,3 +956,46 @@ def test_complete_repo_preserves_and_rejects_real_unprojected_modules(
         match=r"unprojected repository import:.*diagnostics_v2",
     ):
         scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_projection_rejects_intermediate_parent_swap_before_hashing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A returned projection must never bind a hash from an outside parent."""
+
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    source_path = repo_root / "src/manufacturing_vision_studio/registry.py"
+    original_parent = source_path.parent
+    outside_parent = tmp_path / "outside-evaluation"
+    outside_parent.mkdir()
+    outside_payload = b'{"outside_parent_swap_marker":true}\n'
+    (outside_parent / source_path.name).write_bytes(outside_payload)
+    original_absolute = artifacts_module._absolute_lexical
+    swapped = False
+
+    def swap_parent_after_normalization(path: Path) -> Path:
+        nonlocal swapped
+        absolute = original_absolute(path)
+        if absolute == source_path and not swapped:
+            original_parent.rename(repo_root / "src/manufacturing_vision_studio-pinned")
+            original_parent.symlink_to(outside_parent, target_is_directory=True)
+            swapped = True
+        return absolute
+
+    monkeypatch.setattr(
+        artifacts_module,
+        "_absolute_lexical",
+        swap_parent_after_normalization,
+    )
+
+    try:
+        projection = build_study_implementation_projection(protocol, repo_root=repo_root)
+    except StudyRetentionError:
+        pass
+    else:
+        assert dict((entry.path, entry.sha256) for entry in projection)[
+            "src/manufacturing_vision_studio/registry.py"
+        ] != retention_module.sha256_bytes(outside_payload)
+    assert swapped is True

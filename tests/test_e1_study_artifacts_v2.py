@@ -24,6 +24,7 @@ from manufacturing_vision_studio.e1.study_artifacts_v2 import (
     begin_phase_execution,
     finalize_study_record,
     load_strict_json_object,
+    read_bounded_bytes,
     validate_study_schema,
     verify_self_hash,
 )
@@ -2605,3 +2606,45 @@ def test_task_7a_fix1_inventory_contract_does_not_leak_descriptors(tmp_path: Pat
         store.inventory()
 
     assert len(os.listdir(descriptor_directory)) == before
+
+
+def test_bounded_reader_rejects_intermediate_parent_swap_before_leaf_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An outside leaf must not become the validated input through a parent swap."""
+
+    repository = tmp_path / "repository"
+    original_parent = repository / "projected"
+    source_path = original_parent / "input.bin"
+    outside_parent = tmp_path / "outside"
+    source_payload = b"trusted repository bytes"
+    outside_payload = b"outside bytes must never be accepted"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_bytes(source_payload)
+    outside_parent.mkdir()
+    (outside_parent / source_path.name).write_bytes(outside_payload)
+    original_absolute = artifacts_module._absolute_lexical
+    swapped = False
+
+    def swap_parent_after_normalization(path: Path) -> Path:
+        nonlocal swapped
+        absolute = original_absolute(path)
+        if absolute == source_path and not swapped:
+            original_parent.rename(repository / "projected-pinned")
+            original_parent.symlink_to(outside_parent, target_is_directory=True)
+            swapped = True
+        return absolute
+
+    monkeypatch.setattr(
+        artifacts_module,
+        "_absolute_lexical",
+        swap_parent_after_normalization,
+    )
+
+    with pytest.raises(StudyArtifactError, match=r"input path|directory|symlink"):
+        read_bounded_bytes(source_path, maximum=4096)
+
+    assert swapped is True
+    assert (repository / "projected-pinned" / source_path.name).read_bytes() == source_payload
+    assert (outside_parent / source_path.name).read_bytes() == outside_payload
