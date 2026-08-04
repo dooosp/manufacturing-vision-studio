@@ -1353,6 +1353,31 @@ def test_git_lineage_never_exempts_fixed_retained_pair_rename(
         )
 
 
+def test_git_lineage_rejects_committed_artifact_add_then_delete(
+    retention_fixture: RetentionFixture,
+) -> None:
+    """Catch endpoint-only evidence checks that hide removed committed evidence."""
+
+    evidence_path = retention_fixture.protocol.artifact_root / "implementation-validation.json"
+    evidence_path.unlink()
+    _git(retention_fixture.repo_root, "add", "-A", "artifacts")
+    _git(retention_fixture.repo_root, "commit", "-m", "delete validation evidence")
+
+    assert retention_module._git_changed_paths(
+        retention_fixture.repo_root,
+        retention_fixture.execution_commit,
+        _git(retention_fixture.repo_root, "rev-parse", "HEAD"),
+    ) == ()
+    with pytest.raises(StudyRetentionError, match=r"monotonic|deleted|history"):
+        retention_module._verify_git_lineage(
+            retention_fixture.protocol,
+            repo_root=retention_fixture.repo_root,
+            execution_commit=retention_fixture.execution_commit,
+            evidence_commit=None,
+            require_clean=True,
+        )
+
+
 @pytest.mark.parametrize("change", ("modified", "deleted"))
 def test_run_retention_rejects_committed_modify_and_delete_statuses(
     retention_fixture: RetentionFixture,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import os
 import pwd
+import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -28,6 +29,7 @@ from manufacturing_vision_studio.e1.known_transform_v2 import (
     AppliedAffineTransform,
     ResamplingMode,
 )
+from manufacturing_vision_studio.e1.protocol_v2 import E1V2Protocol
 from manufacturing_vision_studio.e1.study_artifacts_v2 import (
     StudyArtifactError,
     StudyArtifactRecord,
@@ -89,6 +91,232 @@ def _runner(tmp_path: Path, *, root_name: str = "artifacts") -> StudyRunner:
         artifact_root=tmp_path / root_name,
     )
     return StudyRunner(protocol, repo_root=tmp_path)
+
+
+def _git(repo_root: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ("git", *args),
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()
+
+
+def _runner_with_deleted_committed_evidence(
+    tmp_path: Path,
+    *,
+    active_paths: tuple[str, ...] = (),
+    deleted_path: str = "implementation-validation.json",
+) -> tuple[StudyRunner, RepositorySnapshot, SimpleNamespace]:
+    """Build a real linear Git history whose endpoint hides deleted evidence."""
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    _git(repo_root, "init", "-b", "fixture")
+    _git(repo_root, "config", "user.name", "Monotonic History Test")
+    _git(repo_root, "config", "user.email", "history@example.invalid")
+    (repo_root / ".base").write_bytes(b"base\n")
+    _git(repo_root, "add", ".base")
+    _git(repo_root, "commit", "-m", "base")
+    base_commit = _git(repo_root, "rev-parse", "HEAD")
+    _git(repo_root, "branch", "codex/e1-v2-scale-feature-remediation", base_commit)
+    (repo_root / "implementation.txt").write_bytes(b"implementation\n")
+    _git(repo_root, "add", "implementation.txt")
+    _git(repo_root, "commit", "-m", "implementation")
+    execution_commit = _git(repo_root, "rev-parse", "HEAD")
+
+    real = load_study_protocol_v2()
+    document = real.document
+    document["base_commit"] = base_commit
+    protocol = replace(
+        real,
+        _document=document,
+        artifact_root=repo_root / "artifacts",
+    )
+    for relative_path in active_paths:
+        path = protocol.artifact_root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"active {relative_path}\n".encode())
+    if active_paths:
+        _git(repo_root, "add", "artifacts")
+        _git(repo_root, "commit", "-m", "active evidence prerequisites")
+    evidence_path = protocol.artifact_root / deleted_path
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    evidence_path.write_bytes(b"committed evidence\n")
+    _git(repo_root, "add", f"artifacts/{deleted_path}")
+    _git(repo_root, "commit", "-m", "commit transient evidence")
+    evidence_path.unlink()
+    _git(repo_root, "add", "-A", "artifacts")
+    _git(repo_root, "commit", "-m", "delete validation evidence")
+    head = _git(repo_root, "rev-parse", "HEAD")
+    projection = _projection(protocol.implementation_projection_paths())
+    snapshot = RepositorySnapshot(head, (), projection)
+    validation = SimpleNamespace(
+        document={"execution_commit": execution_commit},
+        execution_commit=execution_commit,
+        raw_bytes=(
+            (protocol.artifact_root / "implementation-validation.json").read_bytes()
+            if "implementation-validation.json" in active_paths
+            else b""
+        ),
+        implementation_projection_sha256=runner_module._canonical_json_hash(
+            [entry.as_record() for entry in projection]
+        ),
+    )
+    store = StudyArtifactStore(protocol.artifact_root, allowed_root=repo_root)
+    runner = StudyRunner(
+        protocol,
+        repo_root=repo_root,
+        store=store,
+        repository_state=lambda: RepositorySnapshot(
+            head,
+            runner_module._git_status_paths(repo_root),
+            projection,
+        ),
+    )
+    return runner, snapshot, validation
+
+
+def test_validation_history_deletion_stops_commands_before_first_callback(
+    tmp_path: Path,
+) -> None:
+    """Catch first validation reopening after prior committed evidence removal."""
+
+    runner, _, _ = _runner_with_deleted_committed_evidence(tmp_path)
+    calls = 0
+
+    def command_runner(request: ValidationCommandRequest) -> ValidationCommandResult:
+        nonlocal calls
+        del request
+        calls += 1
+        raise AssertionError("historical deletion must stop validation commands")
+
+    runner._command_runner = command_runner
+
+    with pytest.raises(StudyStateError, match=r"monotonic|deleted|history"):
+        runner.validate_implementation()
+
+    assert calls == 0
+
+
+@pytest.mark.parametrize("phase", ("phase0", "phase1", "oracle", "phase2"))
+def test_mutating_phase_history_deletion_stops_corresponding_callback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+) -> None:
+    """Catch later study phases reopening after committed evidence is removed."""
+
+    calls = 0
+    expected_by_phase = {
+        "phase0": ("implementation-validation.json",),
+        "phase1": ("implementation-validation.json", "retention-audit.json"),
+        "oracle": runner_module._PRE_DECISION_PATHS[:4],
+        "phase2": runner_module._PRE_DECISION_PATHS[:6],
+    }
+    status_by_phase = {
+        "phase0": StudyStatus(True, False, False, False, False, "PENDING", ()),
+        "phase1": StudyStatus(True, False, False, False, False, "PENDING", ()),
+        "oracle": StudyStatus(True, True, False, False, False, "PENDING", ()),
+        "phase2": StudyStatus(True, True, True, True, False, "PENDING", ()),
+    }
+    expected = expected_by_phase[phase]
+    deleted_by_phase = {
+        "phase0": "retention-audit.json",
+        "phase1": "phase-1-execution-claim.json",
+        "oracle": "scope-audit.json",
+        "phase2": "phase-2-execution-claim.json",
+    }
+    active_paths = expected
+    if "retention-audit.json" in expected:
+        active_paths = (*active_paths, *runner_module._RETAINED_FILES)
+    runner, _, validation = _runner_with_deleted_committed_evidence(
+        tmp_path,
+        active_paths=active_paths,
+        deleted_path=deleted_by_phase[phase],
+    )
+    evidence = {"implementation-validation.json": validation}
+    if "retention-audit.json" in expected:
+        evidence["retention-audit.json"] = SimpleNamespace(
+            document={},
+            raw_bytes=(runner.protocol.artifact_root / "retention-audit.json").read_bytes(),
+        )
+    for relative_path in expected:
+        if relative_path not in evidence:
+            document: Mapping[str, object] = {}
+            if relative_path == "known-transform-diagnostic-108.json":
+                document = {"payload": {"eligible_modes": ("NEAREST",)}}
+            evidence[relative_path] = SimpleNamespace(
+                document=document,
+                raw_bytes=(runner.protocol.artifact_root / relative_path).read_bytes(),
+            )
+    state = VerifiedStudyState(
+        status_by_phase[phase],
+        expected,
+        (),
+        cast(Mapping[str, VerifiedStudyJson], evidence),
+    )
+    monkeypatch.setattr(runner_module, "inspect_state", lambda *args, **kwargs: state)
+    monkeypatch.setattr(
+        runner_module,
+        "verify_implementation_validation",
+        lambda *args, **kwargs: validation,
+    )
+    monkeypatch.setattr(runner_module, "verify_retention_audit", lambda *args, **kwargs: object())
+
+    def forbidden(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        del args, kwargs
+        calls += 1
+        raise AssertionError("historical deletion must stop the phase callback")
+
+    if phase == "phase0":
+        monkeypatch.setattr(runner_module, "run_retention_audit", forbidden)
+        invoke = runner.phase0
+    elif phase == "phase1":
+        runner._e1_protocol_loader = lambda: cast(E1V2Protocol, SimpleNamespace())
+        runner._render = cast(DiagnosticRenderer, forbidden)
+        invoke = runner.phase1
+    elif phase == "oracle":
+        runner._e1_protocol_loader = lambda: cast(E1V2Protocol, SimpleNamespace())
+        runner._corpus = cast(Callable[[], DevelopmentCorpus], forbidden)
+        invoke = runner.feature_oracle
+    else:
+        runner._e1_protocol_loader = lambda: cast(E1V2Protocol, SimpleNamespace())
+        runner._corpus = cast(Callable[[], DevelopmentCorpus], forbidden)
+        invoke = runner.phase2
+
+    with pytest.raises(runner_module.StudyRetentionError, match=r"monotonic|deleted|history"):
+        invoke()
+
+    assert calls == 0
+
+
+def test_finalization_preflight_rejects_deleted_committed_evidence(
+    tmp_path: Path,
+) -> None:
+    """Catch finalization reopening after a committed decision is removed."""
+
+    active_paths = (*runner_module._PRE_DECISION_PATHS, *runner_module._RETAINED_FILES)
+    runner, _, validation = _runner_with_deleted_committed_evidence(
+        tmp_path,
+        active_paths=active_paths,
+        deleted_path="decision.json",
+    )
+    state = VerifiedStudyState(
+        StudyStatus(True, True, True, True, True, "TRANSFORM_ESTIMATION_LIMITED", ()),
+        runner_module._PRE_DECISION_PATHS,
+        (),
+        cast(
+            Mapping[str, VerifiedStudyJson],
+            {"implementation-validation.json": validation},
+        ),
+    )
+
+    with pytest.raises(StudyStateError, match=r"monotonic|deleted|history"):
+        runner._require_finalization_preflight(state)
 
 
 def test_status_on_absent_root_is_pristine_and_creates_nothing(tmp_path: Path) -> None:
@@ -1839,7 +2067,7 @@ def test_status_and_verify_use_no_execution_or_subprocess_seam(tmp_path: Path) -
         corpus=cast(runner_module.CorpusLoader, forbidden),
         oracle=cast(OracleRunner, forbidden),
         inference=cast(InferenceRunner, forbidden),
-        e1_protocol_loader=cast(Callable[[], object], forbidden),
+        e1_protocol_loader=cast(Callable[[], E1V2Protocol], forbidden),
     )
 
     status = runner.status()

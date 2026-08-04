@@ -2243,6 +2243,13 @@ def _verify_git_lineage(
     _require_ancestor(repo_root, execution_commit, evidence)
     _require_ancestor(repo_root, execution_commit, current)
     artifact_relative = _artifact_relative_path(protocol, repo_root)
+    _verify_monotonic_evidence_history(
+        repo_root,
+        execution_commit=execution_commit,
+        current_commit=current,
+        artifact_relative=artifact_relative,
+        allow_retained_input_copies=allow_retained_input_copies,
+    )
     changes = _git_changed_paths(repo_root, execution_commit, current)
     changed = tuple(
         sorted(
@@ -2273,6 +2280,107 @@ def _verify_git_lineage(
             f"git evidence-only lineage has dirty non-artifact paths: {', '.join(dirty_outside)}"
         )
     return evidence
+
+
+def _verify_pristine_artifact_history(
+    protocol: StudyProtocolV2,
+    *,
+    repo_root: Path,
+    current_commit: str,
+) -> None:
+    """Reject evidence that was committed before first validation publication."""
+
+    _require_git_commit(repo_root, protocol.base_commit, label="study base commit")
+    _require_git_commit(repo_root, current_commit, label="validation execution commit")
+    source_branch = _run_git(
+        repo_root,
+        "rev-parse",
+        "--verify",
+        f"refs/heads/{_SOURCE_BRANCH}^{{commit}}",
+    )
+    if source_branch != protocol.base_commit:
+        raise StudyRetentionError("frozen source branch no longer resolves to study base")
+    _require_ancestor(repo_root, protocol.base_commit, current_commit)
+    artifact_relative = _artifact_relative_path(protocol, repo_root)
+    for parent, commit in _linear_commit_history(
+        repo_root,
+        older=protocol.base_commit,
+        newer=current_commit,
+    ):
+        for change in _git_changed_paths(repo_root, parent, commit):
+            if any(
+                _under_artifact_root(path, artifact_relative) for path in change.paths
+            ):
+                raise StudyRetentionError(
+                    "prior committed artifact history prevents first validation publication"
+                )
+
+
+def _verify_monotonic_evidence_history(
+    repo_root: Path,
+    *,
+    execution_commit: str,
+    current_commit: str,
+    artifact_relative: str,
+    allow_retained_input_copies: bool,
+) -> None:
+    """Require the full evidence chain to be linear and add-only."""
+
+    for parent, commit in _linear_commit_history(
+        repo_root,
+        older=execution_commit,
+        newer=current_commit,
+    ):
+        for change in _git_changed_paths(repo_root, parent, commit):
+            if (
+                allow_retained_input_copies
+                and change.status == "C"
+                and change.score == 100
+                and change.source is not None
+                and (change.source, change.destination)
+                in {
+                    (source, f"{artifact_relative}/{destination}")
+                    for _, source, destination, _ in RETAINED_INPUTS
+                }
+            ):
+                continue
+            if change.status != "A":
+                raise StudyRetentionError(
+                    "git monotonic evidence history rejects non-add evidence status"
+                )
+            if not _under_artifact_root(change.destination, artifact_relative):
+                raise StudyRetentionError(
+                    "git monotonic evidence history contains non-artifact paths"
+                )
+
+
+def _linear_commit_history(
+    root: Path,
+    *,
+    older: str,
+    newer: str,
+) -> tuple[tuple[str, str], ...]:
+    """Return every parent-to-child edge in a sealed single-parent ancestry chain."""
+
+    output = _run_git(root, "rev-list", "--reverse", "--parents", f"{older}..{newer}")
+    if not output:
+        return ()
+    previous = older
+    history: list[tuple[str, str]] = []
+    for record in output.splitlines():
+        fields = record.split()
+        if len(fields) != 2:
+            raise StudyRetentionError("git monotonic evidence history is not linear")
+        commit, parent = fields
+        _require_lower_hex(commit, _SHA1_LENGTH, "lineage commit")
+        _require_lower_hex(parent, _SHA1_LENGTH, "lineage parent")
+        if parent != previous:
+            raise StudyRetentionError("git monotonic evidence history is not linear")
+        history.append((parent, commit))
+        previous = commit
+    if previous != newer:
+        raise StudyRetentionError("git monotonic evidence history is incomplete")
+    return tuple(history)
 
 
 def _artifact_relative_path(protocol: StudyProtocolV2, root: Path) -> str:

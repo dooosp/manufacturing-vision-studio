@@ -67,6 +67,7 @@ from manufacturing_vision_studio.e1.study_retention_v2 import (
     _run_git,
     _run_git_bytes,
     _verify_git_lineage,
+    _verify_pristine_artifact_history,
     build_study_implementation_projection,
     reviewed_validation_executable_roots,
     run_retention_audit,
@@ -1554,6 +1555,16 @@ class StudyRunner:
             )
 
         baseline = self._require_clean_snapshot(self._repository_state())
+        try:
+            _verify_pristine_artifact_history(
+                self.protocol,
+                repo_root=self.repo_root,
+                current_commit=baseline.head,
+            )
+        except StudyRetentionError as exc:
+            raise StudyStateError(
+                f"implementation validation monotonic history is invalid: {exc}"
+            ) from exc
         production_search_path = _production_executable_search_path()
         reviewed_roots = frozenset(production_search_path.split(":"))
         uv_path = _validated_lookup_path(
@@ -2157,6 +2168,21 @@ class StudyRunner:
         if state.status.terminal_decision == "PENDING":
             raise StudyStateError("PENDING study evidence cannot be finalized")
         snapshot = self._require_clean_snapshot(self._repository_state())
+        try:
+            evidence_commit = _verify_git_lineage(
+                self.protocol,
+                repo_root=self.repo_root,
+                execution_commit=_state_execution_commit(state),
+                evidence_commit=None,
+                require_clean=True,
+                allow_retained_input_copies=True,
+            )
+        except StudyRetentionError as exc:
+            raise StudyStateError(
+                f"study finalization monotonic history is invalid: {exc}"
+            ) from exc
+        if evidence_commit != snapshot.head:
+            raise StudyStateError("study finalization evidence HEAD changed")
         if snapshot.head != self._repository_state().head:
             raise StudyStateError("study finalization HEAD changed during preflight")
         return snapshot
