@@ -44,6 +44,7 @@ from manufacturing_vision_studio.e1.study_artifacts_v2 import (
     _frozen_oracle_layout_projection,
     begin_phase_execution,
     finalize_study_record,
+    verify_inference_trace_consistency,
 )
 from manufacturing_vision_studio.e1.study_inference_v2 import (
     StudyInferenceAdapter,
@@ -332,55 +333,8 @@ def _inspect_open_store(
     retained_present = inventory_paths.intersection(
         {_RETAINED_DIRECTORY, *_RETAINED_FILES}
     )
-    if retained_present and retained_present != {_RETAINED_DIRECTORY, *_RETAINED_FILES}:
-        return _invalid_state(
-            ("PARTIAL_RETENTION_PACKET",),
-            present_paths=present,
-            invalid_paths=tuple(sorted(retained_present)),
-        )
 
     present_set = set(present)
-    relationship_reasons: list[str] = []
-    phase1_claim = "phase-1-execution-claim.json" in present_set
-    phase1_result = "known-transform-diagnostic-108.json" in present_set
-    if phase1_claim is not phase1_result:
-        relationship_reasons.append("PHASE1_CLAIM_RESULT_ORPHAN")
-    scope = "scope-audit.json" in present_set
-    oracle = "feature-ownership-oracle.json" in present_set
-    if scope is not oracle:
-        relationship_reasons.append("SCOPE_ORACLE_ORPHAN")
-    phase2_claim = "phase-2-execution-claim.json" in present_set
-    phase2_result = "known-transform-development-120.json" in present_set
-    if phase2_claim is not phase2_result:
-        relationship_reasons.append("PHASE2_CLAIM_RESULT_ORPHAN")
-    if "report.md" in present_set and "decision.json" not in present_set:
-        relationship_reasons.append("REPORT_WITHOUT_DECISION")
-
-    retention_complete = (
-        "retention-audit.json" in present_set
-        and retained_present == {_RETAINED_DIRECTORY, *_RETAINED_FILES}
-    )
-    if retained_present and "retention-audit.json" not in present_set:
-        relationship_reasons.append("PARTIAL_RETENTION_PACKET")
-    if "retention-audit.json" in present_set and not retention_complete:
-        relationship_reasons.append("PARTIAL_RETENTION_PACKET")
-    if any(path != "implementation-validation.json" for path in present_set) and (
-        "implementation-validation.json" not in present_set
-    ):
-        relationship_reasons.append("MISSING_IMPLEMENTATION_VALIDATION")
-    if (phase1_claim or phase1_result) and not retention_complete:
-        relationship_reasons.append("PHASE1_WITHOUT_RETENTION")
-    if (scope or oracle) and not (phase1_claim and phase1_result):
-        relationship_reasons.append("ORACLE_WITHOUT_PHASE1")
-    if (phase2_claim or phase2_result) and not (scope and oracle):
-        relationship_reasons.append("PHASE2_WITHOUT_ORACLE")
-    if relationship_reasons:
-        return _invalid_state(
-            tuple(dict.fromkeys(relationship_reasons)),
-            present_paths=present,
-            invalid_paths=present,
-        )
-
     verified: dict[str, VerifiedStudyJson] = {}
     invalid_json: list[str] = []
     for path, record_type in _JSON_RECORD_TYPES.items():
@@ -399,6 +353,24 @@ def _inspect_open_store(
             present_paths=present,
             invalid_paths=tuple(invalid_json),
             verified_json=verified,
+        )
+    relationship_reasons = _relationship_reasons(present_set, retained_present)
+    if relationship_reasons:
+        invalid = _invalid_state(
+            relationship_reasons,
+            present_paths=present,
+            invalid_paths=_relationship_invalid_paths(
+                present,
+                retained_present=retained_present,
+                reasons=relationship_reasons,
+            ),
+            verified_json=verified,
+        )
+        return _verify_invalid_terminal_projection(
+            protocol,
+            store,
+            invalid,
+            present_set,
         )
 
     try:
@@ -421,10 +393,17 @@ def _inspect_open_store(
             present_set,
         )
 
+    phase1_claim = "phase-1-execution-claim.json" in present_set
+    phase1_result = "known-transform-diagnostic-108.json" in present_set
+    scope = "scope-audit.json" in present_set
+    oracle = "feature-ownership-oracle.json" in present_set
+    phase2_claim = "phase-2-execution-claim.json" in present_set
+    phase2_result = "known-transform-development-120.json" in present_set
     phase1_complete = phase1_claim and phase1_result
     oracle_complete = scope and oracle
     phase2_complete = phase2_claim and phase2_result
     terminal_decision: TerminalDecision = "PENDING"
+    phase2_prerequisites_met = False
     phase2_authorized = False
     reasons: tuple[str, ...] = ()
     if oracle_complete:
@@ -434,17 +413,17 @@ def _inspect_open_store(
         elif not semantic.eligible_modes:
             terminal_decision = "KNOWN_TRANSFORM_DIAGNOSTIC_FAILED"
             reasons = ("NO_DIAGNOSTIC_MODE_ELIGIBLE",)
-        elif not phase2_complete:
+        else:
+            phase2_prerequisites_met = True
+        if phase2_prerequisites_met and not phase2_complete:
             phase2_authorized = True
-        elif not semantic.passing_modes:
-            phase2_authorized = True
+        elif phase2_prerequisites_met and not semantic.passing_modes:
             terminal_decision = "DIFFERENCE_BASELINE_LIMITED"
             reasons = ("NO_DEVELOPMENT_MODE_PASSED",)
-        else:
-            phase2_authorized = True
+        elif phase2_prerequisites_met:
             terminal_decision = "TRANSFORM_ESTIMATION_LIMITED"
             reasons = ("DEVELOPMENT_MODE_PASSED",)
-    if (phase2_claim or phase2_result) and not phase2_authorized:
+    if (phase2_claim or phase2_result) and not phase2_prerequisites_met:
         return _invalid_state(
             ("UNAUTHORIZED_PHASE2_ARTIFACT",),
             present_paths=present,
@@ -522,6 +501,74 @@ def _pending_state() -> VerifiedStudyState:
         reasons=(),
     )
     return VerifiedStudyState(status, (), (), MappingProxyType({}))
+
+
+def _relationship_reasons(
+    present_set: set[str],
+    retained_present: set[str],
+) -> tuple[str, ...]:
+    reasons: list[str] = []
+    phase1_claim = "phase-1-execution-claim.json" in present_set
+    phase1_result = "known-transform-diagnostic-108.json" in present_set
+    if phase1_claim is not phase1_result:
+        reasons.append("PHASE1_CLAIM_RESULT_ORPHAN")
+    scope = "scope-audit.json" in present_set
+    oracle = "feature-ownership-oracle.json" in present_set
+    if scope is not oracle:
+        reasons.append("SCOPE_ORACLE_ORPHAN")
+    phase2_claim = "phase-2-execution-claim.json" in present_set
+    phase2_result = "known-transform-development-120.json" in present_set
+    if phase2_claim is not phase2_result:
+        reasons.append("PHASE2_CLAIM_RESULT_ORPHAN")
+    if "report.md" in present_set and "decision.json" not in present_set:
+        reasons.append("REPORT_WITHOUT_DECISION")
+
+    retention_complete = (
+        "retention-audit.json" in present_set
+        and retained_present == {_RETAINED_DIRECTORY, *_RETAINED_FILES}
+    )
+    if retained_present and "retention-audit.json" not in present_set:
+        reasons.append("PARTIAL_RETENTION_PACKET")
+    if "retention-audit.json" in present_set and not retention_complete:
+        reasons.append("PARTIAL_RETENTION_PACKET")
+    if any(
+        path not in retained_present and path != "implementation-validation.json"
+        for path in present_set
+    ) and ("implementation-validation.json" not in present_set):
+        reasons.append("MISSING_IMPLEMENTATION_VALIDATION")
+    if (phase1_claim or phase1_result) and not retention_complete:
+        reasons.append("PHASE1_WITHOUT_RETENTION")
+    if (scope or oracle) and not (phase1_claim and phase1_result):
+        reasons.append("ORACLE_WITHOUT_PHASE1")
+    if (phase2_claim or phase2_result) and not (scope and oracle):
+        reasons.append("PHASE2_WITHOUT_ORACLE")
+    return tuple(dict.fromkeys(reasons))
+
+
+def _relationship_invalid_paths(
+    present_paths: tuple[str, ...],
+    *,
+    retained_present: set[str],
+    reasons: tuple[str, ...],
+) -> tuple[str, ...]:
+    invalid: set[str] = set()
+    if "MISSING_IMPLEMENTATION_VALIDATION" in reasons:
+        invalid.update(present_paths)
+    if any(
+        reason in reasons
+        for reason in ("PARTIAL_RETENTION_PACKET", "PHASE1_WITHOUT_RETENTION")
+    ):
+        invalid.update(path for path in present_paths if path in _PRE_DECISION_PATHS[1:])
+        invalid.update(retained_present)
+    if "PHASE1_CLAIM_RESULT_ORPHAN" in reasons:
+        invalid.update(path for path in present_paths if path in _PRE_DECISION_PATHS[2:])
+    if any(reason in reasons for reason in ("SCOPE_ORACLE_ORPHAN", "ORACLE_WITHOUT_PHASE1")):
+        invalid.update(path for path in present_paths if path in _PRE_DECISION_PATHS[4:])
+    if "PHASE2_CLAIM_RESULT_ORPHAN" in reasons or "PHASE2_WITHOUT_ORACLE" in reasons:
+        invalid.update(path for path in present_paths if path in _PRE_DECISION_PATHS[6:])
+    if "REPORT_WITHOUT_DECISION" in reasons:
+        invalid.add("report.md")
+    return tuple(path for path in present_paths if path in invalid)
 
 
 def _verify_semantic_packet(
@@ -771,6 +818,14 @@ def _plain_json(value: object) -> object:
     return value
 
 
+def _repo_provenance_unavailable(error: StudyRetentionError) -> bool:
+    message = str(error)
+    return (
+        "git command failed: rev-parse --show-toplevel:" in message
+        or message == "repository root identity does not match"
+    )
+
+
 def _verify_diagnostic_payload(
     protocol: StudyProtocolV2,
     document: Mapping[str, object],
@@ -814,6 +869,13 @@ def _verify_diagnostic_payload(
         mode = ResamplingMode(cast(str, row["mode"]))
         inference = _record_mapping(row, "inference_trace")
         _validate_stored_feature_mapping(_record_mapping(inference, "feature_mapping"))
+        verify_inference_trace_consistency(
+            context="diagnostic",
+            mode=mode.value,
+            inference_trace=inference,
+            actual_outcome=cast(str, row["actual_outcome"]),
+            total_residual=cast(int, row["total_residual"]),
+        )
         rows_by_mode[mode].append(
             DiagnosticObservation(
                 diagnostic_id=cast(str, row["diagnostic_id"]),
@@ -973,6 +1035,15 @@ def _verify_development_payload(
         inference = _record_mapping(record, "inference_trace")
         _validate_stored_feature_mapping(_record_mapping(inference, "feature_mapping"))
         metrics = _record_mapping(record, "metrics")
+        verify_inference_trace_consistency(
+            context="development",
+            mode=mode.value,
+            inference_trace=inference,
+            actual_outcome=cast(Outcome, metrics["actual_outcome"]),
+            anomaly_score=cast(float, metrics["anomaly_score"]),
+            predicted_positive_pixels=cast(int, metrics["predicted_positive_pixels"]),
+            predicted_feature_id=metrics.get("predicted_feature_id"),
+        )
         observations_by_mode[mode].append(
             E1V2EvaluationObservation(
                 case_id=cast(str, record["case_id"]),
@@ -1421,22 +1492,74 @@ class StudyRunner:
         return cls(load_study_protocol_v2())
 
     def status(self) -> StudyStatus:
-        return inspect_state(
-            self.protocol,
-            repo_root=self.repo_root,
-            store=self._store,
-        ).status
+        return self._public_state().status
 
     def verify(self) -> StudyVerificationReport:
+        state = self._public_state()
+        present = state.present_paths
+        verified = state.verified_paths
+        rate = len(verified) / len(present) if present else 0.0
+        return StudyVerificationReport(verified, rate, state.status)
+
+    def _public_state(self) -> VerifiedStudyState:
         state = inspect_state(
             self.protocol,
             repo_root=self.repo_root,
             store=self._store,
         )
-        present = state.present_paths
-        verified = state.verified_paths
-        rate = len(verified) / len(present) if present else 0.0
-        return StudyVerificationReport(verified, rate, state.status)
+        if (not state.status.study_valid) or (
+            "implementation-validation.json" not in state.verified_json
+        ):
+            return state
+        store, owned = self._read_store()
+        try:
+            store.verify_lexical_root_identity()
+            verify_implementation_validation(
+                self.protocol,
+                store,
+                repo_root=self.repo_root,
+            )
+            evidence_commit: str | None = None
+            if "retention-audit.json" in state.present_paths:
+                retention = verify_retention_audit(
+                    self.protocol,
+                    store,
+                    repo_root=self.repo_root,
+                )
+                evidence_commit = retention.evidence_commit
+            _verify_git_lineage(
+                self.protocol,
+                repo_root=self.repo_root,
+                execution_commit=_state_execution_commit(state),
+                evidence_commit=evidence_commit,
+                require_clean=False,
+                allow_retained_input_copies=True,
+            )
+            store.verify_lexical_root_identity()
+            return state
+        except StudyRetentionError as exc:
+            if _repo_provenance_unavailable(exc):
+                return state
+            return _invalid_state(
+                ("ARTIFACT_VERIFICATION_FAILED",),
+                present_paths=state.present_paths,
+                invalid_paths=state.present_paths,
+            )
+        except (
+            StudyArtifactError,
+            StudyStateError,
+            TypeError,
+            ValueError,
+            KeyError,
+        ):
+            return _invalid_state(
+                ("ARTIFACT_VERIFICATION_FAILED",),
+                present_paths=state.present_paths,
+                invalid_paths=state.present_paths,
+            )
+        finally:
+            if owned:
+                store.close()
 
     def finalize(self) -> StudyArtifactRecord:
         """Publish one terminal decision, then its deterministic human projection."""

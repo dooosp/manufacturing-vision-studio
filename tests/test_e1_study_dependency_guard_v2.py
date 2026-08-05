@@ -707,6 +707,8 @@ def test_runtime_loader_source_rejects_annotated_and_tuple_laundering(
         "\nLOADER = __import__\n",
         "\nREFLECTED = getattr(__builtins__, '__import__')\n",
         "\nimport builtins\nREFLECTED = getattr(builtins, '__import__')\n",
+        "\nimport builtins\nREFLECTED = builtins.__dict__['__import__']\n",
+        "\nREFLECTED = __builtins__.__dict__['__import__']\n",
     ],
 )
 def test_runtime_builtin_import_symbol_access_is_rejected(
@@ -718,6 +720,58 @@ def test_runtime_builtin_import_symbol_access_is_rejected(
     _append(repo_root, RUNNER_PATH, source)
 
     with pytest.raises(StudyRetentionError, match="runtime __import__"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("source", "error"),
+    [
+        (
+            "\nexec('import manufacturing_vision_studio.adapters')\n",
+            "runtime executable code",
+        ),
+        (
+            "\neval('__import__(\\'manufacturing_vision_studio.adapters\\')')\n",
+            "runtime executable code",
+        ),
+        (
+            "\nimport runpy\n"
+            "DYNAMIC_MODULE = runpy.run_module('manufacturing_vision_studio.adapters')\n",
+            "runtime runpy loader",
+        ),
+        (
+            "\nfrom runpy import run_path as load_path\n"
+            "DYNAMIC_MODULE = load_path('tmp/module.py')\n",
+            "runtime runpy loader",
+        ),
+    ],
+)
+def test_runtime_exec_eval_and_runpy_surfaces_are_rejected(
+    tmp_path: Path,
+    source: str,
+    error: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, source)
+
+    with pytest.raises(StudyRetentionError, match=error):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_shadowed_type_checking_is_treated_as_runtime_code(tmp_path: Path) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\nfrom typing import TYPE_CHECKING\n"
+        "TYPE_CHECKING = True\n"
+        "if TYPE_CHECKING:\n"
+        "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n",
+    )
+
+    with pytest.raises(StudyRetentionError, match=r"forbidden direct import.*policy_v2"):
         scan_study_dependencies(protocol, repo_root=repo_root)
 
 

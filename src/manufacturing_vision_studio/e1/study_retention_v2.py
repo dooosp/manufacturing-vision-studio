@@ -588,11 +588,19 @@ class _ImportVisitor(ast.NodeVisitor):
         self.function_stack: list[str] = []
         self.importlib_module_names: set[str] = set()
         self.import_module_names: set[str] = set()
+        self.runpy_module_names: set[str] = set()
+        self.runpy_loader_names: set[str] = set()
+        self.typing_module_names: set[str] = set()
+        self.type_checking_names: set[str] = set()
         self.package_object_names: dict[str, str] = {}
         self.allowed_import_module_name_nodes: set[int] = set()
 
     def visit_If(self, node: ast.If) -> None:
-        if _is_type_checking_test(node.test):
+        if _is_type_checking_test(
+            node.test,
+            type_checking_names=self.type_checking_names,
+            typing_module_names=self.typing_module_names,
+        ):
             self.type_checking_depth += 1
             for child in node.body:
                 self.visit(child)
@@ -603,16 +611,19 @@ class _ImportVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._unbind_name(node.name)
         self.class_stack.append(node.name)
         self.generic_visit(node)
         self.class_stack.pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._unbind_name(node.name)
         self.function_stack.append(node.name)
         self.generic_visit(node)
         self.function_stack.pop()
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._unbind_name(node.name)
         self.function_stack.append(node.name)
         self.generic_visit(node)
         self.function_stack.pop()
@@ -632,6 +643,10 @@ class _ImportVisitor(ast.NodeVisitor):
                     )
             if alias.name == "importlib":
                 self.importlib_module_names.add(alias.asname or alias.name)
+            if alias.name == "runpy":
+                self.runpy_module_names.add(alias.asname or alias.name)
+            if alias.name == "typing":
+                self.typing_module_names.add(alias.asname or alias.name)
             if alias.name in _PROJECTED_PACKAGE_ROOTS:
                 bound_name = alias.asname or alias.name.split(".", 1)[0]
                 bound_target = alias.name if alias.asname else "manufacturing_vision_studio"
@@ -657,6 +672,14 @@ class _ImportVisitor(ast.NodeVisitor):
             for alias in node.names:
                 if alias.name == "import_module":
                     self.import_module_names.add(alias.asname or alias.name)
+        if node.level == 0 and node.module == "runpy":
+            for alias in node.names:
+                if alias.name in {"run_module", "run_path"}:
+                    self.runpy_loader_names.add(alias.asname or alias.name)
+        if node.level == 0 and node.module == "typing":
+            for alias in node.names:
+                if alias.name == "TYPE_CHECKING":
+                    self.type_checking_names.add(alias.asname or alias.name)
         base = _resolve_import_from_base(self.source_module, node.module, node.level)
         if base is None:
             return
@@ -681,6 +704,8 @@ class _ImportVisitor(ast.NodeVisitor):
                 )
 
     def visit_Assign(self, node: ast.Assign) -> None:
+        for target in node.targets:
+            self._unbind_target(target)
         loader_kind = _dynamic_import_loader_kind(
             node.value,
             importlib_module_names=self.importlib_module_names,
@@ -700,6 +725,14 @@ class _ImportVisitor(ast.NodeVisitor):
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     self.package_object_names[target.id] = package_target
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self._unbind_target(node.target)
+        self.generic_visit(node)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self._unbind_target(node.target)
         self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
@@ -725,6 +758,8 @@ class _ImportVisitor(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         self._visit_package_getattr(node)
         self._visit_reflected_builtin_import(node)
+        self._visit_runtime_executable_code(node)
+        self._visit_runpy_loader(node)
         loader_kind = _dynamic_import_loader_kind(
             node.func,
             importlib_module_names=self.importlib_module_names,
@@ -788,6 +823,13 @@ class _ImportVisitor(ast.NodeVisitor):
                 "runtime importlib loader symbol access"
             )
 
+    def visit_Subscript(self, node: ast.Subscript) -> None:
+        if self.type_checking_depth == 0 and _is_builtin_import_dict_access(node):
+            self.closure_errors.append(
+                f"{self.source_module}:{node.lineno}:runtime __import__ symbol access"
+            )
+        self.generic_visit(node)
+
     def _visit_reflected_builtin_import(self, node: ast.Call) -> None:
         if (
             self.type_checking_depth == 0
@@ -799,6 +841,34 @@ class _ImportVisitor(ast.NodeVisitor):
         ):
             self.closure_errors.append(
                 f"{self.source_module}:{node.lineno}:runtime __import__ symbol access"
+            )
+
+    def _visit_runtime_executable_code(self, node: ast.Call) -> None:
+        if (
+            self.type_checking_depth == 0
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"exec", "eval"}
+        ):
+            self.closure_errors.append(
+                f"{self.source_module}:{node.lineno}:runtime executable code: {node.func.id}"
+            )
+
+    def _visit_runpy_loader(self, node: ast.Call) -> None:
+        if self.type_checking_depth != 0:
+            return
+        if isinstance(node.func, ast.Name) and node.func.id in self.runpy_loader_names:
+            self.closure_errors.append(
+                f"{self.source_module}:{node.lineno}:runtime runpy loader: {node.func.id}"
+            )
+            return
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"run_module", "run_path"}
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in self.runpy_module_names
+        ):
+            self.closure_errors.append(
+                f"{self.source_module}:{node.lineno}:runtime runpy loader: {node.func.attr}"
             )
 
     def _visit_dynamic_import(self, node: ast.Call) -> None:
@@ -880,6 +950,23 @@ class _ImportVisitor(ast.NodeVisitor):
             if candidate in _PROJECTED_PACKAGE_ROOTS:
                 return candidate
         return None
+
+    def _unbind_name(self, name: str) -> None:
+        self.importlib_module_names.discard(name)
+        self.import_module_names.discard(name)
+        self.runpy_module_names.discard(name)
+        self.runpy_loader_names.discard(name)
+        self.typing_module_names.discard(name)
+        self.type_checking_names.discard(name)
+        self.package_object_names.pop(name, None)
+
+    def _unbind_target(self, target: ast.expr) -> None:
+        if isinstance(target, ast.Name):
+            self._unbind_name(target.id)
+            return
+        if isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                self._unbind_target(element)
 
 
 def classify_edge(
@@ -1520,12 +1607,29 @@ def _resolve_import_from_base(source: str, module: str | None, level: int) -> st
     return ".".join(prefix)
 
 
-def _is_type_checking_test(node: ast.expr) -> bool:
-    return (isinstance(node, ast.Name) and node.id == "TYPE_CHECKING") or (
+def _is_type_checking_test(
+    node: ast.expr,
+    *,
+    type_checking_names: set[str],
+    typing_module_names: set[str],
+) -> bool:
+    return (isinstance(node, ast.Name) and node.id in type_checking_names) or (
         isinstance(node, ast.Attribute)
         and isinstance(node.value, ast.Name)
-        and node.value.id == "typing"
+        and node.value.id in typing_module_names
         and node.attr == "TYPE_CHECKING"
+    )
+
+
+def _is_builtin_import_dict_access(node: ast.Subscript) -> bool:
+    if not isinstance(node.slice, ast.Constant) or node.slice.value != "__import__":
+        return False
+    value = node.value
+    return (
+        isinstance(value, ast.Attribute)
+        and value.attr == "__dict__"
+        and isinstance(value.value, ast.Name)
+        and value.value.id in {"builtins", "__builtins__"}
     )
 
 

@@ -24,6 +24,7 @@ from test_e1_study_artifacts_v2 import (
     minimal_valid_retention_audit_record,
     minimal_valid_scope_audit_record,
 )
+from test_e1_study_retention_v2 import _build_retention_fixture
 
 from manufacturing_vision_studio.e1 import study_artifacts_v2 as artifacts_module
 from manufacturing_vision_studio.e1 import study_runner_v2 as runner_module
@@ -49,6 +50,7 @@ from manufacturing_vision_studio.e1.study_retention_v2 import (
     IMPLEMENTATION_VALIDATION_COMMANDS,
     IMPLEMENTATION_VALIDATION_TIMEOUT_SECONDS,
     ProjectionEntry,
+    run_retention_audit,
 )
 from manufacturing_vision_studio.e1.study_runner_v2 import (
     CommandRunner,
@@ -2275,12 +2277,15 @@ def _publish_semantic_packet(
 def test_semantic_inspection_accepts_complete_schema_valid_packet(tmp_path: Path) -> None:
     runner = _publish_semantic_packet(tmp_path)
 
-    status = runner.status()
+    status = runner_module.inspect_state(
+        runner.protocol,
+        repo_root=tmp_path,
+    ).status
 
     assert status.study_valid is True
     assert status.phase1_complete is True
     assert status.feature_oracle_complete is True
-    assert status.phase2_authorized is True
+    assert status.phase2_authorized is False
     assert status.phase2_complete is True
     assert status.terminal_decision == "TRANSFORM_ESTIMATION_LIMITED"
 
@@ -2443,7 +2448,32 @@ def test_scope_case_bindings_must_be_unique_before_phase2(
     assert status.reasons == ("ARTIFACT_VERIFICATION_FAILED",)
 
 
-def test_status_and_verify_use_no_execution_or_subprocess_seam(tmp_path: Path) -> None:
+def test_status_rejects_local_trace_hash_contradiction_in_diagnostic_packet(
+    tmp_path: Path,
+) -> None:
+    runner = _publish_semantic_packet(tmp_path)
+    _remove_later_phase_evidence(runner)
+    diagnostic_path = runner.protocol.artifact_root / "known-transform-diagnostic-108.json"
+    document = cast(dict[str, object], json.loads(diagnostic_path.read_bytes()))
+    payload = cast(dict[str, object], document["payload"])
+    observation = cast(list[dict[str, object]], payload["observations"])[0]
+    inference = cast(dict[str, object], observation["inference_trace"])
+    inference["predicted_mask_sha256"] = sha256(b"forged-diagnostic-mask").hexdigest()
+    diagnostic_path.write_bytes(
+        runner_module._canonical_json_bytes(finalize_study_record(document))
+    )
+
+    status = runner.status()
+
+    assert status.study_valid is False
+    assert status.terminal_decision == "STUDY_INVALID"
+    assert status.reasons == ("ARTIFACT_VERIFICATION_FAILED",)
+
+
+def test_status_and_verify_use_read_only_verifiers_without_execution_seams(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     published = _publish_semantic_packet(tmp_path)
     calls: list[str] = []
 
@@ -2452,12 +2482,28 @@ def test_status_and_verify_use_no_execution_or_subprocess_seam(tmp_path: Path) -
         calls.append("called")
         raise AssertionError("read-only inspection invoked an execution seam")
 
+    monkeypatch.setattr(
+        runner_module,
+        "verify_implementation_validation",
+        lambda *args, **kwargs: calls.append("validation") or SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "verify_retention_audit",
+        lambda *args, **kwargs: calls.append("retention")
+        or SimpleNamespace(evidence_commit="f" * 40),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_verify_git_lineage",
+        lambda *args, **kwargs: calls.append("git") or "f" * 40,
+    )
+
     runner = StudyRunner(
         published.protocol,
         repo_root=tmp_path,
         command_runner=cast(CommandRunner, forbidden),
         executable_resolver=cast(runner_module.ExecutableResolver, forbidden),
-        repository_state=cast(runner_module.RepositoryStateReader, forbidden),
         normalize=cast(NormalizeCallback, forbidden),
         diagnostic_matrix=cast(runner_module.DiagnosticMatrixLoader, forbidden),
         render=cast(DiagnosticRenderer, forbidden),
@@ -2472,7 +2518,98 @@ def test_status_and_verify_use_no_execution_or_subprocess_seam(tmp_path: Path) -
 
     assert status.terminal_decision == "TRANSFORM_ESTIMATION_LIMITED"
     assert report.status == status
-    assert calls == []
+    assert calls == [
+        "validation",
+        "retention",
+        "git",
+        "validation",
+        "retention",
+        "git",
+    ]
+
+
+def test_status_and_verify_reject_forged_validation_packet(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _build_retention_fixture(tmp_path, monkeypatch)
+    try:
+        validation_path = fixture.protocol.artifact_root / "implementation-validation.json"
+        document = cast(dict[str, object], json.loads(validation_path.read_bytes()))
+        payload = cast(dict[str, object], document["payload"])
+        commands = cast(list[dict[str, object]], payload["commands"])
+        commands[0]["argv"] = ["uv", "run", "pytest", "-q", "tests/forged-validation.py"]
+        validation_path.write_bytes(
+            runner_module._canonical_json_bytes(finalize_study_record(document))
+        )
+
+        runner = StudyRunner(fixture.protocol, repo_root=fixture.repo_root)
+
+        status = runner.status()
+        report = runner.verify()
+
+        assert status.study_valid is False
+        assert status.phase2_authorized is False
+        assert status.terminal_decision == "STUDY_INVALID"
+        assert report.status == status
+        assert report.verify_rate == 0.0
+    finally:
+        fixture.store.close()
+
+
+def test_status_and_verify_allow_dirty_artifact_root_for_new_retention_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _build_retention_fixture(tmp_path, monkeypatch)
+    try:
+        run_retention_audit(
+            fixture.protocol,
+            fixture.store,
+            execution_commit=fixture.execution_commit,
+            repo_root=fixture.repo_root,
+        )
+        runner = StudyRunner(fixture.protocol, repo_root=fixture.repo_root)
+
+        status = runner.status()
+        report = runner.verify()
+
+        assert status.study_valid is True
+        assert status.phase1_complete is False
+        assert status.phase2_authorized is False
+        assert status.terminal_decision == "PENDING"
+        assert report.status == status
+    finally:
+        fixture.store.close()
+
+
+def test_status_and_verify_reject_mutated_retained_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _build_retention_fixture(tmp_path, monkeypatch)
+    try:
+        run_retention_audit(
+            fixture.protocol,
+            fixture.store,
+            execution_commit=fixture.execution_commit,
+            repo_root=fixture.repo_root,
+        )
+        (fixture.protocol.artifact_root / "retained-inputs/candidate-a.json").write_bytes(
+            b'{"candidate":"A","outcome":"FORGED"}'
+        )
+        runner = StudyRunner(fixture.protocol, repo_root=fixture.repo_root)
+
+        status = runner.status()
+        report = runner.verify()
+
+        assert status.study_valid is False
+        assert status.phase2_authorized is False
+        assert status.terminal_decision == "STUDY_INVALID"
+        assert report.status == status
+        assert report.verify_rate == 0.0
+    finally:
+        fixture.store.close()
 
 
 def test_finalize_rejects_pending_without_creating_artifacts(tmp_path: Path) -> None:
@@ -2617,3 +2754,108 @@ def test_finalize_seals_semantically_invalid_packet_with_honest_report(
 
     assert repeated.record_sha256 == published.record_sha256
     assert len(publications) == publication_count
+
+
+def test_finalize_seals_orphaned_phase1_claim_with_verified_anchor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _publish_semantic_packet(tmp_path, include_decision=False)
+    for relative in (
+        "known-transform-diagnostic-108.json",
+        "scope-audit.json",
+        "feature-ownership-oracle.json",
+        "phase-2-execution-claim.json",
+        "known-transform-development-120.json",
+    ):
+        (runner.protocol.artifact_root / relative).unlink()
+    snapshot = RepositorySnapshot(
+        "f" * 40,
+        (),
+        _projection(runner.protocol.implementation_projection_paths()),
+    )
+    monkeypatch.setattr(
+        StudyRunner,
+        "_require_finalization_preflight",
+        lambda *args, **kwargs: snapshot,
+    )
+    monkeypatch.setattr(
+        StudyRunner,
+        "_require_phase_publication_state",
+        lambda *args, **kwargs: None,
+    )
+
+    published = runner.finalize()
+
+    assert published.path == "decision.json"
+    store = StudyArtifactStore.open_existing(
+        runner.protocol.artifact_root,
+        allowed_root=tmp_path,
+    )
+    assert store is not None
+    try:
+        decision = store.verify_json_result(
+            "decision.json",
+            expected_record_type="decision",
+        )
+    finally:
+        store.close()
+    payload = cast(Mapping[str, object], decision.document["payload"])
+    assert payload["decision"] == "STUDY_INVALID"
+    assert payload["verified_artifact_count"] == 2
+    assert payload["present_artifact_count"] == 3
+    assert cast(float, payload["study_artifact_verify_rate"]) == pytest.approx(2 / 3)
+    assert payload["invalid_paths"] == ("phase-1-execution-claim.json",)
+    assert runner.status().terminal_decision == "STUDY_INVALID"
+
+    repeated = runner.finalize()
+
+    assert repeated.record_sha256 == published.record_sha256
+
+
+@pytest.mark.parametrize(
+    "case",
+    ("scope_oracle_orphan", "phase2_orphan", "partial_retention"),
+)
+def test_finalize_seals_other_safely_inspectable_relationship_invalid_packets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    runner = _publish_semantic_packet(tmp_path, include_decision=False)
+    if case == "scope_oracle_orphan":
+        for relative in (
+            "feature-ownership-oracle.json",
+            "phase-2-execution-claim.json",
+            "known-transform-development-120.json",
+        ):
+            (runner.protocol.artifact_root / relative).unlink()
+    elif case == "phase2_orphan":
+        (runner.protocol.artifact_root / "known-transform-development-120.json").unlink()
+    else:
+        (runner.protocol.artifact_root / "retained-inputs/candidate-a.json").unlink()
+
+    snapshot = RepositorySnapshot(
+        "f" * 40,
+        (),
+        _projection(runner.protocol.implementation_projection_paths()),
+    )
+    monkeypatch.setattr(
+        StudyRunner,
+        "_require_finalization_preflight",
+        lambda *args, **kwargs: snapshot,
+    )
+    monkeypatch.setattr(
+        StudyRunner,
+        "_require_phase_publication_state",
+        lambda *args, **kwargs: None,
+    )
+
+    before = runner.verify()
+    assert before.status.terminal_decision == "STUDY_INVALID"
+
+    published = runner.finalize()
+
+    assert published.path == "decision.json"
+    assert runner.protocol.artifact_root.joinpath("report.md").is_file()
+    assert runner.status().terminal_decision == "STUDY_INVALID"

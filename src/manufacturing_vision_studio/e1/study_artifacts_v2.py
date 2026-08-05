@@ -43,6 +43,7 @@ _PHASE_1_MODES = ("NEAREST", "BILINEAR", "BICUBIC")
 _FEATURE_IDS = ("bottom_edge", "hole_left", "hole_right", "top_edge", "top_face")
 _FROZEN_ORACLE_REVISIONS = ("rev-A", "rev-B")
 _FROZEN_ORACLE_VIEWS = ("front", "oblique_left", "oblique_right")
+_TRACE_UNSET = object()
 _RESULT_RECORD_TYPES = {
     "scope_audit",
     "diagnostic_result",
@@ -919,6 +920,84 @@ def _validate_applicable_gate_semantics(
     return expected_status
 
 
+def verify_inference_trace_consistency(
+    *,
+    context: str,
+    mode: str,
+    inference_trace: Mapping[str, object],
+    actual_outcome: str | None = None,
+    anomaly_score: float | None = None,
+    predicted_positive_pixels: int | None = None,
+    predicted_feature_id: object = _TRACE_UNSET,
+    total_residual: int | None = None,
+) -> None:
+    """Reject locally derivable contradictions between duplicate trace fields."""
+
+    feature_mapping = cast(dict[str, object], inference_trace["feature_mapping"])
+    transform_trace = cast(dict[str, object], inference_trace["transform_trace"])
+    source_hashes = cast(dict[str, object], inference_trace["source_hashes"])
+    if actual_outcome is not None and inference_trace.get("actual_outcome") != actual_outcome:
+        raise StudyArtifactError(f"{context} trace actual outcome is invalid")
+    if anomaly_score is not None and inference_trace.get("anomaly_score") != anomaly_score:
+        raise StudyArtifactError(f"{context} trace anomaly score is invalid")
+    if transform_trace.get("resampling") != mode:
+        raise StudyArtifactError(f"{context} trace mode binding is invalid")
+    final_positive = feature_mapping.get("final_positive_pixel_count")
+    if total_residual is not None and final_positive != total_residual:
+        raise StudyArtifactError(f"{context} trace residual binding is invalid")
+    if predicted_positive_pixels is not None and final_positive != predicted_positive_pixels:
+        raise StudyArtifactError(f"{context} trace predicted-positive binding is invalid")
+    if (
+        predicted_feature_id is not _TRACE_UNSET
+        and feature_mapping.get("predicted_feature_id") != predicted_feature_id
+    ):
+        raise StudyArtifactError(f"{context} trace predicted-feature binding is invalid")
+    _require_matching_trace_hashes(
+        context,
+        (
+            inference_trace.get("predicted_mask_sha256"),
+            feature_mapping.get("final_mask_sha256"),
+            cast(dict[str, object], inference_trace["mask_postprocessing"]).get(
+                "filtered_mask_sha256"
+            ),
+        ),
+    )
+    _require_matching_trace_hashes(
+        context,
+        (
+            source_hashes.get("reference_sha256"),
+            transform_trace.get("reference_sha256"),
+        ),
+    )
+    _require_matching_trace_hashes(
+        context,
+        (
+            source_hashes.get("inspection_sha256"),
+            transform_trace.get("source_inspection_sha256"),
+        ),
+    )
+    _require_matching_trace_hashes(
+        context,
+        (
+            source_hashes.get("normalized_inspection_sha256"),
+            transform_trace.get("normalized_sha256"),
+        ),
+    )
+
+
+def _require_matching_trace_hashes(context: str, values: tuple[object, ...]) -> None:
+    expected: str | None = None
+    for value in values:
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise StudyArtifactError(f"{context} trace hash field is invalid")
+        if expected is None:
+            expected = value
+        elif value != expected:
+            raise StudyArtifactError(f"{context} trace hash binding is invalid")
+
+
 def _validate_diagnostic_semantics(payload: Mapping[str, object]) -> None:
     cases = cast(list[dict[str, object]], payload["cases"])
     expected_cases = tuple(
@@ -961,6 +1040,13 @@ def _validate_diagnostic_semantics(payload: Mapping[str, object]) -> None:
             or source_hashes["inspection_sha256"] != case["inspection_sha256"]
         ):
             raise StudyArtifactError("diagnostic inference source binding is invalid")
+        verify_inference_trace_consistency(
+            context="diagnostic",
+            mode=cast(str, observation["mode"]),
+            inference_trace=inference,
+            actual_outcome=cast(str, observation["actual_outcome"]),
+            total_residual=cast(int, observation["total_residual"]),
+        )
         if observation["outside_boundary_residual"] != (
             cast(int, observation["total_residual"])
             - cast(int, observation["boundary_residual"])
@@ -1135,12 +1221,22 @@ def _validate_development_semantics(payload: Mapping[str, object]) -> None:
     for record in inference_records:
         binding = binding_by_id[cast(str, record["case_id"])]
         inference = cast(dict[str, object], record["inference_trace"])
+        metrics = cast(dict[str, object], record["metrics"])
         hashes = cast(dict[str, object], inference["source_hashes"])
         if (
             hashes["reference_sha256"] != binding["reference_sha256"]
             or hashes["inspection_sha256"] != binding["inspection_sha256"]
         ):
             raise StudyArtifactError("development inference source binding is invalid")
+        verify_inference_trace_consistency(
+            context="development",
+            mode=cast(str, record["mode"]),
+            inference_trace=inference,
+            actual_outcome=cast(str, metrics["actual_outcome"]),
+            anomaly_score=cast(float, metrics["anomaly_score"]),
+            predicted_positive_pixels=cast(int, metrics["predicted_positive_pixels"]),
+            predicted_feature_id=metrics.get("predicted_feature_id"),
+        )
 
     trust_records = cast(list[dict[str, object]], payload["trust_bindings"])
     expected_trust = tuple(

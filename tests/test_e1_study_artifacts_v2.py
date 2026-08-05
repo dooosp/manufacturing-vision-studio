@@ -1312,27 +1312,37 @@ def _task_7a_transform_trace(mode: str, label: str) -> dict[str, object]:
     }
 
 
-def _task_7a_inference_trace(mode: str, label: str) -> dict[str, object]:
+def _task_7a_inference_trace(
+    mode: str,
+    label: str,
+    *,
+    actual_outcome: str = "ANOMALY",
+    anomaly_score: float = 0.8,
+    predicted_positive_pixels: int = 16,
+    predicted_feature_id: str | None = "top_face",
+) -> dict[str, object]:
     predicted_mask_sha256 = _nonzero_sha(f"{label}-predicted-mask")
+    mapped = predicted_feature_id is not None and predicted_positive_pixels > 0
+    owner_counts = {
+        "bottom_edge": 0,
+        "hole_left": 0,
+        "hole_right": 0,
+        "top_edge": 0,
+        "top_face": predicted_positive_pixels if predicted_feature_id == "top_face" else 0,
+    }
     return {
-        "actual_outcome": "ANOMALY",
-        "anomaly_score": 0.8,
+        "actual_outcome": actual_outcome,
+        "anomaly_score": anomaly_score,
         "feature_mapping": {
-            "predicted_feature_id": "top_face",
-            "status": "MAPPED",
-            "reason": "FEATURE_OWNERSHIP_WINNER",
-            "owner_pixel_counts": {
-                "bottom_edge": 0,
-                "hole_left": 0,
-                "hole_right": 0,
-                "top_edge": 0,
-                "top_face": 16,
-            },
-            "owned_pixel_count": 16,
-            "winner_owned_pixel_count": 16,
-            "final_positive_pixel_count": 16,
+            "predicted_feature_id": predicted_feature_id,
+            "status": "MAPPED" if mapped else "UNMAPPED",
+            "reason": "FEATURE_OWNERSHIP_WINNER" if mapped else "NO_OWNED_PIXELS",
+            "owner_pixel_counts": owner_counts,
+            "owned_pixel_count": predicted_positive_pixels if mapped else 0,
+            "winner_owned_pixel_count": predicted_positive_pixels if mapped else 0,
+            "final_positive_pixel_count": predicted_positive_pixels,
             "unmapped_pixel_count": 0,
-            "winner_margin": "1.00000000",
+            "winner_margin": "1.00000000" if mapped else None,
             "final_mask_sha256": predicted_mask_sha256,
             "ownership_map_sha256": TASK_7A_OWNERSHIP_HASHES["rev-A/front"],
         },
@@ -1403,7 +1413,14 @@ def _task_7a_diagnostic_observation(ordinal: int, mode: str) -> dict[str, object
     diagnostic_id = f"e1-v2-development-diagnostic-{ordinal:03d}"
     label = f"{diagnostic_id}-{mode}"
     defect = ordinal >= 84
-    inference_trace = _task_7a_inference_trace(mode, label)
+    inference_trace = _task_7a_inference_trace(
+        mode,
+        label,
+        actual_outcome="ANOMALY" if defect else "NORMAL",
+        anomaly_score=0.8 if defect else 0.0,
+        predicted_positive_pixels=16 if defect else 0,
+        predicted_feature_id="top_face" if defect else None,
+    )
     source_hashes = cast(dict[str, object], inference_trace["source_hashes"])
     source_hashes["reference_sha256"] = _nonzero_sha(f"{diagnostic_id}-reference")
     source_hashes["inspection_sha256"] = _nonzero_sha(f"{diagnostic_id}-inspection")
@@ -1638,7 +1655,14 @@ def _task_7a_development_inference_record(
     case_id = cast(str, binding["case_id"])
     group = cast(str, binding["group"])
     defect = group == "defect"
-    inference_trace = _task_7a_inference_trace(mode, f"{case_id}-{mode}")
+    inference_trace = _task_7a_inference_trace(
+        mode,
+        f"{case_id}-{mode}",
+        actual_outcome="ANOMALY" if defect else "NORMAL",
+        anomaly_score=0.8 if defect else 0.0,
+        predicted_positive_pixels=16 if defect else 0,
+        predicted_feature_id="top_face" if defect else None,
+    )
     source_hashes = cast(dict[str, object], inference_trace["source_hashes"])
     source_hashes["reference_sha256"] = binding["reference_sha256"]
     source_hashes["inspection_sha256"] = binding["inspection_sha256"]
@@ -2333,6 +2357,86 @@ def test_task_7a_fix1_oracle_row_contract_rejects_forged_failure_row(
 
     with pytest.raises(StudyArtifactError, match=r"schema|oracle"):
         validate_study_schema(finalize_study_record(record))
+
+
+@pytest.mark.parametrize(
+    ("variant", "bad_value"),
+    (
+        ("actual_outcome", "ANOMALY"),
+        ("trace_mode", "BICUBIC"),
+        ("total_residual", 15),
+        ("predicted_mask_sha256", _nonzero_sha("forged-predicted-mask")),
+        ("normalized_inspection_sha256", _nonzero_sha("forged-normalized")),
+    ),
+)
+def test_diagnostic_trace_duplicates_reject_local_contradictions(
+    protocol: StudyProtocolV2,
+    variant: str,
+    bad_value: object,
+) -> None:
+    document = minimal_valid_diagnostic_result_record(protocol)
+    payload = cast(dict[str, object], document["payload"])
+    observation = cast(list[dict[str, object]], payload["observations"])[0]
+    inference = cast(dict[str, object], observation["inference_trace"])
+    if variant == "actual_outcome":
+        observation["actual_outcome"] = bad_value
+    elif variant == "trace_mode":
+        transform_trace = cast(dict[str, object], inference["transform_trace"])
+        transform_trace["resampling"] = bad_value
+    elif variant == "total_residual":
+        observation["total_residual"] = bad_value
+    elif variant == "predicted_mask_sha256":
+        inference["predicted_mask_sha256"] = bad_value
+    else:
+        source_hashes = cast(dict[str, object], inference["source_hashes"])
+        source_hashes["normalized_inspection_sha256"] = bad_value
+
+    with pytest.raises(StudyArtifactError, match=r"schema|trace"):
+        validate_study_schema(finalize_study_record(document))
+
+
+@pytest.mark.parametrize(
+    ("variant", "bad_value"),
+    (
+        ("trace_mode", "BICUBIC"),
+        ("actual_outcome", "ANOMALY"),
+        ("anomaly_score", 0.8),
+        ("predicted_positive_pixels", 16),
+        ("predicted_feature_id", "top_face"),
+        ("predicted_mask_sha256", _nonzero_sha("forged-development-mask")),
+    ),
+)
+def test_development_trace_duplicates_reject_local_contradictions_on_store(
+    tmp_path: Path,
+    protocol: StudyProtocolV2,
+    variant: str,
+    bad_value: object,
+) -> None:
+    document = minimal_valid_development_result_record(protocol)
+    payload = cast(dict[str, object], document["payload"])
+    record = cast(list[dict[str, object]], payload["inference_records"])[0]
+    inference = cast(dict[str, object], record["inference_trace"])
+    metrics = cast(dict[str, object], record["metrics"])
+    if variant == "trace_mode":
+        transform_trace = cast(dict[str, object], inference["transform_trace"])
+        transform_trace["resampling"] = bad_value
+    elif variant == "actual_outcome":
+        metrics["actual_outcome"] = bad_value
+    elif variant == "anomaly_score":
+        metrics["anomaly_score"] = bad_value
+    elif variant == "predicted_positive_pixels":
+        metrics["predicted_positive_pixels"] = bad_value
+    elif variant == "predicted_feature_id":
+        metrics["predicted_feature_id"] = bad_value
+    else:
+        inference["predicted_mask_sha256"] = bad_value
+    store = StudyArtifactStore(tmp_path)
+    try:
+        with pytest.raises(StudyArtifactError, match=r"schema|trace"):
+            store.publish_json("known-transform-development-120.json", document)
+        assert store.inventory() == ()
+    finally:
+        store.close()
 
 
 def test_task_7a_decision_semantics_bind_counts_invalid_inventory_and_upstreams(
