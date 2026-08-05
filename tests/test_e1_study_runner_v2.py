@@ -351,6 +351,29 @@ def test_verify_on_absent_root_is_read_only(tmp_path: Path) -> None:
     assert not (tmp_path / "missing-artifacts").exists()
 
 
+def test_status_and_verify_fail_closed_without_repository_provenance(
+    tmp_path: Path,
+) -> None:
+    runner = _runner(tmp_path)
+    store = StudyArtifactStore(runner.protocol.artifact_root, allowed_root=tmp_path)
+    try:
+        document = minimal_valid_implementation_validation_record(runner.protocol)
+        _bind_reviewed_validation_executables(document)
+        store.publish_json("implementation-validation.json", document)
+    finally:
+        store.close()
+
+    status = runner.status()
+    report = runner.verify()
+
+    assert status.study_valid is False
+    assert status.terminal_decision == "STUDY_INVALID"
+    assert status.reasons == ("ARTIFACT_VERIFICATION_FAILED",)
+    assert report.status == status
+    assert report.verified_paths == ()
+    assert report.verify_rate == 0.0
+
+
 def test_inventory_rejects_unknown_symlink_and_hardlink_nodes(tmp_path: Path) -> None:
     for ordinal, create_invalid in enumerate(
         (
@@ -2294,7 +2317,8 @@ def test_runtime_store_packet_uses_one_portable_artifact_root_identity(tmp_path:
     """Catch runner inspection accepting checkout paths mixed with portable result roots."""
 
     runner = _publish_semantic_packet(tmp_path)
-    assert runner.status().study_valid is True
+    status = runner_module.inspect_state(runner.protocol, repo_root=tmp_path).status
+    assert status.study_valid is True
     store = StudyArtifactStore.open_existing(
         runner.protocol.artifact_root,
         allowed_root=tmp_path,
@@ -2648,7 +2672,10 @@ def test_finalize_publishes_decision_before_deterministic_report(
     assert published.path == "decision.json"
     assert runner.protocol.artifact_root.joinpath("decision.json").is_file()
     assert runner.protocol.artifact_root.joinpath("report.md").is_file()
-    assert runner.status().terminal_decision == "TRANSFORM_ESTIMATION_LIMITED"
+    assert (
+        runner_module.inspect_state(runner.protocol, repo_root=tmp_path).status.terminal_decision
+        == "TRANSFORM_ESTIMATION_LIMITED"
+    )
     first_report = runner.protocol.artifact_root.joinpath("report.md").read_bytes()
 
     repeated = runner.finalize()

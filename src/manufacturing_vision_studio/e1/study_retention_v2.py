@@ -588,6 +588,7 @@ class _ImportVisitor(ast.NodeVisitor):
         self.function_stack: list[str] = []
         self.importlib_module_names: set[str] = set()
         self.import_module_names: set[str] = set()
+        self.builtins_module_names: set[str] = set()
         self.runpy_module_names: set[str] = set()
         self.runpy_loader_names: set[str] = set()
         self.typing_module_names: set[str] = set()
@@ -643,6 +644,8 @@ class _ImportVisitor(ast.NodeVisitor):
                     )
             if alias.name == "importlib":
                 self.importlib_module_names.add(alias.asname or alias.name)
+            if alias.name == "builtins":
+                self.builtins_module_names.add(alias.asname or alias.name)
             if alias.name == "runpy":
                 self.runpy_module_names.add(alias.asname or alias.name)
             if alias.name == "typing":
@@ -672,6 +675,12 @@ class _ImportVisitor(ast.NodeVisitor):
             for alias in node.names:
                 if alias.name == "import_module":
                     self.import_module_names.add(alias.asname or alias.name)
+        if node.level == 0 and node.module == "builtins":
+            for alias in node.names:
+                if self.type_checking_depth == 0 and alias.name == "__import__":
+                    self.closure_errors.append(
+                        f"{self.source_module}:{node.lineno}:runtime __import__ symbol access"
+                    )
         if node.level == 0 and node.module == "runpy":
             for alias in node.names:
                 if alias.name in {"run_module", "run_path"}:
@@ -824,7 +833,10 @@ class _ImportVisitor(ast.NodeVisitor):
             )
 
     def visit_Subscript(self, node: ast.Subscript) -> None:
-        if self.type_checking_depth == 0 and _is_builtin_import_dict_access(node):
+        if self.type_checking_depth == 0 and _is_builtin_import_dict_access(
+            node,
+            builtins_module_names=self.builtins_module_names,
+        ):
             self.closure_errors.append(
                 f"{self.source_module}:{node.lineno}:runtime __import__ symbol access"
             )
@@ -954,6 +966,7 @@ class _ImportVisitor(ast.NodeVisitor):
     def _unbind_name(self, name: str) -> None:
         self.importlib_module_names.discard(name)
         self.import_module_names.discard(name)
+        self.builtins_module_names.discard(name)
         self.runpy_module_names.discard(name)
         self.runpy_loader_names.discard(name)
         self.typing_module_names.discard(name)
@@ -1621,15 +1634,21 @@ def _is_type_checking_test(
     )
 
 
-def _is_builtin_import_dict_access(node: ast.Subscript) -> bool:
+def _is_builtin_import_dict_access(
+    node: ast.Subscript,
+    *,
+    builtins_module_names: set[str],
+) -> bool:
     if not isinstance(node.slice, ast.Constant) or node.slice.value != "__import__":
         return False
     value = node.value
+    if isinstance(value, ast.Name) and value.id == "__builtins__":
+        return True
     return (
         isinstance(value, ast.Attribute)
         and value.attr == "__dict__"
         and isinstance(value.value, ast.Name)
-        and value.value.id in {"builtins", "__builtins__"}
+        and value.value.id in {*builtins_module_names, "__builtins__"}
     )
 
 

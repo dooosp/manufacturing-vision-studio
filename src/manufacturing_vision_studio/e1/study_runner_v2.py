@@ -818,14 +818,6 @@ def _plain_json(value: object) -> object:
     return value
 
 
-def _repo_provenance_unavailable(error: StudyRetentionError) -> bool:
-    message = str(error)
-    return (
-        "git command failed: rev-parse --show-toplevel:" in message
-        or message == "repository root identity does not match"
-    )
-
-
 def _verify_diagnostic_payload(
     protocol: StudyProtocolV2,
     document: Mapping[str, object],
@@ -1538,8 +1530,7 @@ class StudyRunner:
             store.verify_lexical_root_identity()
             return state
         except StudyRetentionError as exc:
-            if _repo_provenance_unavailable(exc):
-                return state
+            del exc
             return _invalid_state(
                 ("ARTIFACT_VERIFICATION_FAILED",),
                 present_paths=state.present_paths,

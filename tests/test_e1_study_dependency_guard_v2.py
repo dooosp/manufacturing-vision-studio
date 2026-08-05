@@ -702,19 +702,49 @@ def test_runtime_loader_source_rejects_annotated_and_tuple_laundering(
 
 
 @pytest.mark.parametrize(
-    "source",
+    ("case_id", "source"),
     [
-        "\nLOADER = __import__\n",
-        "\nREFLECTED = getattr(__builtins__, '__import__')\n",
-        "\nimport builtins\nREFLECTED = getattr(builtins, '__import__')\n",
-        "\nimport builtins\nREFLECTED = builtins.__dict__['__import__']\n",
-        "\nREFLECTED = __builtins__.__dict__['__import__']\n",
+        ("direct-loader-name", "\nLOADER = __import__\n"),
+        ("reflected-builtins-getattr", "\nREFLECTED = getattr(__builtins__, '__import__')\n"),
+        (
+            "literal-builtins-getattr",
+            "\nimport builtins\nREFLECTED = getattr(builtins, '__import__')\n",
+        ),
+        (
+            "literal-builtins-dict-import",
+            "\nimport builtins\n"
+            "REFLECTED = builtins.__dict__['__import__']\n"
+            "DYNAMIC = REFLECTED('manufacturing_vision_studio.adapters')\n",
+        ),
+        (
+            "builtins-alias-dict-import",
+            "\nimport builtins as b\n"
+            "REFLECTED = b.__dict__['__import__']\n"
+            "DYNAMIC = REFLECTED('manufacturing_vision_studio.adapters')\n",
+        ),
+        (
+            "from-builtins-import-alias",
+            "\nfrom builtins import __import__ as loader\n"
+            "DYNAMIC = loader('manufacturing_vision_studio.adapters')\n",
+        ),
+        (
+            "attribute-builtins-dict-import",
+            "\nREFLECTED = __builtins__.__dict__['__import__']\n",
+        ),
+        (
+            "implicit-builtins-dict-import",
+            "\nREFLECTED = __builtins__['__import__']\n"
+            "DYNAMIC = REFLECTED('manufacturing_vision_studio.adapters')\n",
+        ),
     ],
+    ids=lambda case: case if isinstance(case, str) else None,
 )
 def test_runtime_builtin_import_symbol_access_is_rejected(
     tmp_path: Path,
+    case_id: str,
     source: str,
 ) -> None:
+    del case_id
     protocol = load_study_protocol_v2()
     repo_root = _complete_repo(tmp_path, protocol)
     _append(repo_root, RUNNER_PATH, source)
