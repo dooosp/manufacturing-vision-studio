@@ -637,6 +637,182 @@ def test_type_only_package_and_importlib_imports_remain_type_only(
 
 @pytest.mark.parametrize(
     "source",
+    (
+        "from typing import TYPE_CHECKING\n"
+        "def guarded(TYPE_CHECKING: bool) -> None:\n"
+        "    if TYPE_CHECKING:\n"
+        "        from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n",
+        "import typing as typing_alias\n"
+        "typing_alias = object()\n"
+        "if typing_alias.TYPE_CHECKING:\n"
+        "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n",
+        "from typing import TYPE_CHECKING\n"
+        "flag = object()\n"
+        "if flag:\n"
+        "    TYPE_CHECKING = True\n"
+        "if TYPE_CHECKING:\n"
+        "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n",
+        "from typing import TYPE_CHECKING\n"
+        "def outer() -> None:\n"
+        "    runtime_guard = TYPE_CHECKING\n"
+        "    def inner() -> None:\n"
+        "        nonlocal runtime_guard\n"
+        "        runtime_guard = True\n"
+        "        if runtime_guard:\n"
+        "            from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n",
+    ),
+)
+def test_ambiguous_type_checking_bindings_are_runtime_code(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(StudyRetentionError, match=r"forbidden direct import.*policy_v2"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_late_bound_nonlocal_resolves_to_enclosing_function_scope(
+    tmp_path: Path,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\ndef outer() -> None:\n"
+        "    def inner() -> None:\n"
+        "        nonlocal late_bound\n"
+        "        late_bound = object()\n"
+        "    late_bound = object()\n",
+    )
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_nonlocal_skips_intermediate_function_without_binding(
+    tmp_path: Path,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\nfrom typing import TYPE_CHECKING\n"
+        "def outer() -> None:\n"
+        "    outer_guard = TYPE_CHECKING\n"
+        "    def intermediate() -> None:\n"
+        "        def inner() -> None:\n"
+        "            nonlocal outer_guard\n"
+        "            if outer_guard:\n"
+        "                from manufacturing_vision_studio.e1.policy_v2 "
+        "import E1V2Policy\n",
+    )
+
+    report = scan_study_dependencies(protocol, repo_root=repo_root)
+
+    assert any(
+        edge.source == "manufacturing_vision_studio.e1.study_runner_v2"
+        and edge.target == "manufacturing_vision_studio.e1.policy_v2"
+        and edge.kind == "type_checking"
+        for edge in report.edges
+    )
+
+
+def test_class_body_resolves_outer_alias_before_class_name_binding(
+    tmp_path: Path,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\nimport typing as T\n"
+        "class T:\n"
+        "    if T.TYPE_CHECKING:\n"
+        "        from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n",
+    )
+
+    report = scan_study_dependencies(protocol, repo_root=repo_root)
+
+    assert any(
+        edge.source == "manufacturing_vision_studio.e1.study_runner_v2"
+        and edge.target == "manufacturing_vision_studio.e1.policy_v2"
+        and edge.kind == "type_checking"
+        for edge in report.edges
+    )
+
+
+def test_try_body_rebinding_reaches_exception_handler(tmp_path: Path) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\nimport typing as typing_alias\n"
+        "try:\n"
+        "    typing_alias = object()\n"
+        "    raise RuntimeError\n"
+        "except RuntimeError:\n"
+        "    if typing_alias.TYPE_CHECKING:\n"
+        "        from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n",
+    )
+
+    with pytest.raises(StudyRetentionError, match=r"forbidden direct import.*policy_v2"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_starred_destructuring_shadows_type_checking_alias(tmp_path: Path) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\nimport typing as typing_alias\n"
+        "head, *typing_alias = (None, None)\n"
+        "if typing_alias.TYPE_CHECKING:\n"
+        "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n",
+    )
+
+    with pytest.raises(StudyRetentionError, match=r"forbidden direct import.*policy_v2"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import typing as typing_alias\n"
+        "def invalidate() -> None:\n"
+        "    global typing_alias\n"
+        "    del typing_alias\n"
+        "    if typing_alias.TYPE_CHECKING:\n"
+        "        from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n",
+        "from typing import TYPE_CHECKING\n"
+        "def outer() -> None:\n"
+        "    guard = TYPE_CHECKING\n"
+        "    def invalidate() -> None:\n"
+        "        nonlocal guard\n"
+        "        del guard\n"
+        "        if guard:\n"
+        "            from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n",
+    ),
+)
+def test_declaration_aware_delete_invalidates_type_checking_alias(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(StudyRetentionError, match=r"forbidden direct import.*policy_v2"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    "source",
     [
         "\nimport importlib\n",
         "\nimport importlib as import_tools\n",

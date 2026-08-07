@@ -574,6 +574,318 @@ class _GitCommandResult:
     stderr: bytes
 
 
+_Capability = Literal[
+    "builtins-namespace",
+    "dynamic-loader-module",
+    "executable-code",
+    "import-loader",
+    "import-namespace",
+    "import-registry",
+    "namespace-mapping",
+    "namespace-reflection",
+    "package-object",
+    "sys-module",
+    "type-checking-sentinel",
+    "typing-module",
+]
+_ScopeKind = Literal["module", "class", "function", "lambda", "comprehension"]
+
+
+@dataclass(frozen=True, slots=True)
+class _Binding:
+    capabilities: frozenset[_Capability] = frozenset()
+    package_target: str | None = None
+    uncertain: bool = False
+
+    def merged(self, other: _Binding) -> _Binding:
+        package_target = (
+            self.package_target
+            if self.package_target == other.package_target
+            else None
+        )
+        return _Binding(
+            capabilities=self.capabilities | other.capabilities,
+            package_target=package_target,
+            uncertain=(
+                self.uncertain
+                or other.uncertain
+                or self.package_target != other.package_target
+            ),
+        )
+
+
+@dataclass(slots=True)
+class _ScopeFrame:
+    kind: _ScopeKind
+    bindings: dict[str, _Binding]
+    global_names: set[str]
+    nonlocal_names: set[str]
+
+
+class _FunctionLocalCollector(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.names: set[str] = set()
+        self.global_names: set[str] = set()
+        self.nonlocal_names: set[str] = set()
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            self.names.add(node.id)
+
+    def visit_Global(self, node: ast.Global) -> None:
+        self.global_names.update(node.names)
+
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        self.nonlocal_names.update(node.names)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            self.names.add(alias.asname or alias.name.split(".", 1)[0])
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        for alias in node.names:
+            if alias.name != "*":
+                self.names.add(alias.asname or alias.name)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.names.add(node.name)
+        self._visit_definition_expressions(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.names.add(node.name)
+        self._visit_definition_expressions(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.names.add(node.name)
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for base in node.bases:
+            self.visit(base)
+        for keyword in node.keywords:
+            self.visit(keyword.value)
+        for type_param in getattr(node, "type_params", ()):
+            self.visit(type_param)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self._visit_argument_expressions(node.args)
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self.visit(node.generators[0].iter)
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self.visit(node.generators[0].iter)
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self.visit(node.generators[0].iter)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self.visit(node.generators[0].iter)
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.name is not None:
+            self.names.add(node.name)
+        self.generic_visit(node)
+
+    def visit_MatchAs(self, node: ast.MatchAs) -> None:
+        if node.name is not None:
+            self.names.add(node.name)
+        self.generic_visit(node)
+
+    def visit_MatchStar(self, node: ast.MatchStar) -> None:
+        if node.name is not None:
+            self.names.add(node.name)
+
+    def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
+        if node.rest is not None:
+            self.names.add(node.rest)
+        self.generic_visit(node)
+
+    def _visit_definition_expressions(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> None:
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        self._visit_argument_expressions(node.args)
+        if node.returns is not None:
+            self.visit(node.returns)
+        for type_param in getattr(node, "type_params", ()):
+            self.visit(type_param)
+
+    def _visit_argument_expressions(self, arguments: ast.arguments) -> None:
+        for argument in (
+            *arguments.posonlyargs,
+            *arguments.args,
+            *arguments.kwonlyargs,
+        ):
+            if argument.annotation is not None:
+                self.visit(argument.annotation)
+        if arguments.vararg is not None and arguments.vararg.annotation is not None:
+            self.visit(arguments.vararg.annotation)
+        if arguments.kwarg is not None and arguments.kwarg.annotation is not None:
+            self.visit(arguments.kwarg.annotation)
+        for default in (*arguments.defaults, *arguments.kw_defaults):
+            if default is not None:
+                self.visit(default)
+
+
+class _LexicalBindings:
+    def __init__(self) -> None:
+        self.frames = [_ScopeFrame("module", {}, set(), set())]
+
+    def clone(self) -> _LexicalBindings:
+        clone = _LexicalBindings()
+        clone.frames = [
+            _ScopeFrame(
+                frame.kind,
+                dict(frame.bindings),
+                set(frame.global_names),
+                set(frame.nonlocal_names),
+            )
+            for frame in self.frames
+        ]
+        return clone
+
+    def push(self, kind: _ScopeKind) -> None:
+        self.frames.append(_ScopeFrame(kind, {}, set(), set()))
+
+    def pop(self) -> None:
+        if self.frames[-1].kind == "module":
+            raise ValueError("cannot pop the module scope")
+        self.frames.pop()
+
+    def bind(self, name: str, value: _Binding) -> None:
+        frame = self._assignment_frame(name)
+        frame.bindings[name] = value
+
+    def bind_target(self, target: ast.expr, value: _Binding) -> None:
+        if isinstance(target, ast.Name):
+            self.bind(target.id, value)
+            return
+        if isinstance(target, ast.Starred):
+            self.bind_target(target.value, value)
+            return
+        if isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                self.bind_target(element, value)
+
+    def bind_pattern(self, pattern: ast.pattern, value: _Binding) -> None:
+        if isinstance(pattern, ast.MatchAs):
+            if pattern.pattern is not None:
+                self.bind_pattern(pattern.pattern, value)
+            if pattern.name is not None:
+                self.bind(pattern.name, value)
+            return
+        if isinstance(pattern, ast.MatchStar):
+            if pattern.name is not None:
+                self.bind(pattern.name, value)
+            return
+        if isinstance(pattern, ast.MatchMapping):
+            for child in pattern.patterns:
+                self.bind_pattern(child, value)
+            if pattern.rest is not None:
+                self.bind(pattern.rest, value)
+            return
+        if isinstance(pattern, ast.MatchSequence):
+            for child in pattern.patterns:
+                self.bind_pattern(child, value)
+            return
+        if isinstance(pattern, ast.MatchClass):
+            for child in (*pattern.patterns, *pattern.kwd_patterns):
+                self.bind_pattern(child, value)
+            return
+        if isinstance(pattern, ast.MatchOr):
+            for child in pattern.patterns:
+                self.bind_pattern(child, value)
+
+    def resolve(self, name: str) -> _Binding:
+        current = self.frames[-1]
+        if name in current.global_names:
+            return self.frames[0].bindings.get(name, _Binding(uncertain=True))
+        if name in current.nonlocal_names:
+            frame = self._nonlocal_frame(name)
+            if frame is None:
+                return _Binding(uncertain=True)
+            return frame.bindings.get(name, _Binding(uncertain=True))
+
+        for index in range(len(self.frames) - 1, -1, -1):
+            frame = self.frames[index]
+            if index != len(self.frames) - 1 and frame.kind == "class":
+                continue
+            binding = frame.bindings.get(name)
+            if binding is not None:
+                return binding
+        return _Binding(uncertain=True)
+
+    def declare_global(self, names: Sequence[str]) -> None:
+        current = self.frames[-1]
+        current.global_names.update(names)
+        current.nonlocal_names.difference_update(names)
+        for name in names:
+            if current is not self.frames[0]:
+                current.bindings.pop(name, None)
+
+    def declare_nonlocal(self, names: Sequence[str]) -> None:
+        current = self.frames[-1]
+        for name in names:
+            frame = self._nonlocal_frame(name)
+            if frame is None:
+                raise ValueError(f"no enclosing non-module binding for {name}")
+            current.nonlocal_names.add(name)
+            current.global_names.discard(name)
+            current.bindings.pop(name, None)
+
+    def merge_branches(self, branches: Sequence[_LexicalBindings]) -> None:
+        if any(len(branch.frames) != len(self.frames) for branch in branches):
+            raise ValueError("cannot merge lexical states with different scope depths")
+        for index, frame in enumerate(self.frames):
+            branch_frames = [branch.frames[index] for branch in branches]
+            names = set(frame.bindings)
+            for branch_frame in branch_frames:
+                names.update(branch_frame.bindings)
+            merged_bindings: dict[str, _Binding] = {}
+            for name in names:
+                values: list[_Binding] = []
+                missing = False
+                for candidate in (frame, *branch_frames):
+                    binding = candidate.bindings.get(name)
+                    if binding is None:
+                        missing = True
+                        binding = _Binding(uncertain=True)
+                    values.append(binding)
+                merged = values[0]
+                for value in values[1:]:
+                    merged = merged.merged(value)
+                if missing or any(value != values[0] for value in values[1:]):
+                    merged = _Binding(
+                        capabilities=merged.capabilities,
+                        package_target=merged.package_target,
+                        uncertain=True,
+                    )
+                merged_bindings[name] = merged
+            frame.bindings = merged_bindings
+            for branch_frame in branch_frames:
+                frame.global_names.update(branch_frame.global_names)
+                frame.nonlocal_names.update(branch_frame.nonlocal_names)
+
+    def _assignment_frame(self, name: str) -> _ScopeFrame:
+        current = self.frames[-1]
+        if name in current.global_names:
+            return self.frames[0]
+        if name in current.nonlocal_names:
+            frame = self._nonlocal_frame(name)
+            if frame is None:
+                raise ValueError(f"no enclosing non-module binding for {name}")
+            return frame
+        return current
+
+    def _nonlocal_frame(self, name: str) -> _ScopeFrame | None:
+        for frame in reversed(self.frames[1:-1]):
+            if frame.kind != "class" and name in frame.bindings:
+                return frame
+        return None
+
+
 class _ImportVisitor(ast.NodeVisitor):
     def __init__(self, *, source_module: str, known_modules: frozenset[str]) -> None:
         self.source_module = source_module
@@ -586,48 +898,75 @@ class _ImportVisitor(ast.NodeVisitor):
         self.closure_errors: list[str] = []
         self.class_stack: list[str] = []
         self.function_stack: list[str] = []
-        self.importlib_module_names: set[str] = set()
-        self.import_module_names: set[str] = set()
-        self.builtins_module_names: set[str] = set()
-        self.runpy_module_names: set[str] = set()
-        self.runpy_loader_names: set[str] = set()
-        self.typing_module_names: set[str] = set()
-        self.type_checking_names: set[str] = set()
-        self.package_object_names: dict[str, str] = {}
+        self.bindings = _LexicalBindings()
         self.allowed_import_module_name_nodes: set[int] = set()
 
     def visit_If(self, node: ast.If) -> None:
-        if _is_type_checking_test(
-            node.test,
-            type_checking_names=self.type_checking_names,
-            typing_module_names=self.typing_module_names,
-        ):
+        type_checking = _is_type_checking_test(node.test, bindings=self.bindings)
+        self.visit(node.test)
+        baseline = self.bindings
+        branches: list[_LexicalBindings] = []
+
+        self.bindings = baseline.clone()
+        if type_checking:
             self.type_checking_depth += 1
-            for child in node.body:
-                self.visit(child)
-            self.type_checking_depth -= 1
-            for child in node.orelse:
-                self.visit(child)
-            return
-        self.generic_visit(node)
+        try:
+            self._visit_statements(node.body)
+        finally:
+            if type_checking:
+                self.type_checking_depth -= 1
+        branches.append(self.bindings)
+
+        self.bindings = baseline.clone()
+        self._visit_statements(node.orelse)
+        branches.append(self.bindings)
+        self.bindings = baseline
+        self.bindings.merge_branches(branches)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        self._unbind_name(node.name)
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for base in node.bases:
+            self.visit(base)
+        for keyword in node.keywords:
+            self.visit(keyword.value)
+        for type_param in getattr(node, "type_params", ()):
+            self.visit(type_param)
+        self.bindings.push("class")
         self.class_stack.append(node.name)
-        self.generic_visit(node)
-        self.class_stack.pop()
+        try:
+            self._visit_statements(node.body)
+        finally:
+            self.class_stack.pop()
+            self.bindings.pop()
+        self.bindings.bind(node.name, _Binding())
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self._unbind_name(node.name)
-        self.function_stack.append(node.name)
-        self.generic_visit(node)
-        self.function_stack.pop()
+        self._visit_function(node)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self._unbind_name(node.name)
-        self.function_stack.append(node.name)
-        self.generic_visit(node)
-        self.function_stack.pop()
+        self._visit_function(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self._visit_argument_expressions(node.args)
+        self.bindings.push("lambda")
+        try:
+            self._bind_arguments(node.args)
+            self.visit(node.body)
+        finally:
+            self.bindings.pop()
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._visit_comprehension(node.generators, (node.elt,))
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._visit_comprehension(node.generators, (node.elt,))
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._visit_comprehension(node.generators, (node.key, node.value))
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._visit_comprehension(node.generators, (node.elt,))
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -642,18 +981,26 @@ class _ImportVisitor(ast.NodeVisitor):
                         f"{self.source_module}:{node.lineno}:"
                         f"runtime importlib import: {alias.name}"
                     )
+            capabilities: set[_Capability] = set()
             if alias.name == "importlib":
-                self.importlib_module_names.add(alias.asname or alias.name)
+                capabilities.add("import-namespace")
             if alias.name == "builtins":
-                self.builtins_module_names.add(alias.asname or alias.name)
+                capabilities.add("builtins-namespace")
             if alias.name == "runpy":
-                self.runpy_module_names.add(alias.asname or alias.name)
+                capabilities.add("dynamic-loader-module")
             if alias.name == "typing":
-                self.typing_module_names.add(alias.asname or alias.name)
+                capabilities.add("typing-module")
+            package_target = None
             if alias.name in _PROJECTED_PACKAGE_ROOTS:
-                bound_name = alias.asname or alias.name.split(".", 1)[0]
-                bound_target = alias.name if alias.asname else "manufacturing_vision_studio"
-                self.package_object_names[bound_name] = bound_target
+                capabilities.add("package-object")
+                package_target = (
+                    alias.name if alias.asname else "manufacturing_vision_studio"
+                )
+            bound_name = alias.asname or alias.name.split(".", 1)[0]
+            self.bindings.bind(
+                bound_name,
+                _Binding(frozenset(capabilities), package_target),
+            )
             target = _nearest_known_module(alias.name, self.known_modules)
             if target is not None:
                 self.references.append(
@@ -674,26 +1021,58 @@ class _ImportVisitor(ast.NodeVisitor):
         if node.level == 0 and node.module == "importlib":
             for alias in node.names:
                 if alias.name == "import_module":
-                    self.import_module_names.add(alias.asname or alias.name)
+                    self.bindings.bind(
+                        alias.asname or alias.name,
+                        _Binding(frozenset({"import-loader"})),
+                    )
         if node.level == 0 and node.module == "builtins":
             for alias in node.names:
                 if self.type_checking_depth == 0 and alias.name == "__import__":
                     self.closure_errors.append(
                         f"{self.source_module}:{node.lineno}:runtime __import__ symbol access"
                     )
+                if alias.name == "__import__":
+                    self.bindings.bind(
+                        alias.asname or alias.name,
+                        _Binding(frozenset({"import-loader"})),
+                    )
         if node.level == 0 and node.module == "runpy":
             for alias in node.names:
                 if alias.name in {"run_module", "run_path"}:
-                    self.runpy_loader_names.add(alias.asname or alias.name)
+                    self.bindings.bind(
+                        alias.asname or alias.name,
+                        _Binding(
+                            frozenset(
+                                {"dynamic-loader-module", "import-loader"}
+                            )
+                        ),
+                    )
         if node.level == 0 and node.module == "typing":
             for alias in node.names:
                 if alias.name == "TYPE_CHECKING":
-                    self.type_checking_names.add(alias.asname or alias.name)
+                    self.bindings.bind(
+                        alias.asname or alias.name,
+                        _Binding(frozenset({"type-checking-sentinel"})),
+                    )
         base = _resolve_import_from_base(self.source_module, node.module, node.level)
         if base is None:
             return
         for alias in node.names:
             candidate = f"{base}.{alias.name}" if alias.name != "*" else base
+            if alias.name != "*" and not self._has_special_import_binding(
+                node,
+                alias,
+            ):
+                if candidate in _PROJECTED_PACKAGE_ROOTS:
+                    self.bindings.bind(
+                        alias.asname or alias.name,
+                        _Binding(
+                            frozenset({"package-object"}),
+                            package_target=candidate,
+                        ),
+                    )
+                else:
+                    self.bindings.bind(alias.asname or alias.name, _Binding())
             if (
                 base in _PROJECTED_PACKAGE_ROOTS
                 and candidate not in self.known_modules
@@ -713,36 +1092,101 @@ class _ImportVisitor(ast.NodeVisitor):
                 )
 
     def visit_Assign(self, node: ast.Assign) -> None:
-        for target in node.targets:
-            self._unbind_target(target)
         loader_kind = _dynamic_import_loader_kind(
             node.value,
-            importlib_module_names=self.importlib_module_names,
-            import_module_names=self.import_module_names,
+            bindings=self.bindings,
         )
-        if loader_kind == "loader":
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    self.import_module_names.add(target.id)
-        elif loader_kind == "nonliteral_reflection" and self.type_checking_depth == 0:
+        if loader_kind == "nonliteral_reflection" and self.type_checking_depth == 0:
             self.closure_errors.append(
                 f"{self.source_module}:{node.lineno}:"
                 "non-literal reflected import loader"
             )
-        package_target = self._package_object_target(node.value)
-        if package_target is not None:
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    self.package_object_names[target.id] = package_target
-        self.generic_visit(node)
+        value = self._binding_for_expression(node.value)
+        self.visit(node.value)
+        for target in node.targets:
+            self.bindings.bind_target(target, value)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        self._unbind_target(node.target)
-        self.generic_visit(node)
+        self.visit(node.annotation)
+        value = _Binding()
+        if node.value is not None:
+            value = self._binding_for_expression(node.value)
+            self.visit(node.value)
+        self.bindings.bind_target(node.target, value)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
-        self._unbind_target(node.target)
-        self.generic_visit(node)
+        prior = self._binding_for_expression(node.target)
+        self.visit(node.target)
+        self.visit(node.value)
+        self.bindings.bind_target(
+            node.target,
+            prior.merged(_Binding(uncertain=True)),
+        )
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        value = self._binding_for_expression(node.value)
+        self.visit(node.value)
+        self.bindings.bind_target(node.target, value)
+
+    def visit_Delete(self, node: ast.Delete) -> None:
+        for target in node.targets:
+            self.visit(target)
+            self.bindings.bind_target(target, _Binding(uncertain=True))
+
+    def visit_For(self, node: ast.For) -> None:
+        self._visit_loop(node)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        self._visit_loop(node)
+
+    def visit_While(self, node: ast.While) -> None:
+        self.visit(node.test)
+        self._visit_loop_branches(node.body, node.orelse)
+
+    def visit_With(self, node: ast.With) -> None:
+        self._visit_with(node)
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+        self._visit_with(node)
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.type is not None:
+            self.visit(node.type)
+        if node.name is not None:
+            self.bindings.bind(node.name, _Binding(uncertain=True))
+        self._visit_statements(node.body)
+
+    def visit_Try(self, node: ast.Try) -> None:
+        self._visit_try(node)
+
+    def visit_TryStar(self, node: ast.TryStar) -> None:
+        self._visit_try(node)
+
+    def visit_Match(self, node: ast.Match) -> None:
+        self.visit(node.subject)
+        baseline = self.bindings
+        branches: list[_LexicalBindings] = []
+        for case in node.cases:
+            self.bindings = baseline.clone()
+            self.bindings.bind_pattern(case.pattern, _Binding(uncertain=True))
+            self.visit(case.pattern)
+            if case.guard is not None:
+                self.visit(case.guard)
+            self._visit_statements(case.body)
+            branches.append(self.bindings)
+        self.bindings = baseline
+        self.bindings.merge_branches(branches)
+
+    def visit_Global(self, node: ast.Global) -> None:
+        self.bindings.declare_global(node.names)
+
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        try:
+            self.bindings.declare_nonlocal(node.names)
+        except ValueError:
+            self.closure_errors.append(
+                f"{self.source_module}:{node.lineno}:unresolved nonlocal binding"
+            )
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if self.type_checking_depth == 0 and node.attr == "__import__":
@@ -755,6 +1199,14 @@ class _ImportVisitor(ast.NodeVisitor):
                 package_target,
                 node.attr,
                 lineno=node.lineno,
+            )
+        elif (
+            self.type_checking_depth == 0
+            and "package-object"
+            in self._binding_for_expression(node.value).capabilities
+        ):
+            self.closure_errors.append(
+                f"{self.source_module}:{node.lineno}:ambiguous package attribute"
             )
         if (
             isinstance(node.value, ast.Name)
@@ -771,8 +1223,7 @@ class _ImportVisitor(ast.NodeVisitor):
         self._visit_runpy_loader(node)
         loader_kind = _dynamic_import_loader_kind(
             node.func,
-            importlib_module_names=self.importlib_module_names,
-            import_module_names=self.import_module_names,
+            bindings=self.bindings,
         )
         if loader_kind == "loader":
             self._visit_dynamic_import(node)
@@ -798,6 +1249,10 @@ class _ImportVisitor(ast.NodeVisitor):
             self.forbidden_calls.append(f"{self.source_module}:{node.lineno}:{name}")
         allowed_loader_name = (
             isinstance(node.func, ast.Name)
+            and _is_exact_capability(
+                self.bindings.resolve(node.func.id),
+                "import-loader",
+            )
             and _is_allowed_lazy_package_import(
                 self.source_module,
                 self.function_stack,
@@ -824,7 +1279,7 @@ class _ImportVisitor(ast.NodeVisitor):
         if (
             self.type_checking_depth == 0
             and self.source_module in _PROJECTED_PACKAGE_ROOTS
-            and node.id in self.import_module_names
+            and "import-loader" in self.bindings.resolve(node.id).capabilities
             and id(node) not in self.allowed_import_module_name_nodes
         ):
             self.closure_errors.append(
@@ -835,7 +1290,7 @@ class _ImportVisitor(ast.NodeVisitor):
     def visit_Subscript(self, node: ast.Subscript) -> None:
         if self.type_checking_depth == 0 and _is_builtin_import_dict_access(
             node,
-            builtins_module_names=self.builtins_module_names,
+            bindings=self.bindings,
         ):
             self.closure_errors.append(
                 f"{self.source_module}:{node.lineno}:runtime __import__ symbol access"
@@ -868,7 +1323,11 @@ class _ImportVisitor(ast.NodeVisitor):
     def _visit_runpy_loader(self, node: ast.Call) -> None:
         if self.type_checking_depth != 0:
             return
-        if isinstance(node.func, ast.Name) and node.func.id in self.runpy_loader_names:
+        if (
+            isinstance(node.func, ast.Name)
+            and "dynamic-loader-module"
+            in self.bindings.resolve(node.func.id).capabilities
+        ):
             self.closure_errors.append(
                 f"{self.source_module}:{node.lineno}:runtime runpy loader: {node.func.id}"
             )
@@ -877,7 +1336,8 @@ class _ImportVisitor(ast.NodeVisitor):
             isinstance(node.func, ast.Attribute)
             and node.func.attr in {"run_module", "run_path"}
             and isinstance(node.func.value, ast.Name)
-            and node.func.value.id in self.runpy_module_names
+            and "dynamic-loader-module"
+            in self.bindings.resolve(node.func.value.id).capabilities
         ):
             self.closure_errors.append(
                 f"{self.source_module}:{node.lineno}:runtime runpy loader: {node.func.attr}"
@@ -920,6 +1380,14 @@ class _ImportVisitor(ast.NodeVisitor):
             return
         package_target = self._package_object_target(node.args[0])
         if package_target is None:
+            if (
+                self.type_checking_depth == 0
+                and "package-object"
+                in self._binding_for_expression(node.args[0]).capabilities
+            ):
+                self.closure_errors.append(
+                    f"{self.source_module}:{node.lineno}:ambiguous package attribute"
+                )
             return
         attribute_node = node.args[1]
         if isinstance(attribute_node, ast.Constant) and isinstance(
@@ -955,7 +1423,10 @@ class _ImportVisitor(ast.NodeVisitor):
 
     def _package_object_target(self, node: ast.AST) -> str | None:
         if isinstance(node, ast.Name):
-            return self.package_object_names.get(node.id)
+            binding = self.bindings.resolve(node.id)
+            if "package-object" in binding.capabilities:
+                return binding.package_target
+            return None
         if isinstance(node, ast.Attribute):
             parent = self._package_object_target(node.value)
             candidate = None if parent is None else f"{parent}.{node.attr}"
@@ -963,23 +1434,194 @@ class _ImportVisitor(ast.NodeVisitor):
                 return candidate
         return None
 
-    def _unbind_name(self, name: str) -> None:
-        self.importlib_module_names.discard(name)
-        self.import_module_names.discard(name)
-        self.builtins_module_names.discard(name)
-        self.runpy_module_names.discard(name)
-        self.runpy_loader_names.discard(name)
-        self.typing_module_names.discard(name)
-        self.type_checking_names.discard(name)
-        self.package_object_names.pop(name, None)
+    def _binding_for_expression(self, node: ast.AST) -> _Binding:
+        if isinstance(node, ast.Name):
+            return self.bindings.resolve(node.id)
+        if isinstance(node, ast.Attribute):
+            if node.attr == "TYPE_CHECKING" and isinstance(node.value, ast.Name):
+                typing_binding = self.bindings.resolve(node.value.id)
+                if _is_exact_capability(typing_binding, "typing-module"):
+                    return _Binding(frozenset({"type-checking-sentinel"}))
+            package_target = self._package_object_target(node)
+            if package_target is not None:
+                return _Binding(
+                    frozenset({"package-object"}),
+                    package_target=package_target,
+                )
+            loader_kind = _dynamic_import_loader_kind(
+                node,
+                bindings=self.bindings,
+            )
+            if loader_kind == "loader":
+                return _Binding(frozenset({"import-loader"}))
+        return _Binding()
 
-    def _unbind_target(self, target: ast.expr) -> None:
-        if isinstance(target, ast.Name):
-            self._unbind_name(target.id)
+    def _visit_function(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> None:
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        self._visit_argument_expressions(node.args)
+        if node.returns is not None:
+            self.visit(node.returns)
+        for type_param in getattr(node, "type_params", ()):
+            self.visit(type_param)
+        self.bindings.bind(node.name, _Binding())
+        self.bindings.push("function")
+        self.function_stack.append(node.name)
+        try:
+            self._predeclare_function_locals(node.body)
+            self._bind_arguments(node.args)
+            self._visit_statements(node.body)
+        finally:
+            self.function_stack.pop()
+            self.bindings.pop()
+
+    def _predeclare_function_locals(self, body: Sequence[ast.stmt]) -> None:
+        collector = _FunctionLocalCollector()
+        for statement in body:
+            collector.visit(statement)
+        local_names = collector.names.difference(
+            collector.global_names,
+            collector.nonlocal_names,
+        )
+        for name in local_names:
+            self.bindings.bind(name, _Binding(uncertain=True))
+
+    def _visit_argument_expressions(self, arguments: ast.arguments) -> None:
+        for argument in (
+            *arguments.posonlyargs,
+            *arguments.args,
+            *arguments.kwonlyargs,
+        ):
+            if argument.annotation is not None:
+                self.visit(argument.annotation)
+        if arguments.vararg is not None and arguments.vararg.annotation is not None:
+            self.visit(arguments.vararg.annotation)
+        if arguments.kwarg is not None and arguments.kwarg.annotation is not None:
+            self.visit(arguments.kwarg.annotation)
+        for default in arguments.defaults:
+            self.visit(default)
+        for keyword_default in arguments.kw_defaults:
+            if keyword_default is not None:
+                self.visit(keyword_default)
+
+    def _bind_arguments(self, arguments: ast.arguments) -> None:
+        uncertain = _Binding(uncertain=True)
+        for argument in (
+            *arguments.posonlyargs,
+            *arguments.args,
+            *arguments.kwonlyargs,
+        ):
+            self.bindings.bind(argument.arg, uncertain)
+        if arguments.vararg is not None:
+            self.bindings.bind(arguments.vararg.arg, uncertain)
+        if arguments.kwarg is not None:
+            self.bindings.bind(arguments.kwarg.arg, uncertain)
+
+    def _visit_comprehension(
+        self,
+        generators: Sequence[ast.comprehension],
+        values: Sequence[ast.expr],
+    ) -> None:
+        if not generators:
+            for value in values:
+                self.visit(value)
             return
-        if isinstance(target, (ast.Tuple, ast.List)):
-            for element in target.elts:
-                self._unbind_target(element)
+        self.visit(generators[0].iter)
+        self.bindings.push("comprehension")
+        try:
+            for index, generator in enumerate(generators):
+                if index > 0:
+                    self.visit(generator.iter)
+                self.bindings.bind_target(
+                    generator.target,
+                    _Binding(uncertain=True),
+                )
+                for condition in generator.ifs:
+                    self.visit(condition)
+            for value in values:
+                self.visit(value)
+        finally:
+            self.bindings.pop()
+
+    def _visit_loop(self, node: ast.For | ast.AsyncFor) -> None:
+        self.visit(node.iter)
+        baseline = self.bindings
+        self.bindings = baseline.clone()
+        self.bindings.bind_target(node.target, _Binding(uncertain=True))
+        self._visit_statements(node.body)
+        body_branch = self.bindings
+        self.bindings = baseline.clone()
+        self._visit_statements(node.orelse)
+        else_branch = self.bindings
+        self.bindings = baseline
+        self.bindings.merge_branches((body_branch, else_branch))
+
+    def _visit_loop_branches(
+        self,
+        body: Sequence[ast.stmt],
+        orelse: Sequence[ast.stmt],
+    ) -> None:
+        baseline = self.bindings
+        self.bindings = baseline.clone()
+        self._visit_statements(body)
+        body_branch = self.bindings
+        self.bindings = baseline.clone()
+        self._visit_statements(orelse)
+        else_branch = self.bindings
+        self.bindings = baseline
+        self.bindings.merge_branches((body_branch, else_branch))
+
+    def _visit_with(self, node: ast.With | ast.AsyncWith) -> None:
+        for item in node.items:
+            self.visit(item.context_expr)
+            if item.optional_vars is not None:
+                self.bindings.bind_target(
+                    item.optional_vars,
+                    _Binding(uncertain=True),
+                )
+        self._visit_statements(node.body)
+
+    def _visit_try(self, node: ast.Try | ast.TryStar) -> None:
+        baseline = self.bindings
+        branches: list[_LexicalBindings] = []
+        self.bindings = baseline.clone()
+        body_prefixes: list[_LexicalBindings] = []
+        for statement in node.body:
+            self.visit(statement)
+            body_prefixes.append(self.bindings.clone())
+        handler_baseline = baseline.clone()
+        handler_baseline.merge_branches(body_prefixes)
+        self._visit_statements(node.orelse)
+        branches.append(self.bindings)
+        for handler in node.handlers:
+            self.bindings = handler_baseline.clone()
+            self.visit(handler)
+            branches.append(self.bindings)
+        self.bindings = baseline
+        self.bindings.merge_branches(branches)
+        self._visit_statements(node.finalbody)
+
+    def _visit_statements(self, statements: Sequence[ast.stmt]) -> None:
+        for statement in statements:
+            self.visit(statement)
+
+    @staticmethod
+    def _has_special_import_binding(node: ast.ImportFrom, alias: ast.alias) -> bool:
+        return (
+            node.level == 0
+            and (
+                (node.module == "importlib" and alias.name == "import_module")
+                or (node.module == "builtins" and alias.name == "__import__")
+                or (
+                    node.module == "runpy"
+                    and alias.name in {"run_module", "run_path"}
+                )
+                or (node.module == "typing" and alias.name == "TYPE_CHECKING")
+            )
+        )
 
 
 def classify_edge(
@@ -1623,21 +2265,37 @@ def _resolve_import_from_base(source: str, module: str | None, level: int) -> st
 def _is_type_checking_test(
     node: ast.expr,
     *,
-    type_checking_names: set[str],
-    typing_module_names: set[str],
+    bindings: _LexicalBindings,
 ) -> bool:
-    return (isinstance(node, ast.Name) and node.id in type_checking_names) or (
+    if isinstance(node, ast.Name):
+        return _is_exact_capability(
+            bindings.resolve(node.id),
+            "type-checking-sentinel",
+        )
+    if (
         isinstance(node, ast.Attribute)
         and isinstance(node.value, ast.Name)
-        and node.value.id in typing_module_names
         and node.attr == "TYPE_CHECKING"
+    ):
+        return _is_exact_capability(
+            bindings.resolve(node.value.id),
+            "typing-module",
+        )
+    return False
+
+
+def _is_exact_capability(binding: _Binding, capability: _Capability) -> bool:
+    return (
+        not binding.uncertain
+        and binding.package_target is None
+        and binding.capabilities == frozenset({capability})
     )
 
 
 def _is_builtin_import_dict_access(
     node: ast.Subscript,
     *,
-    builtins_module_names: set[str],
+    bindings: _LexicalBindings,
 ) -> bool:
     if not isinstance(node.slice, ast.Constant) or node.slice.value != "__import__":
         return False
@@ -1648,7 +2306,11 @@ def _is_builtin_import_dict_access(
         isinstance(value, ast.Attribute)
         and value.attr == "__dict__"
         and isinstance(value.value, ast.Name)
-        and value.value.id in {*builtins_module_names, "__builtins__"}
+        and (
+            value.value.id == "__builtins__"
+            or "builtins-namespace"
+            in bindings.resolve(value.value.id).capabilities
+        )
     )
 
 
@@ -1683,18 +2345,20 @@ def _call_name(node: ast.expr) -> str | None:
 def _dynamic_import_loader_kind(
     node: ast.expr,
     *,
-    importlib_module_names: set[str],
-    import_module_names: set[str],
+    bindings: _LexicalBindings,
 ) -> _DynamicImportLoaderKind | None:
     if isinstance(node, ast.Name):
-        if node.id == "__import__" or node.id in import_module_names:
+        if (
+            node.id == "__import__"
+            or "import-loader" in bindings.resolve(node.id).capabilities
+        ):
             return "loader"
         return None
     if (
         isinstance(node, ast.Attribute)
         and node.attr == "import_module"
         and isinstance(node.value, ast.Name)
-        and node.value.id in importlib_module_names
+        and "import-namespace" in bindings.resolve(node.value.id).capabilities
     ):
         return "loader"
     if (
@@ -1703,7 +2367,7 @@ def _dynamic_import_loader_kind(
         and node.func.id == "getattr"
         and len(node.args) >= 2
         and isinstance(node.args[0], ast.Name)
-        and node.args[0].id in importlib_module_names
+        and "import-namespace" in bindings.resolve(node.args[0].id).capabilities
     ):
         reflected_name = node.args[1]
         if isinstance(reflected_name, ast.Constant) and isinstance(
