@@ -2297,6 +2297,32 @@ def _publish_semantic_packet(
     return StudyRunner(protocol, repo_root=tmp_path)
 
 
+def test_verify_does_not_credit_report_when_decision_json_is_malformed(
+    tmp_path: Path,
+) -> None:
+    runner = _publish_semantic_packet(tmp_path)
+    decision_path = runner.protocol.artifact_root / "decision.json"
+    report_path = runner.protocol.artifact_root / "report.md"
+    report_path.write_bytes(
+        runner_module._decision_report(
+            cast(dict[str, object], json.loads(decision_path.read_bytes()))
+        )
+    )
+    decision_path.write_bytes(b"{")
+
+    state = runner_module.inspect_state(runner.protocol, repo_root=tmp_path)
+    report = runner.verify()
+
+    assert state.status.study_valid is False
+    assert state.status.terminal_decision == "STUDY_INVALID"
+    assert "decision.json" in state.invalid_paths
+    assert "report.md" in state.invalid_paths
+    assert "decision.json" not in state.verified_paths
+    assert "report.md" not in state.verified_paths
+    assert report.verified_paths == state.verified_paths
+    assert report.verify_rate == len(state.verified_paths) / len(state.present_paths)
+
+
 def test_semantic_inspection_accepts_complete_schema_valid_packet(tmp_path: Path) -> None:
     runner = _publish_semantic_packet(tmp_path)
 

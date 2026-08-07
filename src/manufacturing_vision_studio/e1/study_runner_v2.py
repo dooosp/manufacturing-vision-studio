@@ -137,6 +137,9 @@ _EXPECTED_KINDS = {
     _RETAINED_DIRECTORY: "directory",
     **{path: "file" for path in _RETAINED_FILES},
 }
+_ARTIFACT_VERIFICATION_DEPENDENCIES: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {"report.md": ("decision.json",)}
+)
 _VALIDATION_OUTPUT_LIMIT_BYTES = 4 * 1024 * 1024
 _ALLOWED_NEXT_ACTIONS = {
     "STUDY_INVALID": "Repair evidence machinery only; no performance conclusion",
@@ -1261,12 +1264,34 @@ def _invalid_state(
         terminal_decision="STUDY_INVALID",
         reasons=reasons,
     )
+    closed_invalid_paths = _closed_invalid_paths(present_paths, invalid_paths)
     return VerifiedStudyState(
         status=status,
         present_paths=present_paths,
-        invalid_paths=invalid_paths,
+        invalid_paths=closed_invalid_paths,
         verified_json=MappingProxyType(dict(verified_json or {})),
     )
+
+
+def _closed_invalid_paths(
+    present_paths: tuple[str, ...],
+    invalid_paths: tuple[str, ...],
+) -> tuple[str, ...]:
+    present = set(present_paths)
+    invalid = set(invalid_paths)
+    changed = True
+    while changed:
+        changed = False
+        for dependent, requirements in _ARTIFACT_VERIFICATION_DEPENDENCIES.items():
+            if dependent not in present or dependent in invalid:
+                continue
+            if any(
+                requirement not in present or requirement in invalid
+                for requirement in requirements
+            ):
+                invalid.add(dependent)
+                changed = True
+    return tuple(path for path in present_paths if path in invalid)
 
 
 def run_small_fixture_determinism_control(
