@@ -64,7 +64,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as exc:
         print(f"study operation failed: {exc}", file=sys.stderr)
         return _OPERATIONAL_ERROR
-    return 0
+    return _command_exit_code(command, result)
+
+
+def _command_exit_code(command: str, result: object) -> int:
+    if command != "verify":
+        return 0
+    report = cast(study_runner_v2.StudyVerificationReport, result)
+    return 0 if report.status.study_valid else _OPERATIONAL_ERROR
 
 
 def _json_value(value: object) -> object:

@@ -9,9 +9,31 @@ import pytest
 
 from manufacturing_vision_studio.e1 import study_cli_v2 as cli_module
 from manufacturing_vision_studio.e1.study_cli_v2 import main
-from manufacturing_vision_studio.e1.study_runner_v2 import StudyStateError
+from manufacturing_vision_studio.e1.study_runner_v2 import (
+    StudyStateError,
+    StudyStatus,
+    StudyVerificationReport,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _verification_report(*, study_valid: bool) -> StudyVerificationReport:
+    decision = "PENDING" if study_valid else "STUDY_INVALID"
+    reasons = () if study_valid else ("ARTIFACT_VERIFICATION_FAILED",)
+    return StudyVerificationReport(
+        verified_paths=(),
+        verify_rate=0.0,
+        status=StudyStatus(
+            study_valid=study_valid,
+            phase1_complete=False,
+            feature_oracle_complete=False,
+            phase2_authorized=False,
+            phase2_complete=False,
+            terminal_decision=decision,
+            reasons=reasons,
+        ),
+    )
 
 
 @pytest.mark.parametrize(
@@ -52,6 +74,8 @@ def test_cli_dispatches_each_fixed_command_once(
         def __getattr__(self, name: str) -> object:
             def invoke() -> object:
                 calls.append(name)
+                if name == "verify":
+                    return _verification_report(study_valid=True)
                 return {"ok": True, "method": name}
 
             return invoke
@@ -71,10 +95,50 @@ def test_cli_dispatches_each_fixed_command_once(
     assert exit_code == 0
     assert constructions == 1
     assert calls == [method]
+    expected_result: object = (
+        {
+            "verified_paths": [],
+            "verify_rate": 0.0,
+            "status": {
+                "study_valid": True,
+                "phase1_complete": False,
+                "feature_oracle_complete": False,
+                "phase2_authorized": False,
+                "phase2_complete": False,
+                "terminal_decision": "PENDING",
+                "reasons": [],
+            },
+        }
+        if command == "verify"
+        else {"ok": True, "method": method}
+    )
     assert json.loads(captured.out) == {
         "command": command,
-        "result": {"ok": True, "method": method},
+        "result": expected_result,
     }
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize(("study_valid", "expected_exit"), ((False, 1), (True, 0)))
+def test_cli_verify_exit_matches_domain_validity(
+    study_valid: bool,
+    expected_exit: int,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report = _verification_report(study_valid=study_valid)
+    runner = SimpleNamespace(verify=lambda: report)
+    monkeypatch.setattr(
+        cli_module.study_runner_v2.StudyRunner,
+        "from_default",
+        lambda: runner,
+    )
+
+    assert main(["verify"]) == expected_exit
+
+    captured = capsys.readouterr()
+    output = json.loads(captured.out)
+    assert output["result"]["status"]["study_valid"] is study_valid
     assert captured.err == ""
 
 
