@@ -993,6 +993,75 @@ def test_real_pep562_initializers_preserve_complete_dependency_closure(
 
 
 @pytest.mark.parametrize(
+    ("relative", "old", "new"),
+    (
+        (
+            Path("src/manufacturing_vision_studio/__init__.py"),
+            "from importlib import import_module",
+            "from importlib import import_module as load_module",
+        ),
+        (
+            Path("src/manufacturing_vision_studio/e1/__init__.py"),
+            "value = getattr(import_module(module_name), attribute_name)",
+            "value = getattr(import_module(module_name), attribute_name)\n"
+            "    import_module(module_name)",
+        ),
+        (
+            Path("src/manufacturing_vision_studio/__init__.py"),
+            '"manufacturing_vision_studio.registry", "CaseRegistry"',
+            '"manufacturing_vision_studio.not_projected", "CaseRegistry"',
+        ),
+        (
+            Path("src/manufacturing_vision_studio/e1/__init__.py"),
+            "return sorted(set(globals()) | set(__all__))",
+            "globals()\n    return sorted(set(globals()) | set(__all__))",
+        ),
+        (
+            Path("src/manufacturing_vision_studio/__init__.py"),
+            'f"module {__name__!r} has no attribute {name!r}"',
+            'f"module {__name__!r} has no attribute {name!r}: {len(name)!r}"',
+        ),
+        (
+            Path("src/manufacturing_vision_studio/e1/__init__.py"),
+            'f"module {__name__!r} has no attribute {name!r}"',
+            'f"module {name!r} has no attribute {name!r}"',
+        ),
+        (
+            Path("src/manufacturing_vision_studio/__init__.py"),
+            'f"module {__name__!r} has no attribute {name!r}"',
+            'f"module {__name__!r} has no attribute {name!s}"',
+        ),
+        (
+            Path("src/manufacturing_vision_studio/e1/__init__.py"),
+            'f"module {__name__!r} has no attribute {name!r}"',
+            'f"module {__name__!r} has no attribute {name!r:>10}"',
+        ),
+        (
+            Path("src/manufacturing_vision_studio/__init__.py"),
+            'f"module {__name__!r} has no attribute {name!r}"',
+            'f"module {__name__!r} does not have attribute {name!r}"',
+        ),
+    ),
+)
+def test_pep562_initializer_requires_exact_capability_structure(
+    tmp_path: Path,
+    relative: Path,
+    old: str,
+    new: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    path = repo_root / relative
+    source = path.read_text()
+    changed = source.replace(old, new, 1)
+    assert changed != source
+    path.write_text(changed)
+
+    with pytest.raises(StudyRetentionError, match="initializer capability structure"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
     ("relative", "source"),
     [
         (
@@ -1002,6 +1071,11 @@ def test_real_pep562_initializers_preserve_complete_dependency_closure(
         (
             Path("src/manufacturing_vision_studio/e1/__init__.py"),
             "\nLAUNDERED_LOADER, other = import_module, None\n",
+        ),
+        (
+            Path("src/manufacturing_vision_studio/__init__.py"),
+            "\ndef laundered_loader() -> object:\n"
+            "    return import_module\n",
         ),
     ],
 )

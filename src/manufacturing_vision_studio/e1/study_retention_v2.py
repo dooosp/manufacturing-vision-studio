@@ -11,12 +11,12 @@ import signal
 import subprocess
 import time
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any, Literal, cast
+from typing import Any, Literal, NoReturn, cast
 
 from jsonschema import Draft202012Validator
 
@@ -546,6 +546,15 @@ class _ImportReference:
 
 
 @dataclass(frozen=True, slots=True)
+class _InitializerPolicy:
+    allowed_node_ids: frozenset[int]
+    lazy_targets: tuple[tuple[str, str, str], ...]
+
+
+_EMPTY_INITIALIZER_POLICY = _InitializerPolicy(frozenset(), ())
+
+
+@dataclass(frozen=True, slots=True)
 class _PreparedInput:
     name: str
     destination: str
@@ -887,9 +896,16 @@ class _LexicalBindings:
 
 
 class _ImportVisitor(ast.NodeVisitor):
-    def __init__(self, *, source_module: str, known_modules: frozenset[str]) -> None:
+    def __init__(
+        self,
+        *,
+        source_module: str,
+        known_modules: frozenset[str],
+        initializer_policy: _InitializerPolicy,
+    ) -> None:
         self.source_module = source_module
         self.known_modules = known_modules
+        self.initializer_policy = initializer_policy
         self.type_checking_depth = 0
         self.references: list[_ImportReference] = []
         self.protected: list[str] = []
@@ -897,9 +913,7 @@ class _ImportVisitor(ast.NodeVisitor):
         self.study_forbidden_calls: list[str] = []
         self.closure_errors: list[str] = []
         self.class_stack: list[str] = []
-        self.function_stack: list[str] = []
         self.bindings = _LexicalBindings()
-        self.allowed_import_module_name_nodes: set[int] = set()
 
     def visit_If(self, node: ast.If) -> None:
         type_checking = _is_type_checking_test(node.test, bindings=self.bindings)
@@ -1012,7 +1026,7 @@ class _ImportVisitor(ast.NodeVisitor):
             self.type_checking_depth == 0
             and node.level == 0
             and _is_importlib_target(node.module)
-            and not _is_allowed_initializer_import_module(self.source_module, node)
+            and id(node) not in self.initializer_policy.allowed_node_ids
         ):
             self.closure_errors.append(
                 f"{self.source_module}:{node.lineno}:"
@@ -1247,25 +1261,7 @@ class _ImportVisitor(ast.NodeVisitor):
             )
         elif name in _FORBIDDEN_CALL_NAMES or name == "FreeCADExportAdapter":
             self.forbidden_calls.append(f"{self.source_module}:{node.lineno}:{name}")
-        allowed_loader_name = (
-            isinstance(node.func, ast.Name)
-            and _is_exact_capability(
-                self.bindings.resolve(node.func.id),
-                "import-loader",
-            )
-            and _is_allowed_lazy_package_import(
-                self.source_module,
-                self.function_stack,
-                node,
-            )
-        )
-        if allowed_loader_name:
-            self.allowed_import_module_name_nodes.add(id(node.func))
-        try:
-            self.generic_visit(node)
-        finally:
-            if allowed_loader_name:
-                self.allowed_import_module_name_nodes.remove(id(node.func))
+        self.generic_visit(node)
 
     def visit_Name(self, node: ast.Name) -> None:
         if (
@@ -1280,7 +1276,7 @@ class _ImportVisitor(ast.NodeVisitor):
             self.type_checking_depth == 0
             and self.source_module in _PROJECTED_PACKAGE_ROOTS
             and "import-loader" in self.bindings.resolve(node.id).capabilities
-            and id(node) not in self.allowed_import_module_name_nodes
+            and id(node) not in self.initializer_policy.allowed_node_ids
         ):
             self.closure_errors.append(
                 f"{self.source_module}:{node.lineno}:"
@@ -1361,11 +1357,7 @@ class _ImportVisitor(ast.NodeVisitor):
                 _ImportReference(target, self.type_checking_depth > 0)
             )
             return
-        if _is_allowed_lazy_package_import(
-            self.source_module,
-            self.function_stack,
-            node,
-        ):
+        if id(node) in self.initializer_policy.allowed_node_ids:
             return
         self.closure_errors.append(
             f"{self.source_module}:{node.lineno}:non-literal dynamic package import"
@@ -1469,13 +1461,11 @@ class _ImportVisitor(ast.NodeVisitor):
             self.visit(type_param)
         self.bindings.bind(node.name, _Binding())
         self.bindings.push("function")
-        self.function_stack.append(node.name)
         try:
             self._predeclare_function_locals(node.body)
             self._bind_arguments(node.args)
             self._visit_statements(node.body)
         finally:
-            self.function_stack.pop()
             self.bindings.pop()
 
     def _predeclare_function_locals(self, body: Sequence[ast.stmt]) -> None:
@@ -1727,7 +1717,16 @@ def scan_study_dependencies(
             tree = ast.parse(projection_payloads[relative], filename=relative)
         except (SyntaxError, ValueError) as exc:
             raise StudyRetentionError(f"projected Python could not be parsed: {relative}") from exc
-        visitor = _ImportVisitor(source_module=module, known_modules=known_modules)
+        initializer_policy = _validate_initializer_policy(
+            module,
+            tree,
+            known_modules,
+        )
+        visitor = _ImportVisitor(
+            source_module=module,
+            known_modules=known_modules,
+            initializer_policy=initializer_policy,
+        )
         visitor.visit(tree)
         visitors[module] = visitor
         return visitor
@@ -2320,18 +2319,388 @@ def _is_importlib_target(module: str | None) -> bool:
     )
 
 
-def _is_allowed_initializer_import_module(
+def _validate_initializer_policy(
     source_module: str,
-    node: ast.ImportFrom,
-) -> bool:
-    return (
-        source_module in _PROJECTED_PACKAGE_ROOTS
-        and node.level == 0
-        and node.module == "importlib"
-        and len(node.names) == 1
-        and node.names[0].name == "import_module"
-        and node.names[0].asname is None
+    tree: ast.Module,
+    known_modules: frozenset[str],
+) -> _InitializerPolicy:
+    if source_module not in _PROJECTED_PACKAGE_ROOTS:
+        return _EMPTY_INITIALIZER_POLICY
+
+    def fail(detail: str) -> NoReturn:
+        raise StudyRetentionError(
+            f"{source_module}: initializer capability structure: {detail}"
+        )
+
+    import_candidates = [
+        statement
+        for statement in tree.body
+        if isinstance(statement, ast.ImportFrom)
+        and statement.level == 0
+        and statement.module == "importlib"
+        and any(alias.name == "import_module" for alias in statement.names)
+    ]
+    if len(import_candidates) != 1:
+        fail("expected one module-level import_module import")
+    import_statement = import_candidates[0]
+    if (
+        len(import_statement.names) != 1
+        or import_statement.names[0].name != "import_module"
+        or import_statement.names[0].asname is not None
+    ):
+        fail("import_module import must be unaliased and exclusive")
+
+    lazy_assignments = [
+        statement
+        for statement in tree.body
+        if _statement_binds_name(statement, "_LAZY_EXPORTS")
+    ]
+    if len(lazy_assignments) != 1 or not isinstance(
+        lazy_assignments[0], ast.Assign
+    ):
+        fail("expected one literal module-level _LAZY_EXPORTS assignment")
+    lazy_assignment = lazy_assignments[0]
+    if (
+        len(lazy_assignment.targets) != 1
+        or not _is_name(lazy_assignment.targets[0], "_LAZY_EXPORTS", ast.Store)
+        or not isinstance(lazy_assignment.value, ast.Dict)
+    ):
+        fail("_LAZY_EXPORTS must be assigned one literal dictionary")
+
+    lazy_targets: list[tuple[str, str, str]] = []
+    export_names: set[str] = set()
+    for key, value in zip(
+        lazy_assignment.value.keys,
+        lazy_assignment.value.values,
+        strict=True,
+    ):
+        export_name = _string_literal(key)
+        if export_name is None or export_name in export_names:
+            fail("_LAZY_EXPORTS keys must be unique string literals")
+        export_names.add(export_name)
+        if not isinstance(value, ast.Tuple) or len(value.elts) != 2:
+            fail("_LAZY_EXPORTS values must be two-string tuples")
+        module_name = _string_literal(value.elts[0])
+        attribute_name = _string_literal(value.elts[1])
+        if module_name is None or attribute_name is None:
+            fail("_LAZY_EXPORTS values must be two-string tuples")
+        if module_name not in known_modules:
+            fail(f"lazy target is not a known module: {module_name}")
+        lazy_targets.append((export_name, module_name, attribute_name))
+
+    getattr_function = _one_module_function(tree, "__getattr__", fail)
+    if not _has_exact_getattr_signature(getattr_function):
+        fail("__getattr__ must have the current name: str signature")
+    if len(getattr_function.body) != 4 or not _is_lazy_lookup_try(
+        getattr_function.body[0]
+    ):
+        fail("__getattr__ must preserve the current fail-closed lookup")
+    value_assignment = getattr_function.body[1]
+    cache_assignment = getattr_function.body[2]
+    value_return = getattr_function.body[3]
+    loader_nodes = _lazy_value_loader_nodes(value_assignment)
+    if loader_nodes is None:
+        fail("__getattr__ must use the direct lazy import expression")
+    outer_getattr, import_call = loader_nodes
+    cache_globals = _lazy_cache_globals_call(cache_assignment)
+    if cache_globals is None:
+        fail("__getattr__ must cache through globals()[name]")
+    if not (
+        isinstance(value_return, ast.Return)
+        and _is_name(value_return.value, "value", ast.Load)
+    ):
+        fail("__getattr__ must return the cached value")
+
+    dir_function = _one_module_function(tree, "__dir__", fail)
+    if not _has_exact_dir_signature(dir_function) or len(dir_function.body) != 1:
+        fail("__dir__ must preserve the current signature and body")
+    dir_return = dir_function.body[0]
+    dir_globals = _dir_globals_call(dir_return)
+    if dir_globals is None:
+        fail("__dir__ must return the current sorted public namespace")
+
+    lookup_try = cast(ast.Try, getattr_function.body[0])
+    lookup_assignment = cast(ast.Assign, lookup_try.body[0])
+    lookup_subscript = cast(ast.Subscript, lookup_assignment.value)
+    allowed_names = {
+        id(outer_getattr.func),
+        id(import_call.func),
+        id(cache_globals.func),
+        id(dir_globals.func),
+    }
+    allowed_lazy_export_names = {
+        id(lazy_assignment.targets[0]),
+        id(lookup_subscript.value),
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import) and any(
+            _is_importlib_target(alias.name) for alias in node.names
+        ):
+            fail("unexpected importlib loader import")
+        if (
+            isinstance(node, ast.ImportFrom)
+            and _is_importlib_target(node.module)
+            and id(node) != id(import_statement)
+        ):
+            fail("unexpected importlib loader import")
+        if (
+            isinstance(node, ast.Name)
+            and node.id in {"getattr", "globals"}
+            and id(node) not in allowed_names
+        ):
+            fail(f"unexpected {node.id} capability node")
+        if (
+            isinstance(node, ast.Call)
+            and _is_name(node.func, "import_module", ast.Load)
+            and id(node) != id(import_call)
+        ):
+            fail("unexpected import_module call")
+        if isinstance(node, ast.Attribute) and node.attr == "import_module":
+            fail("unexpected import_module reflection node")
+        if (
+            isinstance(node, ast.Name)
+            and node.id == "_LAZY_EXPORTS"
+            and id(node) not in allowed_lazy_export_names
+        ):
+            fail("unexpected _LAZY_EXPORTS binding or access")
+        if isinstance(node, ast.Name) and node.id in {"__dir__", "__getattr__"}:
+            fail(f"unexpected {node.id} binding or access")
+
+    allowed_node_ids: set[int] = set()
+    for root in (
+        import_statement,
+        value_assignment,
+        cache_assignment,
+        value_return,
+        dir_return,
+    ):
+        allowed_node_ids.update(id(node) for node in ast.walk(root))
+    return _InitializerPolicy(
+        frozenset(allowed_node_ids),
+        tuple(sorted(lazy_targets)),
     )
+
+
+def _statement_binds_name(statement: ast.stmt, name: str) -> bool:
+    targets: tuple[ast.expr, ...]
+    if isinstance(statement, ast.Assign):
+        targets = tuple(statement.targets)
+    elif isinstance(statement, ast.AnnAssign):
+        targets = (statement.target,)
+    else:
+        return False
+    return any(
+        isinstance(node, ast.Name) and node.id == name
+        for target in targets
+        for node in ast.walk(target)
+    )
+
+
+def _one_module_function(
+    tree: ast.Module,
+    name: str,
+    fail: Callable[[str], NoReturn],
+) -> ast.FunctionDef:
+    candidates = [
+        statement
+        for statement in tree.body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and statement.name == name
+    ]
+    if len(candidates) != 1 or not isinstance(candidates[0], ast.FunctionDef):
+        fail(f"expected one module-level {name} function")
+    return candidates[0]
+
+
+def _has_exact_getattr_signature(function: ast.FunctionDef) -> bool:
+    arguments = function.args
+    return (
+        not function.decorator_list
+        and not arguments.posonlyargs
+        and len(arguments.args) == 1
+        and arguments.args[0].arg == "name"
+        and _is_name(arguments.args[0].annotation, "str", ast.Load)
+        and arguments.vararg is None
+        and not arguments.kwonlyargs
+        and arguments.kwarg is None
+        and not arguments.defaults
+        and not arguments.kw_defaults
+        and _is_name(function.returns, "Any", ast.Load)
+    )
+
+
+def _has_exact_dir_signature(function: ast.FunctionDef) -> bool:
+    arguments = function.args
+    returns = function.returns
+    return (
+        not function.decorator_list
+        and not arguments.posonlyargs
+        and not arguments.args
+        and arguments.vararg is None
+        and not arguments.kwonlyargs
+        and arguments.kwarg is None
+        and not arguments.defaults
+        and not arguments.kw_defaults
+        and isinstance(returns, ast.Subscript)
+        and _is_name(returns.value, "list", ast.Load)
+        and _is_name(returns.slice, "str", ast.Load)
+    )
+
+
+def _is_lazy_lookup_try(node: ast.stmt) -> bool:
+    if (
+        not isinstance(node, ast.Try)
+        or len(node.body) != 1
+        or len(node.handlers) != 1
+        or node.orelse
+        or node.finalbody
+    ):
+        return False
+    lookup = node.body[0]
+    if (
+        not isinstance(lookup, ast.Assign)
+        or len(lookup.targets) != 1
+        or not isinstance(lookup.targets[0], ast.Tuple)
+        or len(lookup.targets[0].elts) != 2
+        or not _is_name(lookup.targets[0].elts[0], "module_name", ast.Store)
+        or not _is_name(lookup.targets[0].elts[1], "attribute_name", ast.Store)
+        or not isinstance(lookup.value, ast.Subscript)
+        or not _is_name(lookup.value.value, "_LAZY_EXPORTS", ast.Load)
+        or not _is_name(lookup.value.slice, "name", ast.Load)
+    ):
+        return False
+    handler = node.handlers[0]
+    if (
+        not _is_name(handler.type, "KeyError", ast.Load)
+        or handler.name is not None
+        or len(handler.body) != 1
+        or not isinstance(handler.body[0], ast.Raise)
+    ):
+        return False
+    raised = handler.body[0]
+    return (
+        isinstance(raised.exc, ast.Call)
+        and _is_name(raised.exc.func, "AttributeError", ast.Load)
+        and len(raised.exc.args) == 1
+        and _is_exact_attribute_error_message(raised.exc.args[0])
+        and not raised.exc.keywords
+        and isinstance(raised.cause, ast.Constant)
+        and raised.cause.value is None
+    )
+
+
+def _is_exact_attribute_error_message(node: ast.expr) -> bool:
+    if not isinstance(node, ast.JoinedStr) or len(node.values) != 4:
+        return False
+    return (
+        isinstance(node.values[0], ast.Constant)
+        and node.values[0].value == "module "
+        and _is_repr_formatted_name(node.values[1], "__name__")
+        and isinstance(node.values[2], ast.Constant)
+        and node.values[2].value == " has no attribute "
+        and _is_repr_formatted_name(node.values[3], "name")
+    )
+
+
+def _is_repr_formatted_name(node: ast.expr, name: str) -> bool:
+    return (
+        isinstance(node, ast.FormattedValue)
+        and _is_name(node.value, name, ast.Load)
+        and node.conversion == ord("r")
+        and node.format_spec is None
+    )
+
+
+def _lazy_value_loader_nodes(
+    node: ast.stmt,
+) -> tuple[ast.Call, ast.Call] | None:
+    if (
+        not isinstance(node, ast.Assign)
+        or len(node.targets) != 1
+        or not _is_name(node.targets[0], "value", ast.Store)
+        or not isinstance(node.value, ast.Call)
+        or not _is_name(node.value.func, "getattr", ast.Load)
+        or len(node.value.args) != 2
+        or node.value.keywords
+        or not isinstance(node.value.args[0], ast.Call)
+        or not _is_name(node.value.args[1], "attribute_name", ast.Load)
+    ):
+        return None
+    import_call = node.value.args[0]
+    if (
+        not _is_name(import_call.func, "import_module", ast.Load)
+        or len(import_call.args) != 1
+        or not _is_name(import_call.args[0], "module_name", ast.Load)
+        or import_call.keywords
+    ):
+        return None
+    return node.value, import_call
+
+
+def _lazy_cache_globals_call(node: ast.stmt) -> ast.Call | None:
+    if (
+        not isinstance(node, ast.Assign)
+        or len(node.targets) != 1
+        or not isinstance(node.targets[0], ast.Subscript)
+        or not _is_name(node.targets[0].slice, "name", ast.Load)
+        or not _is_name(node.value, "value", ast.Load)
+    ):
+        return None
+    namespace = node.targets[0].value
+    if (
+        not isinstance(namespace, ast.Call)
+        or not _is_name(namespace.func, "globals", ast.Load)
+        or namespace.args
+        or namespace.keywords
+    ):
+        return None
+    return namespace
+
+
+def _dir_globals_call(node: ast.stmt) -> ast.Call | None:
+    if (
+        not isinstance(node, ast.Return)
+        or not isinstance(node.value, ast.Call)
+        or not _is_name(node.value.func, "sorted", ast.Load)
+        or len(node.value.args) != 1
+        or node.value.keywords
+        or not isinstance(node.value.args[0], ast.BinOp)
+        or not isinstance(node.value.args[0].op, ast.BitOr)
+    ):
+        return None
+    left = node.value.args[0].left
+    right = node.value.args[0].right
+    if (
+        not isinstance(left, ast.Call)
+        or not _is_name(left.func, "set", ast.Load)
+        or len(left.args) != 1
+        or left.keywords
+        or not isinstance(left.args[0], ast.Call)
+        or not isinstance(right, ast.Call)
+        or not _is_name(right.func, "set", ast.Load)
+        or len(right.args) != 1
+        or right.keywords
+        or not _is_name(right.args[0], "__all__", ast.Load)
+    ):
+        return None
+    namespace = left.args[0]
+    if (
+        not _is_name(namespace.func, "globals", ast.Load)
+        or namespace.args
+        or namespace.keywords
+    ):
+        return None
+    return namespace
+
+
+def _is_name(node: ast.AST | None, name: str, context: type[ast.expr_context]) -> bool:
+    return isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, context)
+
+
+def _string_literal(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
 
 
 def _call_name(node: ast.expr) -> str | None:
@@ -2383,23 +2752,6 @@ def _dynamic_import_loader_kind(
 def _is_package_target(value: str) -> bool:
     return value == "manufacturing_vision_studio" or value.startswith(
         "manufacturing_vision_studio."
-    )
-
-
-def _is_allowed_lazy_package_import(
-    source_module: str,
-    function_stack: Sequence[str],
-    node: ast.Call,
-) -> bool:
-    return (
-        source_module in _PROJECTED_PACKAGE_ROOTS
-        and tuple(function_stack) == ("__getattr__",)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "import_module"
-        and len(node.args) == 1
-        and isinstance(node.args[0], ast.Name)
-        and node.args[0].id == "module_name"
-        and not node.keywords
     )
 
 
