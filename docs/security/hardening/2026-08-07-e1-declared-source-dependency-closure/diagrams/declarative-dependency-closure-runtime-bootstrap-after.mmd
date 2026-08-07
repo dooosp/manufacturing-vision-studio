@@ -1,0 +1,11 @@
+flowchart LR
+  A["Protocol-declared source paths"] --> B["Existing static projection scan"]
+  B --> R["Pre-execution report"]
+  C["CLI bootstrap entry point"] --> H["Install runtime import guard"]
+  H --> L["Load study runner"]
+  L --> I["Exercised runtime imports"]
+  I --> G["Runtime allowlist decision"]
+  G --> M["Module load"]
+  P["Preloaded modules / pre-bootstrap code"] -. "outside guard" .-> M
+  U["Unexercised paths / subprocesses"] -. "outside runtime evidence" .-> R
+  N["No sandbox boundary"] -.-> H
