@@ -47,6 +47,27 @@ _EXPECTED_SOURCE_HASHES = {
         "fcef0c3b22b962f185911cc74bdad45f1bd2860c42ae8e59bac76d6741c13ea7"
     ),
 }
+_EXPECTED_NEGATIVE_RESULT_SNAPSHOTS = (
+    (
+        "task4_report",
+        "docs/evaluation/negative-results/e1-v2-task4-report.raw.txt",
+        (
+            "/Users/jangtaeho/manufacturing-vision-studio-e1-v2/"
+            ".superpowers/sdd/2026-08-01-e1-v2-scale-feature-remediation/"
+            "task-4-report.md"
+        ),
+        "b6a2093082aa63631adb233c282466539720281ab96b53bc3928cf292efc8835",
+    ),
+    (
+        "task4_progress_ledger",
+        "docs/evaluation/negative-results/e1-v2-task4-progress-ledger.raw.txt",
+        (
+            "/Users/jangtaeho/manufacturing-vision-studio-e1-v2/"
+            ".superpowers/sdd/2026-08-01-e1-v2-scale-feature-remediation/progress.md"
+        ),
+        "fcef0c3b22b962f185911cc74bdad45f1bd2860c42ae8e59bac76d6741c13ea7",
+    ),
+)
 _EXPECTED_OWNERSHIP_MAP_HASHES = {
     "rev-A/front": "eadc490b04f8240e8356b3e20e75db08d79dfc5e27af180574d707836b3b776f",
     "rev-A/oblique_left": "2d2a52ecae44ccae98455180211aaf528078707948dbf83f792223c550d3a074",
@@ -406,27 +427,33 @@ def _validate_snapshots(document: Mapping[str, Any]) -> None:
     snapshots = document.get("negative_result_snapshots")
     if not isinstance(snapshots, list) or len(snapshots) != 2:
         raise StudyProtocolError("negative-result snapshot bindings are invalid")
+    if not all(isinstance(snapshot, dict) for snapshot in snapshots):
+        raise StudyProtocolError("negative-result snapshot entry is invalid")
+    actual_snapshots = tuple(
+        (
+            _string(snapshot, "name"),
+            _string(snapshot, "checked_in_path"),
+            _string(snapshot, "original_sibling_path"),
+            _string(snapshot, "raw_sha256"),
+        )
+        for snapshot in snapshots
+    )
+    if actual_snapshots != _EXPECTED_NEGATIVE_RESULT_SNAPSHOTS:
+        raise StudyProtocolError("negative-result snapshot identity changed")
     source_hashes = _object(document, "source_hashes")
     required = {
         "task4_report": source_hashes["task4_report_raw_sha256"],
         "task4_progress_ledger": source_hashes["task4_progress_ledger_raw_sha256"],
     }
     seen: set[str] = set()
-    for snapshot in snapshots:
-        if not isinstance(snapshot, dict):
-            raise StudyProtocolError("negative-result snapshot entry is invalid")
-        name = _string(snapshot, "name")
+    for name, checked_in_path, _, raw_sha256 in actual_snapshots:
         expected = required.get(name)
         if expected is None or name in seen:
             raise StudyProtocolError("negative-result snapshot name is invalid")
         seen.add(name)
-        if _string(snapshot, "raw_sha256") != expected:
+        if raw_sha256 != expected:
             raise StudyProtocolError("negative-result snapshot hash binding is invalid")
-        if not _string(snapshot, "original_sibling_path").startswith("/Users/jangtaeho/"):
-            raise StudyProtocolError(
-                "negative-result provenance must retain its original sibling path"
-            )
-        local_path = _project_path(_string(snapshot, "checked_in_path"))
+        local_path = _project_path(checked_in_path)
         if sha256_bytes(_read_bounded_bytes(local_path)) != expected:
             raise StudyProtocolError("checked negative-result snapshot bytes changed")
     if seen != set(required):

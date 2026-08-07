@@ -16,6 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
 from export_e1_feasibility_matrix import matrix_projection
+from manufacturing_vision_studio.e1 import study_protocol_v2 as protocol_module
 from manufacturing_vision_studio.e1.protocol_v2 import load_e1_v2_protocol
 from manufacturing_vision_studio.e1.study_protocol_v2 import (
     DEFAULT_STUDY_PROTOCOL_PATH,
@@ -512,23 +513,62 @@ def test_matrix_loader_rejects_oversized_matrix(tmp_path: Path) -> None:
         load_frozen_diagnostic_matrix(path)
 
 
-def test_protocol_loader_rejects_oversized_retained_snapshot(tmp_path: Path) -> None:
+def test_protocol_loader_rejects_oversized_retained_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Catch retained evidence that could otherwise be read without a byte bound."""
 
-    fixture_dir = _project_local_fixture_dir(tmp_path)
+    fixture_dir, config_path, document = _project_local_protocol_copy(tmp_path)
+    oversized = tmp_path / "oversized.raw.txt"
+    oversized.write_bytes(b"x" * (MAX_STUDY_INPUT_BYTES + 1))
+    snapshots = document["negative_result_snapshots"]
+    assert isinstance(snapshots, list)
+    canonical = STUDY_PROJECT_ROOT / snapshots[0]["checked_in_path"]
+    original_reader = protocol_module._read_bounded_bytes
+
+    def redirect(path: Path) -> bytes:
+        return original_reader(oversized if path == canonical else path)
+
+    monkeypatch.setattr(protocol_module, "_read_bounded_bytes", redirect)
     try:
-        config_path = fixture_dir / "config.json"
-        schema_path = fixture_dir / "schema.json"
-        snapshot_path = fixture_dir / "oversized.raw.txt"
-        document = json.loads(DEFAULT_STUDY_PROTOCOL_PATH.read_text())
-        document["$schema"] = "schema.json"
-        document["negative_result_snapshots"][0]["checked_in_path"] = (
-            fixture_dir.relative_to(STUDY_PROJECT_ROOT) / snapshot_path.name
-        ).as_posix()
         config_path.write_text(json.dumps(document))
-        schema_path.write_bytes(STUDY_SCHEMA_PATH.read_bytes())
-        snapshot_path.write_bytes(b"x" * (MAX_STUDY_INPUT_BYTES + 1))
         with pytest.raises(StudyProtocolError, match="exceeds"):
+            load_study_protocol_v2(config_path)
+    finally:
+        shutil.rmtree(fixture_dir)
+
+
+def test_protocol_rejects_negative_snapshot_original_path_drift(tmp_path: Path) -> None:
+    """Catch provenance paths that remain sibling-prefixed but are not canonical."""
+
+    fixture_dir, config_path, document = _project_local_protocol_copy(tmp_path)
+    try:
+        snapshots = document["negative_result_snapshots"]
+        assert isinstance(snapshots, list)
+        snapshots[0]["original_sibling_path"] = (
+            "/Users/jangtaeho/manufacturing-vision-studio-e1-v2/forged-report.md"
+        )
+        config_path.write_text(json.dumps(document))
+        with pytest.raises(StudyProtocolError, match="snapshot identity changed"):
+            load_study_protocol_v2(config_path)
+    finally:
+        shutil.rmtree(fixture_dir)
+
+
+def test_protocol_rejects_negative_snapshot_checked_in_path_alias(tmp_path: Path) -> None:
+    """Catch byte-identical local aliases substituted for canonical retained evidence."""
+
+    fixture_dir, config_path, document = _project_local_protocol_copy(tmp_path)
+    try:
+        snapshots = document["negative_result_snapshots"]
+        assert isinstance(snapshots, list)
+        canonical = STUDY_PROJECT_ROOT / snapshots[0]["checked_in_path"]
+        alias = fixture_dir / "byte-identical-report.raw.txt"
+        alias.write_bytes(canonical.read_bytes())
+        snapshots[0]["checked_in_path"] = alias.relative_to(STUDY_PROJECT_ROOT).as_posix()
+        config_path.write_text(json.dumps(document))
+        with pytest.raises(StudyProtocolError, match="snapshot identity changed"):
             load_study_protocol_v2(config_path)
     finally:
         shutil.rmtree(fixture_dir)
