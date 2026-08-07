@@ -29,7 +29,12 @@ alone fixes artifact truth or CLI semantics.
 - Make only a declared source dependency closure claim. This is not a sandbox
   or a complete proof of Python runtime behavior.
 - Use a balanced profile because no measured latency or memory budget was
-  supplied. Implementation remains blocked at the written-spec review gate.
+  supplied. The approved acceptance gate is completion of the focused suites
+  and `make validate` within their existing fixed timeouts plus bounded-
+  complexity review; a numeric benchmark requires a separate design update.
+  The written specification is approved and the implementation plan has passed
+  independent review, but production edits remain blocked until the user
+  explicitly authorizes one execution mode.
 
 ## Opportunity Portfolio
 
@@ -55,11 +60,16 @@ sandbox and would not attest unexercised or pre-bootstrap behavior.
 
 ## Next Decisions
 
-- Approve or revise the written specification before creating
-  `implementation/` or modifying production code.
-- Set explicit dependency-scan time and peak-memory budgets.
-- Confirm the finite safe ordinary-object forms and exact initializer grammar.
+- Obtain explicit user authorization for one execution mode under the reviewed
+  [implementation plan](implementation/static-positive-capability-grammar.md)
+  before modifying production code.
+- Keep a future numeric dependency-scan budget separate from this plan unless
+  a reviewed design update explicitly adds one.
+- Keep the reviewed finite safe ordinary-object forms and exact initializer
+  grammar fixed unless implementation evidence forces a return to design.
 - Decide whether runtime bootstrap should remain deferred defense in depth.
 
-No implementation plan is present in this portfolio because the written-spec
-review gate remains pending.
+The written specification was approved after design commit
+`aaf425bababa2d0034f4ebcb66aba321ca1901de`. The implementation plan is present
+and has passed independent review, but it does not itself authorize production
+edits, implementation validation, or a study phase.

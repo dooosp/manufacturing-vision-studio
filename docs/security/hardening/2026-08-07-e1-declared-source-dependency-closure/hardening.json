@@ -30,12 +30,12 @@
       "Preserve ordinary safe object operations and the two exact PEP 562 package initializers.",
       "Do not claim a Python sandbox or complete runtime dependency proof.",
       "Retain direct fixes for decision/report propagation, exact snapshot paths, and verify exit status under every option.",
-      "Do not run implementation validation or any study phase during design review."
+      "Do not run implementation validation or any study phase while planning or implementing this hardening."
     ],
     "assumptions": [
       "No measured latency or memory budget was supplied.",
       "The target remains a local deterministic demo rather than a production inspection system.",
-      "The written specification must pass review before an implementation plan or production edit is authorized.",
+      "The written specification is approved and the implementation plan has passed independent review; the user must explicitly authorize one execution mode before any production edit.",
       "No repository code, tests, validation, or study commands were executed for this analysis."
     ]
   },
@@ -267,7 +267,7 @@
               "confidence": "low",
               "basis": "hypothetical",
               "assessment": "Lexical provenance and branch joins add work to the existing bounded AST walk but add no application runtime hop.",
-              "validationPlan": "Measure median and tail dependency-scan wall time on the same 47 paths against HEAD; without an approved budget, any repeatable material regression blocks rollout."
+              "validationPlan": "Require the focused projected-source suites and make validate to complete within their existing fixed timeouts; confirm one parse and one bounded policy traversal per captured module, and add no standalone benchmark without a separate design update."
             },
             {
               "dimension": "memory",
@@ -275,7 +275,7 @@
               "confidence": "low",
               "basis": "hypothetical",
               "assessment": "Per-scope provenance maps and branch unions increase transient scan memory while ASTs are live; no persistent cache or process is added.",
-              "validationPlan": "Compare peak RSS on the exact projection and synthetic maximum-size projected modules; require an explicit budget before acceptance."
+              "validationPlan": "Review transient scope and branch-join bounds, require existing focused/full validation to complete without resource failure, and add no numeric memory gate without a separate design update."
             },
             {
               "dimension": "reliability",
@@ -331,9 +331,13 @@
               "All four supplied findings have focused regression evidence after implementation."
             ],
             "migrationNotes": [
-              "Implementation remains blocked until the written specification is approved.",
+              "The written specification is approved and the implementation plan has passed independent review; production edits remain blocked until the user explicitly authorizes one execution mode.",
               "Future dynamic Python requires a narrow reviewed exception or non-reflective refactor."
             ],
+            "implementationPlanPath": "implementation/static-positive-capability-grammar.md",
+            "sourceRevision": "8e4b3ff52461c907c728fb2eae6660dafba7c53a",
+            "designRevision": "aaf425bababa2d0034f4ebcb66aba321ca1901de",
+            "approvedSpecificationBlob": "de7f65eb7e2d7e41896fa88014811da755eb592d",
             "rollback": "Before any study execution, revert the grammar and direct fixes. Once validation or study artifacts exist, invalidate them and restart from an absent result root and newly frozen projection."
           }
         },
@@ -458,9 +462,9 @@
     }
   ],
   "openQuestions": [
-    "What explicit scan-time and peak-memory budgets should gate the richer lexical analysis?",
+    "Should a future separately reviewed design add numeric scan-time or peak-memory budgets after the existing validation-runtime gate?",
     "Which current ordinary reflection sites need finite positive forms versus small non-reflective refactors?",
     "Should runtime bootstrap return later as defense in depth after the static design is implemented and validated?",
-    "When will the written specification receive approval so an implementation plan can be created?"
+    "When will the user explicitly authorize one execution mode under the reviewed implementation plan?"
   ]
 }

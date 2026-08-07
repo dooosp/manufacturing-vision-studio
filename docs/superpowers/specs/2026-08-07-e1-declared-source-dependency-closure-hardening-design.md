@@ -2,8 +2,7 @@
 
 **Date:** 2026-08-07
 
-**Status:** Draft written specification; architecture approved in conversation,
-pending written-specification review
+**Status:** Approved written specification
 
 **Target revision:** `8e4b3ff52461c907c728fb2eae6660dafba7c53a`
 
@@ -448,8 +447,9 @@ result root and a newly frozen projection.
 
 ## 15. Written-review decision
 
-The user approved the architectural direction and detailed conversational
-design on 2026-08-07. Implementation remains blocked until this written
-specification and its linked hardening evidence are reviewed. After written
-approval, the next artifact is an implementation plan; production edits do not
-begin from this document alone.
+The user approved the architectural direction, detailed conversational design,
+and this written specification on 2026-08-07. The file-level implementation
+plan now exists and has passed independent documentation review. Production
+edits begin only after the user explicitly authorizes one execution mode, then
+continue through that plan's TDD, per-task review, validation, and final-review
+gates. Neither this specification nor the plan alone authorizes a study command.

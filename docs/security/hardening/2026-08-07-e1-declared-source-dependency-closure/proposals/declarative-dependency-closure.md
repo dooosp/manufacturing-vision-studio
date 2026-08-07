@@ -97,8 +97,9 @@ We are preserving a local deterministic demo, the existing frozen study inputs,
 and all later one-time execution gates. No runtime service, network boundary,
 container, new candidate, or study phase belongs in this decision. Tests and
 validation subprocess source are outside the production AST claim. Performance
-and memory effects are unmeasured, so the richer grammar needs explicit budgets
-before implementation acceptance.
+and memory effects are unmeasured. The approved written design uses focused and
+full validation within existing fixed timeouts plus bounded-complexity review;
+it does not add a standalone benchmark or numeric budget.
 
 ## Before Architecture
 
@@ -162,18 +163,23 @@ Python semantic. A bug in the grammar can still misclassify provenance. This
 design is not a sandbox.
 
 The richer lexical analysis adds transient maps and branch unions while ASTs
-are live, so scan CPU and peak RSS can regress even though application runtime
-gains no hop. No result has been measured. We should compare the same 47-path
-projection against HEAD and treat any repeatable material regression as
-blocking until reviewers approve explicit budgets. Conservative rejection can
-also block future legitimate dynamic Python; that is intentional, but it moves
-developer workflow toward reviewed narrow exceptions or non-reflective
-refactors.
+are live, so scan CPU and peak memory can regress even though application
+runtime gains no hop. No result has been measured. Acceptance therefore uses
+the exact projected-source focused suites and `make validate` within their
+existing timeouts, plus review that confirms one parse, one policy traversal,
+bounded branch joins, and no persistent cache. A standalone benchmark or
+numeric threshold requires a separate approved design update. Conservative
+rejection can also block future legitimate dynamic Python; that is intentional,
+but it moves developer workflow toward reviewed narrow exceptions or non-
+reflective refactors.
 
-Migration should start only after written-spec approval, with the present
-tactical guards retained until the capability matrix is complete. A pre-study
-rollback is a commit revert. Once artifacts bind the new projection, rollback
-invalidates them and restarts the gate.
+The written specification is approved, and the
+[implementation plan](../implementation/static-positive-capability-grammar.md)
+has passed independent review. Migration should start only after the user
+explicitly authorizes one execution mode, with the present tactical guards
+retained until the capability matrix is complete.
+A pre-study rollback is a commit revert. Once artifacts bind the new
+projection, rollback invalidates them and restarts the gate.
 
 | Change | Before | After | Security consequence | Cost |
 | --- | --- | --- | --- | --- |
@@ -233,8 +239,8 @@ the assurance claim.
 
 I recommend Option 2 with the three independent direct fixes included in the
 same pre-execution implementation change. I would change that recommendation
-if the source projection grows enough that measured analysis cost exceeds an
-approved budget, if legitimate dynamic behavior cannot be expressed through
+if the source projection grows enough that the existing validation-runtime gate
+cannot complete proportionately, if legitimate dynamic behavior cannot be expressed through
 narrow safe forms, or if runtime exercised-import evidence becomes mandatory.
 In the first two cases, Option 1 is a temporary fallback; in the third, Option 3
 deserves a separate defense-in-depth design review.
@@ -255,13 +261,17 @@ does not close any finding.
 
 ## Migration And Rollout
 
-The written specification review is the first gate. After approval, we can
-produce a file-level implementation plan, add focused failing regressions,
-introduce the capability grammar while retaining present guards, apply the
-three direct fixes, and then run targeted and broad validation. No study phase
-is authorized by passing those checks. Rollback is safe only before evidence is
-generated; later rollback invalidates validation/study artifacts and restarts
-from an absent result root and newly frozen projection.
+The written specification gate has passed. The selected option now has a
+[file-level implementation plan](../implementation/static-positive-capability-grammar.md)
+bound to source revision `8e4b3ff52461c907c728fb2eae6660dafba7c53a`
+and design commit `aaf425bababa2d0034f4ebcb66aba321ca1901de`.
+The implementation plan has passed independent review. After the user
+explicitly authorizes one execution mode, we can add focused failing
+regressions, introduce the capability grammar while retaining present guards,
+apply the three direct fixes, and then run targeted and broad validation. No
+study phase is authorized by passing those checks. Rollback is safe only before
+evidence is generated; later rollback invalidates validation/study artifacts
+and restarts from an absent result root and newly frozen projection.
 
 ## Validation Plan
 
@@ -273,29 +283,32 @@ from an absent result root and newly frozen projection.
   object operations.
 - Prove projection hash and AST consume one captured payload under a swap
   attempt.
-- Compare dependency-scan wall time and peak RSS on the same 47-path workload;
-  set explicit budgets before acceptance.
+- Require the focused scanner suites and `make validate` to complete within
+  their existing fixed timeouts, and review the bounded traversal/resource
+  model. Do not add standalone benchmark evidence without a design update.
 - Assert malformed decisions cannot credit reports, both snapshot paths are
   exact, and invalid verify output remains JSON while process status is nonzero.
-- Run the repository's targeted suites and full validation only after the
-  written and implementation-plan gates approve execution.
+- Run the repository's targeted suites and full validation only after the user
+  explicitly authorizes one execution mode under the reviewed plan.
 
 No item in this plan was run during proposal drafting.
 
 ## Implementation Work Packages
 
-Implementation planning is intentionally deferred. The eventual handoff must
-separate capability grammar, exact initializer/safe-form compatibility,
+The [implementation handoff](../implementation/static-positive-capability-grammar.md)
+separates capability grammar, exact initializer/safe-form compatibility,
 decision/report propagation, snapshot tuple binding, CLI status mapping, and
-measurement/claim documentation into reviewable packages. No
-`implementation/` directory is created at this gate.
+performance-bound/claim documentation into reviewable packages. Production
+code, implementation validation, and every study phase remain outside this
+planning change.
 
 ## Open Questions
 
-- What scan-time and peak-memory budgets should gate Option 2?
+- Should a future, separately reviewed design add numeric scan-time or
+  peak-memory budgets after this existing-validation-runtime gate?
 - Which ordinary reflection sites require positive grammar forms versus small
   explicit-field refactors?
 - Should runtime bootstrap remain deferred or be designed later as defense in
   depth?
-- Has the written specification received review approval to permit an
-  implementation plan?
+- When will the user explicitly authorize one execution mode under the reviewed
+  plan?
