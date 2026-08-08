@@ -14,6 +14,7 @@ from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any, Literal, NoReturn, cast
@@ -44,7 +45,6 @@ from manufacturing_vision_studio.e1.study_protocol_v2 import (
 )
 
 EdgeKind = Literal["direct", "runtime_transitive", "type_checking"]
-_DynamicImportLoaderKind = Literal["loader", "nonliteral_reflection"]
 
 _SHA1_LENGTH = 40
 _SHA256_LENGTH = 64
@@ -592,54 +592,870 @@ _Capability = Literal[
     "import-registry",
     "namespace-mapping",
     "namespace-reflection",
+    "operator-module",
     "package-object",
+    "pkgutil-module",
     "sys-module",
     "type-checking-sentinel",
     "typing-module",
+    "zipimport-module",
 ]
-_ScopeKind = Literal["module", "class", "function", "lambda", "comprehension"]
+class _Truth(Enum):
+    BOTTOM = "bottom"
+    FALSE = "false"
+    TRUE = "true"
+    UNKNOWN = "unknown"
+
+
+_IdentityKind = Literal["builtin", "imported", "function", "class"]
+_ExactState = Literal["none", "exact", "top"]
+_IterationOutcome = Literal["zero", "one", "many"]
+_DeferredKind = Literal["function", "async-function", "lambda", "generator"]
+_ExitKind = Literal["normal", "break", "continue", "return", "raise"]
+_WriteKind = Literal["assign", "augment", "delete", "import", "star-import"]
+_DeferredTiming = Literal["on-call", "on-await", "on-iteration"]
+_Multiplicity = Literal["zero-or-one", "exactly-one", "zero-or-many"]
+_ScopeKind = Literal["module", "function", "lambda", "class", "comprehension"]
+_TransferMode = Literal[
+    "eager",
+    "deferred",
+    "type-only",
+    "unreachable",
+    "postponed-annotation",
+    "lazy-annotation",
+]
+_PolicyCapability = Literal[
+    "dynamic-import",
+    "executable-code",
+    "namespace-reflection",
+    "import-registry",
+    "package-object",
+    "deferred-effect",
+]
+_ExactRole = Literal[
+    "pep562-import-module",
+    "pep562-getattr",
+    "pep562-cache-globals",
+    "pep562-dir-globals",
+    "cli-dataclass-getattr",
+]
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class _SourceLocation:
+    module: str
+    node_kind: str
+    lineno: int
+    col_offset: int
+    end_lineno: int
+    end_col_offset: int
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class _ResolvedIdentity:
+    kind: _IdentityKind
+    owner: str
+    name: str
+    definition: _SourceLocation | None = None
 
 
 @dataclass(frozen=True, slots=True)
-class _Binding:
-    capabilities: frozenset[_Capability] = frozenset()
-    package_target: str | None = None
-    uncertain: bool = False
+class _PackageFact:
+    state: _ExactState = "none"
+    target: str | None = None
 
-    def merged(self, other: _Binding) -> _Binding:
-        package_target = (
-            self.package_target
-            if self.package_target == other.package_target
-            else None
-        )
-        return _Binding(
-            capabilities=self.capabilities | other.capabilities,
-            package_target=package_target,
-            uncertain=(
-                self.uncertain
-                or other.uncertain
-                or self.package_target != other.package_target
+    def __post_init__(self) -> None:
+        if (self.state == "exact") != (self.target is not None):
+            raise ValueError("invalid package fact")
+
+
+@dataclass(frozen=True, slots=True)
+class _IdentityFact:
+    state: _ExactState = "none"
+    identity: _ResolvedIdentity | None = None
+
+    def __post_init__(self) -> None:
+        if (self.state == "exact") != (self.identity is not None):
+            raise ValueError("invalid identity fact")
+
+
+@dataclass(frozen=True, slots=True)
+class _ValueFacts:
+    may_capabilities: frozenset[_Capability] = frozenset()
+    package: _PackageFact = _PackageFact()
+    identity: _IdentityFact = _IdentityFact()
+    complete: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class _AbsValue:
+    facts: _ValueFacts = _ValueFacts()
+    iterable_element: _ValueFacts = _ValueFacts(complete=False)
+    contained: _ValueFacts = _ValueFacts()
+    iteration_outcomes: frozenset[_IterationOutcome] = frozenset(
+        {"zero", "one", "many"}
+    )
+
+
+_UNKNOWN_VALUE = _AbsValue(facts=_ValueFacts(complete=False))
+_SAFE_VALUE = _AbsValue()
+
+
+@dataclass(frozen=True, slots=True)
+class _BindingSlot:
+    value: _AbsValue
+    may_be_bound: bool = True
+    may_be_unbound: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _Frame:
+    scope_id: _SourceLocation
+    kind: _ScopeKind
+    bindings: tuple[tuple[str, _BindingSlot], ...]
+    global_names: frozenset[str] = frozenset()
+    nonlocal_names: frozenset[str] = frozenset()
+    wildcard_shadowed: bool = False
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        scope_id: _SourceLocation,
+        kind: _ScopeKind,
+        names: Sequence[str],
+        global_names: frozenset[str] = frozenset(),
+        nonlocal_names: frozenset[str] = frozenset(),
+    ) -> _Frame:
+        local_names = set(names).difference(global_names, nonlocal_names)
+        return cls(
+            scope_id=scope_id,
+            kind=kind,
+            bindings=tuple(
+                (name, _BindingSlot(_UNKNOWN_VALUE, False, True))
+                for name in sorted(local_names)
             ),
+            global_names=global_names,
+            nonlocal_names=nonlocal_names,
         )
+
+    def replace_binding(self, name: str, slot: _BindingSlot) -> _Frame:
+        bindings = dict(self.bindings)
+        if name not in bindings:
+            raise ValueError(f"binding skeleton does not contain {name}")
+        bindings[name] = slot
+        return _Frame(
+            self.scope_id,
+            self.kind,
+            tuple(sorted(bindings.items())),
+            self.global_names,
+            self.nonlocal_names,
+            self.wildcard_shadowed,
+        )
+
+    def with_wildcard(self) -> _Frame:
+        return _Frame(
+            self.scope_id,
+            self.kind,
+            self.bindings,
+            self.global_names,
+            self.nonlocal_names,
+            True,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _State:
+    frames: tuple[_Frame, ...]
+
+    def resolve(self, name: str) -> _BindingSlot:
+        index = self._resolution_index(name)
+        if index is None:
+            return _BindingSlot(_UNKNOWN_VALUE, False, True)
+        return dict(self.frames[index].bindings)[name]
+
+    def binding_frame_index(self, name: str) -> int | None:
+        current = self.frames[-1]
+        if name in current.global_names:
+            return 0
+        if name in current.nonlocal_names:
+            return self._nonlocal_index(name)
+        return len(self.frames) - 1
+
+    def bind(self, name: str, value: _AbsValue) -> _State:
+        index = self.binding_frame_index(name)
+        if index is None:
+            raise ValueError(f"unresolved nonlocal binding: {name}")
+        frames = list(self.frames)
+        frames[index] = frames[index].replace_binding(name, _BindingSlot(value))
+        return _State(tuple(frames))
+
+    def unbind(self, name: str) -> _State:
+        index = self.binding_frame_index(name)
+        if index is None:
+            raise ValueError(f"unresolved nonlocal binding: {name}")
+        frames = list(self.frames)
+        frames[index] = frames[index].replace_binding(
+            name, _BindingSlot(_UNKNOWN_VALUE, False, True)
+        )
+        return _State(tuple(frames))
+
+    def bind_target(self, target: ast.expr, value: _AbsValue) -> _State:
+        if isinstance(target, ast.Name):
+            return self.bind(target.id, value)
+        if isinstance(target, ast.Starred):
+            return self.bind_target(target.value, _element_value(value))
+        if isinstance(target, (ast.Tuple, ast.List)):
+            state = self
+            promoted = _element_value(value)
+            for element in target.elts:
+                state = state.bind_target(element, promoted)
+            return state
+        return self
+
+    def bind_pattern(self, pattern: ast.pattern, value: _AbsValue) -> _State:
+        if isinstance(pattern, ast.MatchAs):
+            state = self
+            if pattern.pattern is not None:
+                state = state.bind_pattern(pattern.pattern, value)
+            return state if pattern.name is None else state.bind(pattern.name, value)
+        if isinstance(pattern, ast.MatchStar):
+            return self if pattern.name is None else self.bind(pattern.name, value)
+        if isinstance(pattern, ast.MatchMapping):
+            state = self
+            derived = _derived_value(value, complete=False)
+            for child in pattern.patterns:
+                state = state.bind_pattern(child, derived)
+            return state if pattern.rest is None else state.bind(pattern.rest, derived)
+        if isinstance(pattern, ast.MatchSequence):
+            state = self
+            derived = _element_value(value)
+            for child in pattern.patterns:
+                state = state.bind_pattern(child, derived)
+            return state
+        if isinstance(pattern, ast.MatchClass):
+            state = self
+            derived = _derived_value(value, complete=False)
+            for child in (*pattern.patterns, *pattern.kwd_patterns):
+                state = state.bind_pattern(child, derived)
+            return state
+        if isinstance(pattern, ast.MatchOr):
+            states = tuple(self.bind_pattern(child, value) for child in pattern.patterns)
+            return _join_states(*states) or self
+        return self
+
+    def push(self, frame: _Frame) -> _State:
+        return _State((*self.frames, frame))
+
+    def pop(self) -> _State:
+        if len(self.frames) == 1:
+            raise ValueError("cannot pop module frame")
+        return _State(self.frames[:-1])
+
+    def join(self, other: _State) -> _State:
+        if self is other:
+            return self
+        if len(self.frames) != len(other.frames):
+            raise ValueError(
+                "cannot join states with different scope depths: "
+                f"{tuple(frame.kind for frame in self.frames)} != "
+                f"{tuple(frame.kind for frame in other.frames)}"
+            )
+        joined: list[_Frame] = []
+        for left, right in zip(self.frames, other.frames, strict=True):
+            if left is right:
+                joined.append(left)
+                continue
+            if (
+                left.scope_id,
+                left.kind,
+                left.global_names,
+                left.nonlocal_names,
+            ) != (
+                right.scope_id,
+                right.kind,
+                right.global_names,
+                right.nonlocal_names,
+            ):
+                raise ValueError("cannot join states with different frame skeletons")
+            left_bindings = dict(left.bindings)
+            right_bindings = dict(right.bindings)
+            if left_bindings.keys() != right_bindings.keys():
+                raise ValueError("cannot grow a frame skeleton during join")
+            bindings = tuple(
+                (
+                    name,
+                    _join_slots(left_bindings[name], right_bindings[name]),
+                )
+                for name in sorted(left_bindings)
+            )
+            joined.append(
+                _Frame(
+                    left.scope_id,
+                    left.kind,
+                    bindings,
+                    left.global_names,
+                    left.nonlocal_names,
+                    left.wildcard_shadowed or right.wildcard_shadowed,
+                )
+            )
+        return _State(tuple(joined))
+
+    def _resolution_index(self, name: str) -> int | None:
+        current = self.frames[-1]
+        if name in current.global_names:
+            return 0 if name in dict(self.frames[0].bindings) else None
+        if name in current.nonlocal_names:
+            return self._nonlocal_index(name)
+        skip_classes = current.kind in {"function", "lambda", "comprehension"}
+        for index in range(len(self.frames) - 1, -1, -1):
+            frame = self.frames[index]
+            if index != len(self.frames) - 1 and skip_classes and frame.kind == "class":
+                continue
+            slot = dict(frame.bindings).get(name)
+            if slot is None:
+                continue
+            if frame.kind == "class" and slot.may_be_unbound and not slot.may_be_bound:
+                continue
+            return index
+        return None
+
+    def _nonlocal_index(self, name: str) -> int | None:
+        for index in range(len(self.frames) - 2, 0, -1):
+            frame = self.frames[index]
+            if frame.kind != "class" and name in dict(frame.bindings):
+                return index
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class _DeferredWrite:
+    kind: _DeferredKind
+    name: str
+    location: _SourceLocation
+    target_scope: _SourceLocation | None
+    operation: _WriteKind
+    value: _AbsValue
+    timing: _DeferredTiming
+    multiplicity: _Multiplicity
+
+
+@dataclass(frozen=True, slots=True)
+class _DeferredBody:
+    kind: _DeferredKind
+    location: _SourceLocation
+    enclosing_scope: _SourceLocation
+    definition_state: _State
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.GeneratorExp
+
+
+@dataclass(frozen=True, slots=True)
+class _DeferredEffects:
+    writes: tuple[_DeferredWrite, ...] = ()
+    bodies: tuple[_DeferredBody, ...] = ()
+    unknown_outer_write: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _TransferContext:
+    mode: _TransferMode
+    commit_state: bool
+    emit_runtime_references: bool
+    emit_type_only_references: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _NormalExit:
+    value: _AbsValue
+    state: _State
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class _ExactCallSite:
+    role: _ExactRole
+    location: _SourceLocation
+    required_bindings: tuple[tuple[str, _ResolvedIdentity], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _PolicyFacts:
+    references: frozenset[_ImportReference] = frozenset()
+    protected: frozenset[str] = frozenset()
+    forbidden_calls: frozenset[str] = frozenset()
+    study_forbidden_calls: frozenset[str] = frozenset()
+    closure_errors: frozenset[str] = frozenset()
+    pending_exact_uses: tuple[_ExactCallSite, ...] = ()
+
+
+_EMPTY_DEFERRED_EFFECTS = _DeferredEffects()
+_EMPTY_POLICY_FACTS = _PolicyFacts()
+
+
+@dataclass(frozen=True, slots=True)
+class _ExprResult:
+    truthy: _NormalExit | None
+    falsy: _NormalExit | None
+    raises: _State | None
+    deferred: _DeferredEffects = _DeferredEffects()
+    facts: _PolicyFacts = _PolicyFacts()
+
+    @property
+    def post_state(self) -> _State | None:
+        return _join_states(
+            None if self.truthy is None else self.truthy.state,
+            None if self.falsy is None else self.falsy.state,
+        )
+
+    @property
+    def value(self) -> _AbsValue:
+        values = tuple(
+            exit.value for exit in (self.truthy, self.falsy) if exit is not None
+        )
+        if not values:
+            return _UNKNOWN_VALUE
+        result = values[0]
+        for value in values[1:]:
+            result = _join_values(result, value)
+        return result
+
+    @property
+    def truth(self) -> _Truth:
+        if self.truthy is None and self.falsy is None:
+            return _Truth.BOTTOM
+        if self.truthy is None:
+            return _Truth.FALSE
+        if self.falsy is None:
+            return _Truth.TRUE
+        return _Truth.UNKNOWN
+
+
+@dataclass(frozen=True, slots=True)
+class _FlowResult:
+    normal: _State | None
+    breaks: _State | None = None
+    continues: _State | None = None
+    returns: _State | None = None
+    raises: _State | None = None
+    deferred: _DeferredEffects = _DeferredEffects()
+    facts: _PolicyFacts = _PolicyFacts()
+
+
+@dataclass(frozen=True, slots=True)
+class _AnalysisStats:
+    program_points: int
+    cfg_edges: int
+    expression_transfers: int
+    statement_transfers: int
+    pattern_transfers: int
+    state_join_attempts: int
+    strict_state_updates: int
+    worklist_pops: int
+    max_updates_per_program_point: int
+    computed_height_bound: int
+
+    @property
+    def transfer_steps(self) -> int:
+        return (
+            self.expression_transfers
+            + self.statement_transfers
+            + self.pattern_transfers
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _ModuleFlowResult:
+    final_states: tuple[_State, ...]
+    facts: _PolicyFacts
+    stats: _AnalysisStats
 
 
 @dataclass(slots=True)
-class _ScopeFrame:
-    kind: _ScopeKind
-    bindings: dict[str, _Binding]
-    global_names: set[str]
-    nonlocal_names: set[str]
+class _StatsBuilder:
+    program_points: set[tuple[str, _SourceLocation, _TransferMode]] = field(
+        default_factory=set
+    )
+    cfg_edges: int = 0
+    expression_transfers: int = 0
+    statement_transfers: int = 0
+    pattern_transfers: int = 0
+    state_join_attempts: int = 0
+    strict_state_updates: int = 0
+    worklist_pops: int = 0
+    max_updates_per_program_point: int = 0
+    max_binding_slots: int = 0
+    max_frames: int = 1
+
+    def observe_state(self, state: _State) -> None:
+        self.max_binding_slots = max(
+            self.max_binding_slots, sum(len(frame.bindings) for frame in state.frames)
+        )
+        self.max_frames = max(self.max_frames, len(state.frames))
+
+    def freeze(self) -> _AnalysisStats:
+        capability_bits = len(getattr(_Capability, "__args__", ()))
+        value_height = 3 * (capability_bits + 2 + 2 + 1) + 3
+        height = max(
+            1,
+            1 + self.max_binding_slots * (value_height + 2) + self.max_frames,
+        )
+        return _AnalysisStats(
+            program_points=len(self.program_points),
+            cfg_edges=self.cfg_edges,
+            expression_transfers=self.expression_transfers,
+            statement_transfers=self.statement_transfers,
+            pattern_transfers=self.pattern_transfers,
+            state_join_attempts=self.state_join_attempts,
+            strict_state_updates=self.strict_state_updates,
+            worklist_pops=self.worklist_pops,
+            max_updates_per_program_point=self.max_updates_per_program_point,
+            computed_height_bound=height,
+        )
 
 
-class _FunctionLocalCollector(ast.NodeVisitor):
-    def __init__(self) -> None:
-        self.names: set[str] = set()
+@dataclass(frozen=True, slots=True)
+class _ScopeDeclarations:
+    local_names: frozenset[str]
+    global_names: frozenset[str]
+    nonlocal_names: frozenset[str]
+
+
+def _source_location(module: str, node: ast.AST) -> _SourceLocation:
+    if isinstance(node, ast.Module):
+        return _SourceLocation(module, "Module", 0, 0, 0, 0)
+    return _SourceLocation(
+        module,
+        type(node).__name__,
+        getattr(node, "lineno", 0),
+        getattr(node, "col_offset", 0),
+        getattr(node, "end_lineno", 0) or 0,
+        getattr(node, "end_col_offset", 0) or 0,
+    )
+
+
+def _exact_package(target: str) -> _PackageFact:
+    return _PackageFact("exact", target)
+
+
+def _exact_identity(identity: _ResolvedIdentity) -> _IdentityFact:
+    return _IdentityFact("exact", identity)
+
+
+def _join_package(left: _PackageFact, right: _PackageFact) -> _PackageFact:
+    if left.state == right.state == "none":
+        return _PackageFact()
+    if (
+        left.state == right.state == "exact"
+        and left.target == right.target
+        and left.target is not None
+    ):
+        return left
+    return _PackageFact("top")
+
+
+def _join_identity(left: _IdentityFact, right: _IdentityFact) -> _IdentityFact:
+    if left.state == right.state == "none":
+        return _IdentityFact()
+    if (
+        left.state == right.state == "exact"
+        and left.identity == right.identity
+        and left.identity is not None
+    ):
+        return left
+    return _IdentityFact("top")
+
+
+def _join_value_facts(left: _ValueFacts, right: _ValueFacts) -> _ValueFacts:
+    if left is right or left == right:
+        return left
+    return _ValueFacts(
+        may_capabilities=left.may_capabilities | right.may_capabilities,
+        package=_join_package(left.package, right.package),
+        identity=_join_identity(left.identity, right.identity),
+        complete=left.complete and right.complete,
+    )
+
+
+def _flatten_facts(value: _AbsValue) -> _ValueFacts:
+    facts = _join_value_facts(value.facts, value.iterable_element)
+    return _join_value_facts(facts, value.contained)
+
+
+def _as_contained(facts: _ValueFacts) -> _ValueFacts:
+    package = _PackageFact("top") if facts.package.state != "none" else _PackageFact()
+    identity = _IdentityFact("top") if facts.identity.state != "none" else _IdentityFact()
+    return _ValueFacts(facts.may_capabilities, package, identity, facts.complete)
+
+
+def _join_values(left: _AbsValue, right: _AbsValue) -> _AbsValue:
+    if left is right or left == right:
+        return left
+    return _AbsValue(
+        facts=_join_value_facts(left.facts, right.facts),
+        iterable_element=_join_value_facts(
+            left.iterable_element, right.iterable_element
+        ),
+        contained=_join_value_facts(left.contained, right.contained),
+        iteration_outcomes=left.iteration_outcomes | right.iteration_outcomes,
+    )
+
+
+def _join_slots(left: _BindingSlot, right: _BindingSlot) -> _BindingSlot:
+    if left is right or left == right:
+        return left
+    if left.may_be_bound and right.may_be_bound:
+        value = _join_values(left.value, right.value)
+    elif left.may_be_bound:
+        value = left.value
+    elif right.may_be_bound:
+        value = right.value
+    else:
+        value = _UNKNOWN_VALUE
+    return _BindingSlot(
+        value,
+        left.may_be_bound or right.may_be_bound,
+        left.may_be_unbound or right.may_be_unbound,
+    )
+
+
+def _join_states(*states: _State | None) -> _State | None:
+    reachable = tuple(state for state in states if state is not None)
+    if not reachable:
+        return None
+    result = reachable[0]
+    for state in reachable[1:]:
+        if state is result:
+            continue
+        result = result.join(state)
+    return result
+
+
+def _join_policy(*facts: _PolicyFacts) -> _PolicyFacts:
+    pending: dict[tuple[_ExactRole, _SourceLocation], _ExactCallSite] = {}
+    for item in facts:
+        for use in item.pending_exact_uses:
+            pending[(use.role, use.location)] = use
+    return _PolicyFacts(
+        references=frozenset().union(*(item.references for item in facts)),
+        protected=frozenset().union(*(item.protected for item in facts)),
+        forbidden_calls=frozenset().union(*(item.forbidden_calls for item in facts)),
+        study_forbidden_calls=frozenset().union(
+            *(item.study_forbidden_calls for item in facts)
+        ),
+        closure_errors=frozenset().union(*(item.closure_errors for item in facts)),
+        pending_exact_uses=tuple(pending[key] for key in sorted(pending)),
+    )
+
+
+def _deferred_write_key(
+    write: _DeferredWrite,
+) -> tuple[_DeferredKind, _SourceLocation, _SourceLocation | None, str, _WriteKind]:
+    return write.kind, write.location, write.target_scope, write.name, write.operation
+
+
+def _join_multiplicity(left: _Multiplicity, right: _Multiplicity) -> _Multiplicity:
+    if left == right:
+        return left
+    if "zero-or-many" in {left, right}:
+        return "zero-or-many"
+    return "zero-or-one"
+
+
+def _join_deferred(*effects: _DeferredEffects) -> _DeferredEffects:
+    writes: dict[
+        tuple[_DeferredKind, _SourceLocation, _SourceLocation | None, str, _WriteKind],
+        _DeferredWrite,
+    ] = {}
+    bodies: dict[tuple[_DeferredKind, _SourceLocation], _DeferredBody] = {}
+    for effect in effects:
+        for write in effect.writes:
+            key = _deferred_write_key(write)
+            previous = writes.get(key)
+            if previous is None:
+                writes[key] = write
+            else:
+                writes[key] = _DeferredWrite(
+                    write.kind,
+                    write.name,
+                    write.location,
+                    write.target_scope,
+                    write.operation,
+                    _join_values(previous.value, write.value),
+                    write.timing,
+                    _join_multiplicity(previous.multiplicity, write.multiplicity),
+                )
+        for body in effect.bodies:
+            body_key = (body.kind, body.location)
+            previous_body = bodies.get(body_key)
+            if previous_body is None:
+                bodies[body_key] = body
+            else:
+                bodies[body_key] = _DeferredBody(
+                    body.kind,
+                    body.location,
+                    body.enclosing_scope,
+                    previous_body.definition_state.join(body.definition_state),
+                    body.node,
+                )
+    return _DeferredEffects(
+        writes=tuple(writes[key] for key in sorted(writes)),
+        bodies=tuple(bodies[key] for key in sorted(bodies)),
+        unknown_outer_write=any(effect.unknown_outer_write for effect in effects),
+    )
+
+
+def _join_flow(*results: _FlowResult) -> _FlowResult:
+    return _FlowResult(
+        normal=_join_states(*(result.normal for result in results)),
+        breaks=_join_states(*(result.breaks for result in results)),
+        continues=_join_states(*(result.continues for result in results)),
+        returns=_join_states(*(result.returns for result in results)),
+        raises=_join_states(*(result.raises for result in results)),
+        deferred=_join_deferred(*(result.deferred for result in results)),
+        facts=_join_policy(*(result.facts for result in results)),
+    )
+
+
+def _normal_value(value: _AbsValue, state: _State, truth: _Truth) -> _ExprResult:
+    exit = _NormalExit(value, state)
+    if truth is _Truth.TRUE:
+        return _ExprResult(exit, None, None)
+    if truth is _Truth.FALSE:
+        return _ExprResult(None, exit, None)
+    if truth is _Truth.BOTTOM:
+        return _ExprResult(None, None, state)
+    return _ExprResult(exit, exit, None)
+
+
+def _result_with(
+    result: _ExprResult,
+    *,
+    raises: _State | None = None,
+    deferred: _DeferredEffects = _EMPTY_DEFERRED_EFFECTS,
+    facts: _PolicyFacts = _EMPTY_POLICY_FACTS,
+) -> _ExprResult:
+    return _ExprResult(
+        result.truthy,
+        result.falsy,
+        _join_states(result.raises, raises),
+        _join_deferred(result.deferred, deferred),
+        _join_policy(result.facts, facts),
+    )
+
+
+def _truth_for_constant(value: object) -> _Truth:
+    try:
+        return _Truth.TRUE if bool(value) else _Truth.FALSE
+    except (TypeError, ValueError):
+        return _Truth.UNKNOWN
+
+
+def _literal_value(value: object) -> _AbsValue:
+    if isinstance(value, (tuple, frozenset)):
+        return _container_value(
+            tuple(_literal_value(item) for item in value), kind="tuple"
+        )
+    return _AbsValue(
+        iteration_outcomes=(
+            frozenset({"zero"})
+            if value in {"", b""}
+            else frozenset({"zero", "one", "many"})
+        )
+    )
+
+
+def _container_value(values: Sequence[_AbsValue], *, kind: str) -> _AbsValue:
+    if values:
+        element = _flatten_facts(values[0])
+        for value in values[1:]:
+            element = _join_value_facts(element, _flatten_facts(value))
+        contained = _as_contained(element)
+    else:
+        element = _ValueFacts(complete=False)
+        contained = _ValueFacts()
+    length = len(values)
+    outcomes: frozenset[_IterationOutcome]
+    if length == 0:
+        outcomes = frozenset({"zero"})
+    elif length == 1:
+        outcomes = frozenset({"one"})
+    else:
+        outcomes = frozenset({"many"})
+    if kind == "dict":
+        element = _ValueFacts(complete=False)
+    return _AbsValue(
+        iterable_element=element,
+        contained=contained,
+        iteration_outcomes=outcomes,
+    )
+
+
+def _element_value(value: _AbsValue) -> _AbsValue:
+    return _AbsValue(
+        facts=value.iterable_element,
+        iterable_element=_ValueFacts(complete=False),
+        contained=_as_contained(value.iterable_element),
+    )
+
+
+def _derived_value(value: _AbsValue, *, complete: bool) -> _AbsValue:
+    flattened = _flatten_facts(value)
+    return _AbsValue(
+        facts=_ValueFacts(
+            may_capabilities=flattened.may_capabilities,
+            package=_PackageFact("top")
+            if flattened.package.state != "none"
+            else _PackageFact(),
+            identity=_IdentityFact("top")
+            if flattened.identity.state != "none"
+            else _IdentityFact(),
+            complete=complete and flattened.complete,
+        )
+    )
+
+
+def _value_with_capabilities(
+    *capabilities: _Capability,
+    complete: bool = True,
+    package: str | None = None,
+    identity: _ResolvedIdentity | None = None,
+) -> _AbsValue:
+    return _AbsValue(
+        facts=_ValueFacts(
+            frozenset(capabilities),
+            _PackageFact() if package is None else _exact_package(package),
+            _IdentityFact() if identity is None else _exact_identity(identity),
+            complete,
+        )
+    )
+
+
+class _ScopeDeclarationCollector(ast.NodeVisitor):
+    def __init__(self, arguments: ast.arguments | None = None) -> None:
+        self.local_names: set[str] = set()
         self.global_names: set[str] = set()
         self.nonlocal_names: set[str] = set()
+        if arguments is not None:
+            for argument in (
+                *arguments.posonlyargs,
+                *arguments.args,
+                *arguments.kwonlyargs,
+            ):
+                self.local_names.add(argument.arg)
+            if arguments.vararg is not None:
+                self.local_names.add(arguments.vararg.arg)
+            if arguments.kwarg is not None:
+                self.local_names.add(arguments.kwarg.arg)
+
+    def finish(self) -> _ScopeDeclarations:
+        return _ScopeDeclarations(
+            frozenset(self.local_names.difference(self.global_names, self.nonlocal_names)),
+            frozenset(self.global_names),
+            frozenset(self.nonlocal_names),
+        )
 
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, (ast.Store, ast.Del)):
-            self.names.add(node.id)
+            self.local_names.add(node.id)
 
     def visit_Global(self, node: ast.Global) -> None:
         self.global_names.update(node.names)
@@ -648,24 +1464,23 @@ class _FunctionLocalCollector(ast.NodeVisitor):
         self.nonlocal_names.update(node.names)
 
     def visit_Import(self, node: ast.Import) -> None:
-        for alias in node.names:
-            self.names.add(alias.asname or alias.name.split(".", 1)[0])
+        self.local_names.update(alias.asname or alias.name.split(".", 1)[0] for alias in node.names)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        for alias in node.names:
-            if alias.name != "*":
-                self.names.add(alias.asname or alias.name)
+        self.local_names.update(
+            alias.asname or alias.name for alias in node.names if alias.name != "*"
+        )
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self.names.add(node.name)
-        self._visit_definition_expressions(node)
+        self.local_names.add(node.name)
+        self._visit_function_expressions(node)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self.names.add(node.name)
-        self._visit_definition_expressions(node)
+        self.local_names.add(node.name)
+        self._visit_function_expressions(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        self.names.add(node.name)
+        self.local_names.add(node.name)
         for decorator in node.decorator_list:
             self.visit(decorator)
         for base in node.bases:
@@ -676,7 +1491,9 @@ class _FunctionLocalCollector(ast.NodeVisitor):
             self.visit(type_param)
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
-        self._visit_argument_expressions(node.args)
+        for default in (*node.args.defaults, *node.args.kw_defaults):
+            if default is not None:
+                self.visit(default)
 
     def visit_ListComp(self, node: ast.ListComp) -> None:
         self.visit(node.generators[0].iter)
@@ -692,210 +1509,51 @@ class _FunctionLocalCollector(ast.NodeVisitor):
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
         if node.name is not None:
-            self.names.add(node.name)
+            self.local_names.add(node.name)
         self.generic_visit(node)
 
     def visit_MatchAs(self, node: ast.MatchAs) -> None:
         if node.name is not None:
-            self.names.add(node.name)
-        self.generic_visit(node)
+            self.local_names.add(node.name)
+        if node.pattern is not None:
+            self.visit(node.pattern)
 
     def visit_MatchStar(self, node: ast.MatchStar) -> None:
         if node.name is not None:
-            self.names.add(node.name)
+            self.local_names.add(node.name)
 
     def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
         if node.rest is not None:
-            self.names.add(node.rest)
-        self.generic_visit(node)
+            self.local_names.add(node.rest)
+        for pattern in node.patterns:
+            self.visit(pattern)
 
-    def _visit_definition_expressions(
-        self,
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    def _visit_function_expressions(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> None:
         for decorator in node.decorator_list:
             self.visit(decorator)
-        self._visit_argument_expressions(node.args)
+        for default in (*node.args.defaults, *node.args.kw_defaults):
+            if default is not None:
+                self.visit(default)
+        for argument in (
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
+        ):
+            if argument.annotation is not None:
+                self.visit(argument.annotation)
+        if node.args.vararg is not None and node.args.vararg.annotation is not None:
+            self.visit(node.args.vararg.annotation)
+        if node.args.kwarg is not None and node.args.kwarg.annotation is not None:
+            self.visit(node.args.kwarg.annotation)
         if node.returns is not None:
             self.visit(node.returns)
         for type_param in getattr(node, "type_params", ()):
             self.visit(type_param)
 
-    def _visit_argument_expressions(self, arguments: ast.arguments) -> None:
-        for argument in (
-            *arguments.posonlyargs,
-            *arguments.args,
-            *arguments.kwonlyargs,
-        ):
-            if argument.annotation is not None:
-                self.visit(argument.annotation)
-        if arguments.vararg is not None and arguments.vararg.annotation is not None:
-            self.visit(arguments.vararg.annotation)
-        if arguments.kwarg is not None and arguments.kwarg.annotation is not None:
-            self.visit(arguments.kwarg.annotation)
-        for default in (*arguments.defaults, *arguments.kw_defaults):
-            if default is not None:
-                self.visit(default)
 
-
-class _LexicalBindings:
-    def __init__(self) -> None:
-        self.frames = [_ScopeFrame("module", {}, set(), set())]
-
-    def clone(self) -> _LexicalBindings:
-        clone = _LexicalBindings()
-        clone.frames = [
-            _ScopeFrame(
-                frame.kind,
-                dict(frame.bindings),
-                set(frame.global_names),
-                set(frame.nonlocal_names),
-            )
-            for frame in self.frames
-        ]
-        return clone
-
-    def push(self, kind: _ScopeKind) -> None:
-        self.frames.append(_ScopeFrame(kind, {}, set(), set()))
-
-    def pop(self) -> None:
-        if self.frames[-1].kind == "module":
-            raise ValueError("cannot pop the module scope")
-        self.frames.pop()
-
-    def bind(self, name: str, value: _Binding) -> None:
-        frame = self._assignment_frame(name)
-        frame.bindings[name] = value
-
-    def bind_target(self, target: ast.expr, value: _Binding) -> None:
-        if isinstance(target, ast.Name):
-            self.bind(target.id, value)
-            return
-        if isinstance(target, ast.Starred):
-            self.bind_target(target.value, value)
-            return
-        if isinstance(target, (ast.Tuple, ast.List)):
-            for element in target.elts:
-                self.bind_target(element, value)
-
-    def bind_pattern(self, pattern: ast.pattern, value: _Binding) -> None:
-        if isinstance(pattern, ast.MatchAs):
-            if pattern.pattern is not None:
-                self.bind_pattern(pattern.pattern, value)
-            if pattern.name is not None:
-                self.bind(pattern.name, value)
-            return
-        if isinstance(pattern, ast.MatchStar):
-            if pattern.name is not None:
-                self.bind(pattern.name, value)
-            return
-        if isinstance(pattern, ast.MatchMapping):
-            for child in pattern.patterns:
-                self.bind_pattern(child, value)
-            if pattern.rest is not None:
-                self.bind(pattern.rest, value)
-            return
-        if isinstance(pattern, ast.MatchSequence):
-            for child in pattern.patterns:
-                self.bind_pattern(child, value)
-            return
-        if isinstance(pattern, ast.MatchClass):
-            for child in (*pattern.patterns, *pattern.kwd_patterns):
-                self.bind_pattern(child, value)
-            return
-        if isinstance(pattern, ast.MatchOr):
-            for child in pattern.patterns:
-                self.bind_pattern(child, value)
-
-    def resolve(self, name: str) -> _Binding:
-        current = self.frames[-1]
-        if name in current.global_names:
-            return self.frames[0].bindings.get(name, _Binding(uncertain=True))
-        if name in current.nonlocal_names:
-            frame = self._nonlocal_frame(name)
-            if frame is None:
-                return _Binding(uncertain=True)
-            return frame.bindings.get(name, _Binding(uncertain=True))
-
-        for index in range(len(self.frames) - 1, -1, -1):
-            frame = self.frames[index]
-            if index != len(self.frames) - 1 and frame.kind == "class":
-                continue
-            binding = frame.bindings.get(name)
-            if binding is not None:
-                return binding
-        return _Binding(uncertain=True)
-
-    def declare_global(self, names: Sequence[str]) -> None:
-        current = self.frames[-1]
-        current.global_names.update(names)
-        current.nonlocal_names.difference_update(names)
-        for name in names:
-            if current is not self.frames[0]:
-                current.bindings.pop(name, None)
-
-    def declare_nonlocal(self, names: Sequence[str]) -> None:
-        current = self.frames[-1]
-        for name in names:
-            frame = self._nonlocal_frame(name)
-            if frame is None:
-                raise ValueError(f"no enclosing non-module binding for {name}")
-            current.nonlocal_names.add(name)
-            current.global_names.discard(name)
-            current.bindings.pop(name, None)
-
-    def merge_branches(self, branches: Sequence[_LexicalBindings]) -> None:
-        if any(len(branch.frames) != len(self.frames) for branch in branches):
-            raise ValueError("cannot merge lexical states with different scope depths")
-        for index, frame in enumerate(self.frames):
-            branch_frames = [branch.frames[index] for branch in branches]
-            names = set(frame.bindings)
-            for branch_frame in branch_frames:
-                names.update(branch_frame.bindings)
-            merged_bindings: dict[str, _Binding] = {}
-            for name in names:
-                values: list[_Binding] = []
-                missing = False
-                for candidate in (frame, *branch_frames):
-                    binding = candidate.bindings.get(name)
-                    if binding is None:
-                        missing = True
-                        binding = _Binding(uncertain=True)
-                    values.append(binding)
-                merged = values[0]
-                for value in values[1:]:
-                    merged = merged.merged(value)
-                if missing or any(value != values[0] for value in values[1:]):
-                    merged = _Binding(
-                        capabilities=merged.capabilities,
-                        package_target=merged.package_target,
-                        uncertain=True,
-                    )
-                merged_bindings[name] = merged
-            frame.bindings = merged_bindings
-            for branch_frame in branch_frames:
-                frame.global_names.update(branch_frame.global_names)
-                frame.nonlocal_names.update(branch_frame.nonlocal_names)
-
-    def _assignment_frame(self, name: str) -> _ScopeFrame:
-        current = self.frames[-1]
-        if name in current.global_names:
-            return self.frames[0]
-        if name in current.nonlocal_names:
-            frame = self._nonlocal_frame(name)
-            if frame is None:
-                raise ValueError(f"no enclosing non-module binding for {name}")
-            return frame
-        return current
-
-    def _nonlocal_frame(self, name: str) -> _ScopeFrame | None:
-        for frame in reversed(self.frames[1:-1]):
-            if frame.kind != "class" and name in frame.bindings:
-                return frame
-        return None
-
-
-class _ImportVisitor(ast.NodeVisitor):
+class _SourceFlowAnalyzer:
     def __init__(
         self,
         *,
@@ -906,712 +1564,2566 @@ class _ImportVisitor(ast.NodeVisitor):
         self.source_module = source_module
         self.known_modules = known_modules
         self.initializer_policy = initializer_policy
-        self.type_checking_depth = 0
-        self.references: list[_ImportReference] = []
-        self.protected: list[str] = []
-        self.forbidden_calls: list[str] = []
-        self.study_forbidden_calls: list[str] = []
-        self.closure_errors: list[str] = []
-        self.class_stack: list[str] = []
-        self.bindings = _LexicalBindings()
+        self._future_annotations = False
+        self._stats = _StatsBuilder()
 
-    def visit_If(self, node: ast.If) -> None:
-        type_checking = _is_type_checking_test(node.test, bindings=self.bindings)
-        self.visit(node.test)
-        baseline = self.bindings
-        branches: list[_LexicalBindings] = []
-
-        self.bindings = baseline.clone()
-        if type_checking:
-            self.type_checking_depth += 1
-        try:
-            self._visit_statements(node.body)
-        finally:
-            if type_checking:
-                self.type_checking_depth -= 1
-        branches.append(self.bindings)
-
-        self.bindings = baseline.clone()
-        self._visit_statements(node.orelse)
-        branches.append(self.bindings)
-        self.bindings = baseline
-        self.bindings.merge_branches(branches)
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        for decorator in node.decorator_list:
-            self.visit(decorator)
-        for base in node.bases:
-            self.visit(base)
-        for keyword in node.keywords:
-            self.visit(keyword.value)
-        for type_param in getattr(node, "type_params", ()):
-            self.visit(type_param)
-        self.bindings.push("class")
-        self.class_stack.append(node.name)
-        try:
-            self._visit_statements(node.body)
-        finally:
-            self.class_stack.pop()
-            self.bindings.pop()
-        self.bindings.bind(node.name, _Binding())
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self._visit_function(node)
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self._visit_function(node)
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        self._visit_argument_expressions(node.args)
-        self.bindings.push("lambda")
-        try:
-            self._bind_arguments(node.args)
-            self.visit(node.body)
-        finally:
-            self.bindings.pop()
-
-    def visit_ListComp(self, node: ast.ListComp) -> None:
-        self._visit_comprehension(node.generators, (node.elt,))
-
-    def visit_SetComp(self, node: ast.SetComp) -> None:
-        self._visit_comprehension(node.generators, (node.elt,))
-
-    def visit_DictComp(self, node: ast.DictComp) -> None:
-        self._visit_comprehension(node.generators, (node.key, node.value))
-
-    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
-        self._visit_comprehension(node.generators, (node.elt,))
-
-    def visit_Import(self, node: ast.Import) -> None:
-        for alias in node.names:
-            if self.type_checking_depth == 0:
-                if alias.name in _PROJECTED_PACKAGE_ROOTS:
-                    self.closure_errors.append(
-                        f"{self.source_module}:{node.lineno}:"
-                        f"runtime package-object import: {alias.name}"
-                    )
-                if _is_importlib_target(alias.name):
-                    self.closure_errors.append(
-                        f"{self.source_module}:{node.lineno}:"
-                        f"runtime importlib import: {alias.name}"
-                    )
-            capabilities: set[_Capability] = set()
-            if alias.name == "importlib":
-                capabilities.add("import-namespace")
-            if alias.name == "builtins":
-                capabilities.add("builtins-namespace")
-            if alias.name == "runpy":
-                capabilities.add("dynamic-loader-module")
-            if alias.name == "typing":
-                capabilities.add("typing-module")
-            package_target = None
-            if alias.name in _PROJECTED_PACKAGE_ROOTS:
-                capabilities.add("package-object")
-                package_target = (
-                    alias.name if alias.asname else "manufacturing_vision_studio"
-                )
-            bound_name = alias.asname or alias.name.split(".", 1)[0]
-            self.bindings.bind(
-                bound_name,
-                _Binding(frozenset(capabilities), package_target),
+    def analyze(self, tree: ast.Module) -> _ModuleFlowResult:
+        self._future_annotations = any(
+            isinstance(statement, ast.ImportFrom)
+            and statement.module == "__future__"
+            and any(alias.name == "annotations" for alias in statement.names)
+            for statement in tree.body
+        )
+        declarations = self._scope_declarations(tree.body)
+        module_global_names = {
+            name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Global)
+            for name in node.names
+        }
+        module_names = declarations.local_names | module_global_names
+        module_frame = _Frame.create(
+            scope_id=_source_location(self.source_module, tree),
+            kind="module",
+            names=tuple(module_names),
+        )
+        state = _State((module_frame,))
+        self._stats.observe_state(state)
+        context = _TransferContext("eager", True, True, False)
+        flow = self._transfer_statements(tree.body, state, context)
+        final_state = flow.normal or state
+        deferred_facts, deferred_effects = self._inspect_deferred_bodies(
+            flow.deferred, final_state
+        )
+        all_deferred = _join_deferred(flow.deferred, deferred_effects)
+        facts = _join_policy(flow.facts, deferred_facts)
+        if all_deferred.unknown_outer_write:
+            facts = _join_policy(
+                facts,
+                self._policy_error(
+                    "deferred-effect",
+                    tree,
+                    "deferred write target could not be resolved",
+                ),
             )
+        stats = self._stats.freeze()
+        iteration_budget = stats.program_points * (stats.computed_height_bound + 1)
+        if stats.max_updates_per_program_point > stats.computed_height_bound:
+            facts = _join_policy(
+                facts,
+                self._closure_error(tree, "source dataflow did not converge"),
+            )
+        if stats.worklist_pops > iteration_budget:
+            facts = _join_policy(
+                facts,
+                self._closure_error(tree, "source dataflow worklist bound exceeded"),
+            )
+        if stats.transfer_steps > iteration_budget:
+            facts = _join_policy(
+                facts,
+                self._closure_error(tree, "source dataflow transfer bound exceeded"),
+            )
+        final_states = () if flow.normal is None else (flow.normal,)
+        return _ModuleFlowResult(final_states, facts, stats)
+
+    def _scope_declarations(
+        self,
+        statements: Sequence[ast.stmt],
+        arguments: ast.arguments | None = None,
+    ) -> _ScopeDeclarations:
+        collector = _ScopeDeclarationCollector(arguments)
+        for statement in statements:
+            collector.visit(statement)
+        return collector.finish()
+
+    def _lambda_declarations(self, node: ast.Lambda) -> _ScopeDeclarations:
+        collector = _ScopeDeclarationCollector(node.args)
+        collector.visit(node.body)
+        return collector.finish()
+
+    def _comprehension_declarations(
+        self, generators: Sequence[ast.comprehension]
+    ) -> _ScopeDeclarations:
+        names: set[str] = set()
+        for generator in generators:
+            names.update(
+                child.id
+                for child in ast.walk(generator.target)
+                if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store)
+            )
+        return _ScopeDeclarations(frozenset(names), frozenset(), frozenset())
+
+    def _builtin_value(self, name: str) -> _AbsValue:
+        identity = _ResolvedIdentity("builtin", "builtins", name)
+        capabilities: tuple[_Capability, ...] = ()
+        if name == "__import__":
+            capabilities = ("import-loader",)
+        elif name in {"exec", "eval", "compile"}:
+            capabilities = ("executable-code",)
+        elif name in {"getattr", "vars", "globals", "locals"}:
+            capabilities = ("namespace-reflection",)
+        return _value_with_capabilities(*capabilities, identity=identity)
+
+    def _resolved_value(self, state: _State, name: str) -> tuple[_AbsValue, bool]:
+        slot = state.resolve(name)
+        if slot.may_be_bound:
+            return slot.value, slot.may_be_unbound
+        if not any(frame.wildcard_shadowed for frame in state.frames):
+            return self._builtin_value(name), False
+        return _UNKNOWN_VALUE, True
+
+    def _record_point(
+        self, kind: str, node: ast.AST, context: _TransferContext
+    ) -> None:
+        self._stats.program_points.add(
+            (kind, _source_location(self.source_module, node), context.mode)
+        )
+
+    def _closure_error(self, node: ast.AST, detail: str) -> _PolicyFacts:
+        return _PolicyFacts(
+            closure_errors=frozenset(
+                {
+                    f"{self.source_module}:{getattr(node, 'lineno', 0)}:{detail}"
+                }
+            )
+        )
+
+    def _policy_error(
+        self, category: _PolicyCapability, node: ast.AST, detail: str
+    ) -> _PolicyFacts:
+        return self._closure_error(
+            node, f"{detail}; source capability rejected: {category}"
+        )
+
+    def _reference_fact(
+        self, target: str, context: _TransferContext
+    ) -> _PolicyFacts:
+        if context.emit_runtime_references:
+            return _PolicyFacts(references=frozenset({_ImportReference(target, False)}))
+        if context.emit_type_only_references:
+            return _PolicyFacts(references=frozenset({_ImportReference(target, True)}))
+        return _PolicyFacts()
+
+    def _expr_from_parts(
+        self,
+        value: _AbsValue,
+        state: _State,
+        truth: _Truth,
+        *,
+        raises: _State | None = None,
+        deferred: _DeferredEffects = _EMPTY_DEFERRED_EFFECTS,
+        facts: _PolicyFacts = _EMPTY_POLICY_FACTS,
+    ) -> _ExprResult:
+        return _result_with(
+            _normal_value(value, state, truth),
+            raises=raises,
+            deferred=deferred,
+            facts=facts,
+        )
+
+    def _transfer_expression(
+        self, node: ast.expr, state: _State, context: _TransferContext
+    ) -> _ExprResult:
+        self._stats.expression_transfers += 1
+        self._record_point("expression", node, context)
+        self._stats.observe_state(state)
+
+        if isinstance(node, ast.Constant):
+            return self._expr_from_parts(
+                _literal_value(node.value), state, _truth_for_constant(node.value)
+            )
+        if isinstance(node, ast.Name):
+            return self._transfer_name(node, state, context)
+        if isinstance(node, ast.Attribute):
+            return self._transfer_attribute(node, state, context)
+        if isinstance(node, ast.Subscript):
+            return self._transfer_subscript(node, state, context)
+        if isinstance(node, ast.Call):
+            return self._transfer_call(node, state, context)
+        if isinstance(node, ast.NamedExpr):
+            value_result = self._transfer_expression(node.value, state, context)
+            return self._bind_expression_target(
+                node.target, value_result, context, operation="assign"
+            )
+        if isinstance(node, ast.BoolOp):
+            return self._transfer_bool_op(node, state, context)
+        if isinstance(node, ast.IfExp):
+            return self._transfer_if_expression(node, state, context)
+        if isinstance(node, ast.UnaryOp):
+            operand = self._transfer_expression(node.operand, state, context)
+            if isinstance(node.op, ast.Not):
+                return _ExprResult(
+                    None
+                    if operand.falsy is None
+                    else _NormalExit(operand.falsy.value, operand.falsy.state),
+                    None
+                    if operand.truthy is None
+                    else _NormalExit(operand.truthy.value, operand.truthy.state),
+                    operand.raises,
+                    operand.deferred,
+                    operand.facts,
+                )
+            post = operand.post_state
+            if post is None:
+                return operand
+            return self._expr_from_parts(
+                _UNKNOWN_VALUE,
+                post,
+                _Truth.UNKNOWN,
+                raises=operand.raises,
+                deferred=operand.deferred,
+                facts=operand.facts,
+            )
+        if isinstance(node, ast.Compare):
+            return self._transfer_compare(node, state, context)
+        if isinstance(node, ast.Lambda):
+            return self._transfer_lambda(node, state, context)
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp)):
+            return self._transfer_eager_comprehension(node, state, context)
+        if isinstance(node, ast.GeneratorExp):
+            return self._transfer_generator_expression(node, state, context)
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+            sequence = self._transfer_expression_sequence(node.elts, state, context)
+            return self._sequence_as_container(sequence, type(node).__name__.lower())
+        if isinstance(node, ast.Dict):
+            expressions = tuple(
+                child
+                for pair in zip(node.keys, node.values, strict=True)
+                for child in pair
+                if child is not None
+            )
+            sequence = self._transfer_expression_sequence(expressions, state, context)
+            return self._sequence_as_container(sequence, "dict")
+        if isinstance(node, ast.BinOp):
+            return self._transfer_generic_operands((node.left, node.right), state, context)
+        if isinstance(node, ast.Await):
+            return self._transfer_expression(node.value, state, context)
+        if isinstance(node, ast.Yield):
+            if node.value is None:
+                return self._expr_from_parts(_SAFE_VALUE, state, _Truth.FALSE)
+            return self._transfer_expression(node.value, state, context)
+        if isinstance(node, ast.YieldFrom):
+            return self._transfer_expression(node.value, state, context)
+        if isinstance(node, ast.JoinedStr):
+            sequence = self._transfer_expression_sequence(node.values, state, context)
+            return self._sequence_as_unknown(sequence, complete=True)
+        if isinstance(node, ast.FormattedValue):
+            expressions = (node.value,) + (() if node.format_spec is None else (node.format_spec,))
+            return self._transfer_generic_operands(expressions, state, context)
+        if isinstance(node, ast.Starred):
+            return self._transfer_expression(node.value, state, context)
+        if isinstance(node, ast.Slice):
+            expressions = tuple(
+                item for item in (node.lower, node.upper, node.step) if item is not None
+            )
+            return self._transfer_generic_operands(expressions, state, context)
+        return self._expr_from_parts(_UNKNOWN_VALUE, state, _Truth.UNKNOWN)
+
+    def _transfer_name(
+        self, node: ast.Name, state: _State, context: _TransferContext
+    ) -> _ExprResult:
+        if not isinstance(node.ctx, ast.Load):
+            return self._expr_from_parts(_SAFE_VALUE, state, _Truth.UNKNOWN)
+        resolution_index = state._resolution_index(node.id)
+        if resolution_index is None:
+            value = self._builtin_value(node.id)
+            maybe_unbound = False
+        else:
+            slot = dict(state.frames[resolution_index].bindings)[node.id]
+            if not slot.may_be_bound:
+                return _ExprResult(None, None, state)
+            value = slot.value
+            maybe_unbound = slot.may_be_unbound
+        facts = _PolicyFacts()
+        if node.id == "__import__" and context.mode != "type-only":
+            facts = self._policy_error(
+                "dynamic-import", node, "runtime __import__ symbol access"
+            )
+        if (
+            self.source_module in _PROJECTED_PACKAGE_ROOTS
+            and "import-loader" in value.facts.may_capabilities
+            and not self._is_initializer_allowed(node)
+        ):
+            facts = _join_policy(
+                facts,
+                self._closure_error(node, "runtime importlib loader symbol access"),
+            )
+        truth = _Truth.UNKNOWN
+        if self._is_type_checking_value(value):
+            truth = _Truth.FALSE
+        return self._expr_from_parts(
+            value,
+            state,
+            truth,
+            raises=state if maybe_unbound else None,
+            facts=facts,
+        )
+
+    def _transfer_expression_sequence(
+        self,
+        nodes: Sequence[ast.expr],
+        state: _State,
+        context: _TransferContext,
+    ) -> tuple[tuple[_AbsValue, ...], _State, _State | None, _DeferredEffects, _PolicyFacts]:
+        values: list[_AbsValue] = []
+        current = state
+        raises: _State | None = None
+        deferred = _DeferredEffects()
+        facts = _PolicyFacts()
+        active_context = context
+        for node in nodes:
+            result = self._transfer_expression(node, current, active_context)
+            values.append(result.value)
+            raises = _join_states(raises, result.raises)
+            deferred = _join_deferred(deferred, result.deferred)
+            facts = _join_policy(facts, result.facts)
+            post = result.post_state
+            if post is None:
+                active_context = _TransferContext(
+                    "unreachable", False, False, False
+                )
+                continue
+            current = post
+        return tuple(values), current, raises, deferred, facts
+
+    def _sequence_as_container(
+        self,
+        sequence: tuple[
+            tuple[_AbsValue, ...], _State, _State | None, _DeferredEffects, _PolicyFacts
+        ],
+        kind: str,
+    ) -> _ExprResult:
+        values, state, raises, deferred, facts = sequence
+        value = _container_value(values, kind=kind)
+        truth = _Truth.FALSE if not values else _Truth.TRUE
+        return self._expr_from_parts(
+            value,
+            state,
+            truth,
+            raises=raises,
+            deferred=deferred,
+            facts=facts,
+        )
+
+    def _sequence_as_unknown(
+        self,
+        sequence: tuple[
+            tuple[_AbsValue, ...], _State, _State | None, _DeferredEffects, _PolicyFacts
+        ],
+        *,
+        complete: bool,
+    ) -> _ExprResult:
+        _, state, raises, deferred, facts = sequence
+        return self._expr_from_parts(
+            _SAFE_VALUE if complete else _UNKNOWN_VALUE,
+            state,
+            _Truth.UNKNOWN,
+            raises=raises,
+            deferred=deferred,
+            facts=facts,
+        )
+
+    def _transfer_generic_operands(
+        self,
+        nodes: Sequence[ast.expr],
+        state: _State,
+        context: _TransferContext,
+    ) -> _ExprResult:
+        return self._sequence_as_unknown(
+            self._transfer_expression_sequence(nodes, state, context), complete=False
+        )
+
+    def _transfer_attribute(
+        self, node: ast.Attribute, state: _State, context: _TransferContext
+    ) -> _ExprResult:
+        receiver = self._transfer_expression(node.value, state, context)
+        post = receiver.post_state
+        if post is None:
+            return receiver
+        receiver_value = receiver.value
+        capabilities = receiver_value.facts.may_capabilities
+        facts = receiver.facts
+        value = _derived_value(receiver_value, complete=receiver_value.facts.complete)
+        if (
+            isinstance(node.value, ast.Name)
+            and node.value.id == "EvaluationScope"
+            and node.attr in _PROTECTED_SCOPES
+        ):
+            facts = _join_policy(
+                facts,
+                _PolicyFacts(
+                    protected=frozenset(
+                        {
+                            f"{self.source_module}:{node.lineno}:"
+                            f"EvaluationScope.{node.attr}"
+                        }
+                    )
+                ),
+            )
+        package_target = (
+            receiver_value.facts.package.target
+            if receiver_value.facts.package.state == "exact"
+            else None
+        )
+        if package_target is not None:
+            candidate = f"{package_target}.{node.attr}"
+            if candidate in self.known_modules:
+                facts = _join_policy(facts, self._reference_fact(candidate, context))
+                value = _value_with_capabilities("package-object", package=candidate)
+            elif context.mode in {"eager", "deferred"}:
+                facts = _join_policy(
+                    facts,
+                    self._policy_error(
+                        "package-object",
+                        node,
+                        f"unresolved package attribute: {candidate}",
+                    ),
+                )
+        elif "package-object" in capabilities and context.mode in {"eager", "deferred"}:
+            facts = _join_policy(
+                facts,
+                self._policy_error(
+                    "package-object", node, "ambiguous package attribute"
+                ),
+            )
+        if (
+            "typing-module" in capabilities
+            and receiver_value.facts.complete
+            and receiver_value.facts.identity.state == "exact"
+            and node.attr == "TYPE_CHECKING"
+        ):
+            value = _value_with_capabilities(
+                "type-checking-sentinel",
+                identity=_ResolvedIdentity("imported", "typing", "TYPE_CHECKING"),
+            )
+        elif "sys-module" in capabilities and node.attr == "stdout":
+            value = _SAFE_VALUE
+        elif node.attr == "modules":
+            if "sys-module" in capabilities or not receiver_value.facts.complete:
+                facts = _join_policy(
+                    facts,
+                    self._policy_error(
+                        "import-registry", node, "sensitive import registry access"
+                    ),
+                )
+                value = _value_with_capabilities("import-registry", complete=False)
+        elif node.attr == "__globals__":
+            facts = _join_policy(
+                facts,
+                self._policy_error(
+                    "namespace-reflection", node, "function namespace reflection"
+                ),
+            )
+            value = _value_with_capabilities("namespace-reflection", complete=False)
+        elif node.attr == "__dict__" and (
+            "builtins-namespace" in capabilities
+            or (isinstance(node.value, ast.Name)
+            and node.value.id == "__builtins__")
+        ):
+            value = _value_with_capabilities("namespace-mapping")
+        elif "import-namespace" in capabilities and node.attr == "import_module":
+            value = _value_with_capabilities(
+                "import-loader",
+                identity=_ResolvedIdentity("imported", "importlib", "import_module"),
+            )
+        elif "dynamic-loader-module" in capabilities and node.attr in {
+            "run_module",
+            "run_path",
+        }:
+            value = _value_with_capabilities(
+                "import-loader",
+                "dynamic-loader-module",
+                identity=_ResolvedIdentity("imported", "runpy", node.attr),
+            )
+        elif (
+            "pkgutil-module" in capabilities and node.attr == "get_loader"
+        ) or (
+            "zipimport-module" in capabilities and node.attr == "zipimporter"
+        ):
+            value = _value_with_capabilities("import-loader")
+        elif "operator-module" in capabilities and node.attr == "attrgetter":
+            value = _value_with_capabilities("namespace-reflection")
+        return self._expr_from_parts(
+            value,
+            post,
+            _Truth.UNKNOWN,
+            raises=_join_states(receiver.raises, post),
+            deferred=receiver.deferred,
+            facts=facts,
+        )
+
+    def _transfer_subscript(
+        self, node: ast.Subscript, state: _State, context: _TransferContext
+    ) -> _ExprResult:
+        values, post, raises, deferred, facts = self._transfer_expression_sequence(
+            (node.value, node.slice), state, context
+        )
+        container_value = values[0]
+        value = _element_value(container_value)
+        if self._string_constant(node.slice) == "__import__" and (
+            "namespace-mapping" in container_value.facts.may_capabilities
+            or "builtins-namespace" in container_value.facts.may_capabilities
+            or (isinstance(node.value, ast.Name)
+            and node.value.id == "__builtins__")
+        ):
+            facts = _join_policy(
+                facts,
+                self._policy_error(
+                    "dynamic-import", node, "runtime __import__ symbol access"
+                ),
+            )
+            value = _value_with_capabilities("import-loader")
+        return self._expr_from_parts(
+            value,
+            post,
+            _Truth.UNKNOWN,
+            raises=_join_states(raises, post),
+            deferred=deferred,
+            facts=facts,
+        )
+
+    @staticmethod
+    def _string_constant(node: ast.expr) -> str | None:
+        return (
+            node.value
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            else None
+        )
+
+    def _transfer_call(
+        self, node: ast.Call, state: _State, context: _TransferContext
+    ) -> _ExprResult:
+        function = self._transfer_expression(node.func, state, context)
+        post = function.post_state
+        if post is None:
+            return function
+        arguments = (*node.args, *(keyword.value for keyword in node.keywords))
+        values, post, raises, deferred, facts = self._transfer_expression_sequence(
+            arguments, post, context
+        )
+        facts = _join_policy(function.facts, facts)
+        deferred = _join_deferred(function.deferred, deferred)
+        raises = _join_states(function.raises, raises, post)
+        function_value = function.value
+        capabilities = function_value.facts.may_capabilities
+        value = _UNKNOWN_VALUE
+        identity = function_value.facts.identity.identity
+        exact_builtin = (
+            identity.name
+            if function_value.facts.complete
+            and function_value.facts.identity.state == "exact"
+            and identity is not None
+            and identity.kind == "builtin"
+            else None
+        )
+        if exact_builtin == "getattr":
+            value, call_facts = self._transfer_getattr_call(node, values, context)
+            facts = _join_policy(facts, call_facts)
+        elif exact_builtin in {"vars", "globals", "locals"}:
+            if (exact_builtin == "vars" and values and (
+                "builtins-namespace" in values[0].facts.may_capabilities
+            )) or (exact_builtin == "globals" and self._is_initializer_allowed(node)):
+                value = _value_with_capabilities("namespace-mapping")
+            else:
+                facts = _join_policy(
+                    facts,
+                    self._policy_error(
+                        "namespace-reflection", node, "runtime namespace reflection"
+                    ),
+                )
+                value = _value_with_capabilities("namespace-reflection", complete=False)
+        elif exact_builtin in {"exec", "eval", "compile"}:
+            facts = _join_policy(
+                facts,
+                self._policy_error(
+                    "executable-code",
+                    node,
+                    f"runtime executable code: {exact_builtin}",
+                ),
+            )
+            value = _value_with_capabilities("executable-code", complete=False)
+        if "import-loader" in capabilities:
+            legacy_detail: str | None = None
+            if "dynamic-loader-module" in capabilities:
+                legacy_detail = "runtime runpy loader"
+            else:
+                legacy_detail = "runtime importlib import"
+            facts = _join_policy(
+                facts,
+                self._dynamic_import_call_facts(
+                    node, context, legacy_detail=legacy_detail
+                ),
+            )
+            value = _value_with_capabilities("package-object", complete=False)
+        if "dynamic-loader-module" in capabilities:
+            facts = _join_policy(
+                facts,
+                self._policy_error("dynamic-import", node, "runtime runpy loader"),
+            )
+        if "namespace-reflection" in capabilities and exact_builtin not in {
+            "getattr",
+            "vars",
+            "globals",
+            "locals",
+        }:
+            facts = _join_policy(
+                facts,
+                self._policy_error(
+                    "namespace-reflection", node, "runtime namespace reflection"
+                ),
+            )
+        call_name = _call_name(node.func)
+        if call_name == "plan_cases" and not _is_allowed_development_provider_plan(
+            self.source_module,
+            ("DevelopmentCorpusProvider",),
+            node,
+        ) and not _is_allowed_legacy_v1_plan(self.source_module, node):
+            facts = _join_policy(
+                facts,
+                _PolicyFacts(
+                    study_forbidden_calls=frozenset(
+                        {
+                            f"{self.source_module}:{node.lineno}:"
+                            "plan_cases outside DevelopmentCorpusProvider"
+                        }
+                    )
+                ),
+            )
+        elif call_name in _FORBIDDEN_CALL_NAMES or call_name == "FreeCADExportAdapter":
+            facts = _join_policy(
+                facts,
+                _PolicyFacts(
+                    forbidden_calls=frozenset(
+                        {f"{self.source_module}:{node.lineno}:{call_name}"}
+                    )
+                ),
+            )
+        crossing = _ValueFacts()
+        for argument in values:
+            crossing = _join_value_facts(crossing, _flatten_facts(argument))
+        sensitive_crossing = crossing.may_capabilities.intersection(
+            {
+                "import-loader",
+                "import-registry",
+                "namespace-reflection",
+                "namespace-mapping",
+                "executable-code",
+                "package-object",
+            }
+        )
+        if (
+            sensitive_crossing
+            and exact_builtin not in {"getattr", "vars"}
+            and not self._is_initializer_allowed(node)
+        ):
+            category: _PolicyCapability = "namespace-reflection"
+            if "import-loader" in sensitive_crossing:
+                category = "dynamic-import"
+            elif "import-registry" in sensitive_crossing:
+                category = "import-registry"
+            elif "executable-code" in sensitive_crossing:
+                category = "executable-code"
+            elif "package-object" in sensitive_crossing:
+                category = "package-object"
+            facts = _join_policy(
+                facts,
+                self._policy_error(category, node, "capability crossed unknown call"),
+            )
+        return self._expr_from_parts(
+            value,
+            post,
+            _Truth.UNKNOWN,
+            raises=raises,
+            deferred=deferred,
+            facts=facts,
+        )
+
+    def _transfer_getattr_call(
+        self,
+        node: ast.Call,
+        values: tuple[_AbsValue, ...],
+        context: _TransferContext,
+    ) -> tuple[_AbsValue, _PolicyFacts]:
+        if len(node.args) < 2 or len(values) < 2:
+            return _UNKNOWN_VALUE, self._policy_error(
+                "namespace-reflection", node, "broad getattr access"
+            )
+        receiver = values[0]
+        attribute = self._string_constant(node.args[1])
+        if attribute is None:
+            if self._is_initializer_allowed(node) or self._is_cli_structural_getattr(node):
+                return _UNKNOWN_VALUE, _PolicyFacts()
+            if "package-object" in receiver.facts.may_capabilities:
+                return _UNKNOWN_VALUE, self._policy_error(
+                    "package-object", node, "runtime package-object import"
+                )
+            if "import-namespace" in receiver.facts.may_capabilities:
+                return _UNKNOWN_VALUE, self._closure_error(
+                    node, "runtime importlib import: non-literal reflected import loader"
+                )
+            return _UNKNOWN_VALUE, self._policy_error(
+                "namespace-reflection", node, "broad non-literal getattr access"
+            )
+        if attribute == "__import__":
+            return _value_with_capabilities("import-loader"), self._policy_error(
+                "dynamic-import", node, "runtime __import__ symbol access"
+            )
+        if attribute in {"__globals__", "__subclasses__", "__bases__", "__mro__"}:
+            return _UNKNOWN_VALUE, self._policy_error(
+                "namespace-reflection", node, f"sensitive attribute access: {attribute}"
+            )
+        if "import-namespace" in receiver.facts.may_capabilities and attribute == "import_module":
+            return _value_with_capabilities(
+                "import-loader",
+                identity=_ResolvedIdentity("imported", "importlib", "import_module"),
+            ), _PolicyFacts()
+        package_target = (
+            receiver.facts.package.target
+            if receiver.facts.package.state == "exact"
+            else None
+        )
+        if package_target is not None:
+            candidate = f"{package_target}.{attribute}"
+            if candidate in self.known_modules:
+                return _value_with_capabilities(
+                    "package-object", package=candidate
+                ), self._reference_fact(candidate, context)
+            return _UNKNOWN_VALUE, self._policy_error(
+                "package-object", node, f"unresolved package attribute: {candidate}"
+            )
+        if "sys-module" in receiver.facts.may_capabilities and attribute == "stdout":
+            return _SAFE_VALUE, _PolicyFacts()
+        return _derived_value(receiver, complete=receiver.facts.complete), _PolicyFacts()
+
+    def _dynamic_import_call_facts(
+        self,
+        node: ast.Call,
+        context: _TransferContext,
+        *,
+        legacy_detail: str | None,
+    ) -> _PolicyFacts:
+        if self._is_initializer_allowed(node):
+            return _PolicyFacts()
+        detail_prefix = "" if legacy_detail is None else f"{legacy_detail}; "
+        if not node.args:
+            return self._policy_error(
+                "dynamic-import",
+                node,
+                f"{detail_prefix}non-literal dynamic package import",
+            )
+        target = self._string_constant(node.args[0])
+        if target is None:
+            return self._policy_error(
+                "dynamic-import",
+                node,
+                f"{detail_prefix}non-literal dynamic package import",
+            )
+        if not _is_package_target(target):
+            return self._policy_error(
+                "dynamic-import", node, f"{detail_prefix}runtime dynamic import"
+            )
+        if target not in self.known_modules:
+            return self._closure_error(
+                node,
+                f"{detail_prefix}unresolved dynamic package import: {target}",
+            )
+        return _join_policy(
+            self._reference_fact(target, context),
+            self._policy_error(
+                "dynamic-import",
+                node,
+                f"{detail_prefix}runtime dynamic package import",
+            ),
+        )
+
+    def _is_initializer_allowed(self, node: ast.AST) -> bool:
+        return id(node) in self.initializer_policy.allowed_node_ids
+
+    def _is_cli_structural_getattr(self, node: ast.Call) -> bool:
+        return (
+            self.source_module == "manufacturing_vision_studio.e1.study_cli_v2"
+            and len(node.args) == 2
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id == "value"
+            and isinstance(node.args[1], ast.Attribute)
+            and isinstance(node.args[1].value, ast.Name)
+            and node.args[1].value.id == "field"
+            and node.args[1].attr == "name"
+        )
+
+    def _bind_expression_target(
+        self,
+        target: ast.expr,
+        result: _ExprResult,
+        context: _TransferContext,
+        *,
+        operation: _WriteKind,
+    ) -> _ExprResult:
+        deferred = result.deferred
+        facts = result.facts
+        exits: list[_NormalExit | None] = []
+        for exit in (result.truthy, result.falsy):
+            if exit is None:
+                exits.append(None)
+                continue
+            bound_state, effect, binding_facts = self._bind_target(
+                target,
+                exit.value,
+                exit.state,
+                context,
+                operation=operation,
+                named_expression=isinstance(target, ast.Name)
+                and isinstance(target.ctx, ast.Store),
+            )
+            deferred = _join_deferred(deferred, effect)
+            facts = _join_policy(facts, binding_facts)
+            exits.append(_NormalExit(exit.value, bound_state))
+        return _ExprResult(exits[0], exits[1], result.raises, deferred, facts)
+
+    def _bind_target(
+        self,
+        target: ast.expr,
+        value: _AbsValue,
+        state: _State,
+        context: _TransferContext,
+        *,
+        operation: _WriteKind,
+        named_expression: bool = False,
+    ) -> tuple[_State, _DeferredEffects, _PolicyFacts]:
+        if isinstance(target, ast.Name):
+            index = self._target_frame_index(
+                state, target.id, named_expression=named_expression
+            )
+            if index is None:
+                return state, _DeferredEffects(unknown_outer_write=True), self._policy_error(
+                    "deferred-effect", target, "unresolved deferred write"
+                )
+            frames = list(state.frames)
+            if target.id not in dict(frames[index].bindings):
+                return state, _DeferredEffects(unknown_outer_write=True), self._closure_error(
+                    target, f"binding skeleton does not contain {target.id}"
+                )
+            frames[index] = frames[index].replace_binding(
+                target.id, _BindingSlot(value)
+            )
+            new_state = _State(tuple(frames))
+            if context.mode == "deferred" and index < len(state.frames) - 1:
+                kind: _DeferredKind = (
+                    "generator"
+                    if state.frames[-1].kind == "comprehension"
+                    else "function"
+                )
+                timing: _DeferredTiming = "on-iteration" if kind == "generator" else "on-call"
+                write = _DeferredWrite(
+                    kind,
+                    target.id,
+                    _source_location(self.source_module, target),
+                    frames[index].scope_id,
+                    operation,
+                    value,
+                    timing,
+                    "zero-or-many" if kind == "generator" else "zero-or-one",
+                )
+                return (
+                    new_state,
+                    _DeferredEffects(writes=(write,)),
+                    self._policy_error(
+                        "deferred-effect", target, "deferred outer binding write"
+                    ),
+                )
+            return new_state, _DeferredEffects(), _PolicyFacts()
+        if isinstance(target, ast.Starred):
+            return self._bind_target(
+                target.value,
+                _element_value(value),
+                state,
+                context,
+                operation=operation,
+                named_expression=named_expression,
+            )
+        if isinstance(target, (ast.Tuple, ast.List)):
+            current = state
+            deferred = _DeferredEffects()
+            facts = _PolicyFacts()
+            promoted = _element_value(value)
+            for element in target.elts:
+                current, effect, element_facts = self._bind_target(
+                    element,
+                    promoted,
+                    current,
+                    context,
+                    operation=operation,
+                    named_expression=named_expression,
+                )
+                deferred = _join_deferred(deferred, effect)
+                facts = _join_policy(facts, element_facts)
+            return current, deferred, facts
+        return state, _DeferredEffects(), _PolicyFacts()
+
+    def _target_frame_index(
+        self, state: _State, name: str, *, named_expression: bool
+    ) -> int | None:
+        current = state.frames[-1]
+        if named_expression and current.kind == "comprehension":
+            for index in range(len(state.frames) - 2, -1, -1):
+                if state.frames[index].kind != "comprehension":
+                    current = state.frames[index]
+                    if name in current.global_names:
+                        return 0
+                    if name in current.nonlocal_names:
+                        for outer in range(index - 1, 0, -1):
+                            if (
+                                state.frames[outer].kind != "class"
+                                and name in dict(state.frames[outer].bindings)
+                            ):
+                                return outer
+                        return None
+                    return index
+            return None
+        return state.binding_frame_index(name)
+
+    def _transfer_bool_op(
+        self, node: ast.BoolOp, state: _State, context: _TransferContext
+    ) -> _ExprResult:
+        active: _State | None = state
+        truthy: _NormalExit | None = None
+        falsy: _NormalExit | None = None
+        raises: _State | None = None
+        deferred = _DeferredEffects()
+        facts = _PolicyFacts()
+        is_and = isinstance(node.op, ast.And)
+        for index, operand in enumerate(node.values):
+            if active is None:
+                inspected = self._transfer_expression(
+                    operand,
+                    state,
+                    _TransferContext("unreachable", False, False, False),
+                )
+                deferred = _join_deferred(deferred, inspected.deferred)
+                facts = _join_policy(facts, inspected.facts)
+                continue
+            result = self._transfer_expression(operand, active, context)
+            raises = _join_states(raises, result.raises)
+            deferred = _join_deferred(deferred, result.deferred)
+            facts = _join_policy(facts, result.facts)
+            last = index == len(node.values) - 1
+            if is_and:
+                falsy = self._join_normal_exits(falsy, result.falsy)
+                if last:
+                    truthy = self._join_normal_exits(truthy, result.truthy)
+                active = None if result.truthy is None else result.truthy.state
+            else:
+                truthy = self._join_normal_exits(truthy, result.truthy)
+                if last:
+                    falsy = self._join_normal_exits(falsy, result.falsy)
+                active = None if result.falsy is None else result.falsy.state
+        return _ExprResult(truthy, falsy, raises, deferred, facts)
+
+    @staticmethod
+    def _join_normal_exits(
+        left: _NormalExit | None, right: _NormalExit | None
+    ) -> _NormalExit | None:
+        if left is None:
+            return right
+        if right is None:
+            return left
+        return _NormalExit(
+            _join_values(left.value, right.value), left.state.join(right.state)
+        )
+
+    def _transfer_if_expression(
+        self, node: ast.IfExp, state: _State, context: _TransferContext
+    ) -> _ExprResult:
+        condition = self._transfer_expression(node.test, state, context)
+        branches: list[_ExprResult] = []
+        for exit, expression in (
+            (condition.truthy, node.body),
+            (condition.falsy, node.orelse),
+        ):
+            if exit is None:
+                branches.append(
+                    self._transfer_expression(
+                        expression,
+                        state,
+                        _TransferContext("unreachable", False, False, False),
+                    )
+                )
+            else:
+                branches.append(self._transfer_expression(expression, exit.state, context))
+        return _ExprResult(
+            self._join_normal_exits(branches[0].truthy, branches[1].truthy),
+            self._join_normal_exits(branches[0].falsy, branches[1].falsy),
+            _join_states(condition.raises, *(branch.raises for branch in branches)),
+            _join_deferred(condition.deferred, *(branch.deferred for branch in branches)),
+            _join_policy(condition.facts, *(branch.facts for branch in branches)),
+        )
+
+    def _transfer_compare(
+        self, node: ast.Compare, state: _State, context: _TransferContext
+    ) -> _ExprResult:
+        values, post, raises, deferred, facts = self._transfer_expression_sequence(
+            (node.left, *node.comparators), state, context
+        )
+        truth = _Truth.UNKNOWN
+        if len(values) == 2 and len(node.ops) == 1:
+            left, right = values
+            if isinstance(node.left, ast.Constant) and isinstance(
+                node.comparators[0], ast.Constant
+            ):
+                try:
+                    if isinstance(node.ops[0], (ast.Is, ast.Eq)):
+                        truth = (
+                            _Truth.TRUE
+                            if node.left.value == node.comparators[0].value
+                            else _Truth.FALSE
+                        )
+                    elif isinstance(node.ops[0], (ast.IsNot, ast.NotEq)):
+                        truth = (
+                            _Truth.TRUE
+                            if node.left.value != node.comparators[0].value
+                            else _Truth.FALSE
+                        )
+                except (TypeError, ValueError):
+                    truth = _Truth.UNKNOWN
+            elif isinstance(node.ops[0], (ast.Is, ast.IsNot)):
+                left_sys = "sys-module" in left.facts.may_capabilities
+                right_sys = "sys-module" in right.facts.may_capabilities
+                if left_sys != right_sys and left.facts.complete and right.facts.complete:
+                    truth = _Truth.FALSE if isinstance(node.ops[0], ast.Is) else _Truth.TRUE
+        return self._expr_from_parts(
+            _SAFE_VALUE,
+            post,
+            truth,
+            raises=raises,
+            deferred=deferred,
+            facts=facts,
+        )
+
+    def _transfer_lambda(
+        self, node: ast.Lambda, state: _State, context: _TransferContext
+    ) -> _ExprResult:
+        defaults = tuple(
+            default
+            for default in (*node.args.defaults, *node.args.kw_defaults)
+            if default is not None
+        )
+        _, post, raises, deferred, facts = self._transfer_expression_sequence(
+            defaults, state, context
+        )
+        location = _source_location(self.source_module, node)
+        body = _DeferredBody(
+            "lambda", location, post.frames[-1].scope_id, post, node
+        )
+        deferred = _join_deferred(deferred, _DeferredEffects(bodies=(body,)))
+        value = _value_with_capabilities(
+            identity=_ResolvedIdentity("function", self.source_module, "<lambda>", location)
+        )
+        return self._expr_from_parts(
+            value,
+            post,
+            _Truth.TRUE,
+            raises=raises,
+            deferred=deferred,
+            facts=facts,
+        )
+
+    def _transfer_eager_comprehension(
+        self,
+        node: ast.ListComp | ast.SetComp | ast.DictComp,
+        state: _State,
+        context: _TransferContext,
+    ) -> _ExprResult:
+        generators = node.generators
+        outer = self._transfer_expression(generators[0].iter, state, context)
+        outer_state = outer.post_state
+        if outer_state is None:
+            return outer
+        declarations = self._comprehension_declarations(generators)
+        frame = _Frame.create(
+            scope_id=_source_location(self.source_module, node),
+            kind="comprehension",
+            names=tuple(declarations.local_names),
+        )
+        base = outer_state.push(frame)
+        self._stats.observe_state(base)
+        values: list[_AbsValue] = []
+        exits: list[_State] = []
+        deferred = outer.deferred
+        facts = outer.facts
+        raises = outer.raises
+        outer_outcomes = outer.value.iteration_outcomes
+        if "zero" in outer_outcomes:
+            exits.append(base.pop())
+        if outer_outcomes.intersection({"one", "many"}):
+            iteration, produced, step_raises, step_deferred, step_facts = self._comprehension_step(
+                node, 0, base, outer.value, context
+            )
+            projected_step_raises = (
+                None if step_raises is None else step_raises.pop()
+            )
+            raises = _join_states(raises, projected_step_raises)
+            deferred = _join_deferred(deferred, step_deferred)
+            facts = _join_policy(facts, step_facts)
+            if iteration is not None:
+                exits.append(iteration.pop())
+            values.extend(produced)
+            if "many" in outer_outcomes and iteration is not None:
+                header = base.join(iteration)
+                updates = 1
+                while True:
+                    self._stats.worklist_pops += 1
+                    (
+                        next_state,
+                        next_values,
+                        next_raises,
+                        next_deferred,
+                        next_facts,
+                    ) = self._comprehension_step(node, 0, header, outer.value, context)
+                    projected_next_raises = (
+                        None if next_raises is None else next_raises.pop()
+                    )
+                    raises = _join_states(raises, projected_next_raises)
+                    deferred = _join_deferred(deferred, next_deferred)
+                    facts = _join_policy(facts, next_facts)
+                    values.extend(next_values)
+                    if next_state is None:
+                        break
+                    grown = header.join(next_state)
+                    if grown == header:
+                        exits.append(next_state.pop())
+                        break
+                    header = grown
+                    updates += 1
+                    self._stats.strict_state_updates += 1
+                    if updates > self._stats.freeze().computed_height_bound:
+                        facts = _join_policy(
+                            facts,
+                            self._closure_error(node, "source dataflow did not converge"),
+                        )
+                        break
+                self._stats.max_updates_per_program_point = max(
+                    self._stats.max_updates_per_program_point, updates
+                )
+        post = _join_states(*exits) or state
+        value = _container_value(values, kind=type(node).__name__.lower())
+        return self._expr_from_parts(
+            value,
+            post,
+            _Truth.TRUE,
+            raises=raises,
+            deferred=deferred,
+            facts=facts,
+        )
+
+    def _comprehension_step(
+        self,
+        node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+        index: int,
+        state: _State,
+        iterable: _AbsValue,
+        context: _TransferContext,
+    ) -> tuple[_State | None, list[_AbsValue], _State | None, _DeferredEffects, _PolicyFacts]:
+        generator = node.generators[index]
+        current, deferred, facts = self._bind_target(
+            generator.target,
+            _element_value(iterable),
+            state,
+            context,
+            operation="assign",
+        )
+        raises: _State | None = None
+        completed: _State | None = None
+        for condition in generator.ifs:
+            result = self._transfer_expression(condition, current, context)
+            raises = _join_states(raises, result.raises)
+            deferred = _join_deferred(deferred, result.deferred)
+            facts = _join_policy(facts, result.facts)
+            completed = _join_states(
+                completed,
+                None if result.falsy is None else result.falsy.state,
+            )
+            if result.truthy is None:
+                return completed, [], raises, deferred, facts
+            current = result.truthy.state
+        if index + 1 < len(node.generators):
+            next_generator = node.generators[index + 1]
+            next_iterable = self._transfer_expression(next_generator.iter, current, context)
+            raises = _join_states(raises, next_iterable.raises)
+            deferred = _join_deferred(deferred, next_iterable.deferred)
+            facts = _join_policy(facts, next_iterable.facts)
+            next_state = next_iterable.post_state
+            nested_values: list[_AbsValue] = []
+            if next_state is not None and next_iterable.value.iteration_outcomes.intersection(
+                {"one", "many"}
+            ):
+                (
+                    nested_state,
+                    nested_values,
+                    nested_raises,
+                    nested_deferred,
+                    nested_facts,
+                ) = self._comprehension_step(
+                    node, index + 1, next_state, next_iterable.value, context
+                )
+                completed = _join_states(completed, nested_state)
+                raises = _join_states(raises, nested_raises)
+                deferred = _join_deferred(deferred, nested_deferred)
+                facts = _join_policy(facts, nested_facts)
+            if "zero" in next_iterable.value.iteration_outcomes:
+                completed = _join_states(completed, next_state)
+            return completed, nested_values, raises, deferred, facts
+        expressions: tuple[ast.expr, ...] = (
+            (node.key, node.value)
+            if isinstance(node, ast.DictComp)
+            else (node.elt,)
+        )
+        (
+            values,
+            result_state,
+            expression_raises,
+            expression_deferred,
+            expression_facts,
+        ) = self._transfer_expression_sequence(expressions, current, context)
+        return (
+            _join_states(completed, result_state),
+            list(values),
+            _join_states(raises, expression_raises),
+            _join_deferred(deferred, expression_deferred),
+            _join_policy(facts, expression_facts),
+        )
+
+    def _transfer_generator_expression(
+        self, node: ast.GeneratorExp, state: _State, context: _TransferContext
+    ) -> _ExprResult:
+        outer = self._transfer_expression(node.generators[0].iter, state, context)
+        post = outer.post_state
+        if post is None:
+            return outer
+        frame = _Frame.create(
+            scope_id=_source_location(self.source_module, node),
+            kind="comprehension",
+            names=tuple(self._comprehension_declarations(node.generators).local_names),
+        )
+        deferred_state = post.push(frame)
+        deferred_context = _TransferContext("deferred", True, True, False)
+        _, values, raises, effects, facts = self._comprehension_step(
+            node, 0, deferred_state, outer.value, deferred_context
+        )
+        del raises
+        element = _ValueFacts(complete=False)
+        if values:
+            element = _flatten_facts(values[0])
+            for value in values[1:]:
+                element = _join_value_facts(element, _flatten_facts(value))
+        generator_value = _AbsValue(
+            iterable_element=element,
+            contained=_as_contained(element),
+            iteration_outcomes=frozenset({"zero", "one", "many"}),
+        )
+        body = _DeferredBody(
+            "generator",
+            _source_location(self.source_module, node),
+            post.frames[-1].scope_id,
+            post,
+            node,
+        )
+        return self._expr_from_parts(
+            generator_value,
+            post,
+            _Truth.TRUE,
+            raises=outer.raises,
+            deferred=_join_deferred(
+                outer.deferred, effects, _DeferredEffects(bodies=(body,))
+            ),
+            facts=_join_policy(outer.facts, facts),
+        )
+
+    def _transfer_statements(
+        self,
+        statements: Sequence[ast.stmt],
+        state: _State,
+        context: _TransferContext,
+    ) -> _FlowResult:
+        current: _State | None = state
+        breaks: _State | None = None
+        continues: _State | None = None
+        returns: _State | None = None
+        raises: _State | None = None
+        deferred = _DeferredEffects()
+        facts = _PolicyFacts()
+        unreachable_seed = state
+        for statement in statements:
+            if current is None:
+                inspected = self._transfer_statement(
+                    statement,
+                    unreachable_seed,
+                    _TransferContext("unreachable", False, False, False),
+                )
+                deferred = _join_deferred(deferred, inspected.deferred)
+                facts = _join_policy(facts, inspected.facts)
+                continue
+            result = self._transfer_statement(statement, current, context)
+            breaks = _join_states(breaks, result.breaks)
+            continues = _join_states(continues, result.continues)
+            returns = _join_states(returns, result.returns)
+            raises = _join_states(raises, result.raises)
+            deferred = _join_deferred(deferred, result.deferred)
+            facts = _join_policy(facts, result.facts)
+            unreachable_seed = current
+            current = result.normal
+        return _FlowResult(
+            current, breaks, continues, returns, raises, deferred, facts
+        )
+
+    def _transfer_statement(
+        self, node: ast.stmt, state: _State, context: _TransferContext
+    ) -> _FlowResult:
+        self._stats.statement_transfers += 1
+        self._record_point("statement", node, context)
+        self._stats.observe_state(state)
+        if isinstance(node, ast.Expr):
+            result = self._transfer_expression(node.value, state, context)
+            return _FlowResult(
+                result.post_state,
+                raises=result.raises,
+                deferred=result.deferred,
+                facts=result.facts,
+            )
+        if isinstance(node, ast.Assign):
+            value_result = self._transfer_expression(node.value, state, context)
+            current = value_result.post_state
+            deferred = value_result.deferred
+            facts = value_result.facts
+            raises = value_result.raises
+            if current is None:
+                return _FlowResult(None, raises=raises, deferred=deferred, facts=facts)
+            for target in node.targets:
+                current, target_raises, target_deferred, target_facts = self._transfer_store_target(
+                    target, current, context
+                )
+                raises = _join_states(raises, target_raises)
+                deferred = _join_deferred(deferred, target_deferred)
+                facts = _join_policy(facts, target_facts)
+                current, effect, binding_facts = self._bind_target(
+                    target,
+                    value_result.value,
+                    current,
+                    context,
+                    operation="assign",
+                )
+                deferred = _join_deferred(deferred, effect)
+                facts = _join_policy(facts, binding_facts)
+            return _FlowResult(current, raises=raises, deferred=deferred, facts=facts)
+        if isinstance(node, ast.AnnAssign):
+            annotation_context = (
+                _TransferContext("postponed-annotation", False, False, False)
+                if self._future_annotations
+                else context
+            )
+            annotation = self._transfer_expression(node.annotation, state, annotation_context)
+            current = state if self._future_annotations else annotation.post_state or state
+            raises = None if self._future_annotations else annotation.raises
+            deferred = annotation.deferred
+            facts = annotation.facts
+            value = _SAFE_VALUE
+            if node.value is not None:
+                result = self._transfer_expression(node.value, current, context)
+                current = result.post_state or current
+                value = result.value
+                raises = _join_states(raises, result.raises)
+                deferred = _join_deferred(deferred, result.deferred)
+                facts = _join_policy(facts, result.facts)
+            current, target_raises, target_deferred, target_facts = self._transfer_store_target(
+                node.target, current, context
+            )
+            current, effect, binding_facts = self._bind_target(
+                node.target, value, current, context, operation="assign"
+            )
+            return _FlowResult(
+                current,
+                raises=_join_states(raises, target_raises),
+                deferred=_join_deferred(deferred, target_deferred, effect),
+                facts=_join_policy(facts, target_facts, binding_facts),
+            )
+        if isinstance(node, ast.AugAssign):
+            target_result = self._transfer_expression(node.target, state, context)
+            current = target_result.post_state or state
+            value_result = self._transfer_expression(node.value, current, context)
+            current = value_result.post_state or current
+            prior = target_result.value
+            value = _join_values(prior, _UNKNOWN_VALUE)
+            current, effect, binding_facts = self._bind_target(
+                node.target, value, current, context, operation="augment"
+            )
+            return _FlowResult(
+                current,
+                raises=_join_states(target_result.raises, value_result.raises),
+                deferred=_join_deferred(
+                    target_result.deferred, value_result.deferred, effect
+                ),
+                facts=_join_policy(
+                    target_result.facts, value_result.facts, binding_facts
+                ),
+            )
+        if isinstance(node, ast.Delete):
+            current = state
+            delete_raises: _State | None = None
+            deferred = _DeferredEffects()
+            facts = _PolicyFacts()
+            for target in node.targets:
+                target_result = self._transfer_expression(target, current, context)
+                current = target_result.post_state or current
+                delete_raises = _join_states(delete_raises, target_result.raises)
+                deferred = _join_deferred(deferred, target_result.deferred)
+                facts = _join_policy(facts, target_result.facts)
+                current, effect, delete_facts = self._delete_target(
+                    target, current, context
+                )
+                deferred = _join_deferred(deferred, effect)
+                facts = _join_policy(facts, delete_facts)
+            return _FlowResult(
+                current, raises=delete_raises, deferred=deferred, facts=facts
+            )
+        if isinstance(node, ast.Import):
+            return self._transfer_import(node, state, context)
+        if isinstance(node, ast.ImportFrom):
+            return self._transfer_import_from(node, state, context)
+        if isinstance(node, ast.Return):
+            if node.value is None:
+                return _FlowResult(None, returns=state)
+            result = self._transfer_expression(node.value, state, context)
+            return _FlowResult(
+                None,
+                returns=result.post_state,
+                raises=result.raises,
+                deferred=result.deferred,
+                facts=result.facts,
+            )
+        if isinstance(node, ast.Raise):
+            expressions = tuple(
+                expression for expression in (node.exc, node.cause) if expression is not None
+            )
+            values, post, raises, deferred, facts = self._transfer_expression_sequence(
+                expressions, state, context
+            )
+            del values
+            return _FlowResult(
+                None,
+                raises=_join_states(raises, post),
+                deferred=deferred,
+                facts=facts,
+            )
+        if isinstance(node, ast.Break):
+            return _FlowResult(None, breaks=state)
+        if isinstance(node, ast.Continue):
+            return _FlowResult(None, continues=state)
+        if isinstance(node, (ast.Pass, ast.Global, ast.Nonlocal)):
+            return _FlowResult(state)
+        if isinstance(node, ast.If):
+            return self._transfer_if_statement(node, state, context)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return self._transfer_function_definition(node, state, context)
+        if isinstance(node, ast.ClassDef):
+            return self._transfer_class_definition(node, state, context)
+        if isinstance(node, (ast.For, ast.AsyncFor)):
+            return self._transfer_for(node, state, context)
+        if isinstance(node, ast.While):
+            return self._transfer_while(node, state, context)
+        if isinstance(node, ast.Match):
+            return self._transfer_match(node, state, context)
+        if isinstance(node, (ast.With, ast.AsyncWith)):
+            return self._transfer_with(node, state, context)
+        if isinstance(node, (ast.Try, ast.TryStar)):
+            return self._transfer_try(node, state, context)
+        if isinstance(node, ast.Assert):
+            result = self._transfer_expression(node.test, state, context)
+            if node.msg is not None and result.falsy is not None:
+                message = self._transfer_expression(node.msg, result.falsy.state, context)
+                return _FlowResult(
+                    None if result.truthy is None else result.truthy.state,
+                    raises=_join_states(result.raises, result.falsy.state, message.raises),
+                    deferred=_join_deferred(result.deferred, message.deferred),
+                    facts=_join_policy(result.facts, message.facts),
+                )
+            return _FlowResult(
+                None if result.truthy is None else result.truthy.state,
+                raises=_join_states(
+                    result.raises,
+                    None if result.falsy is None else result.falsy.state,
+                ),
+                deferred=result.deferred,
+                facts=result.facts,
+            )
+        return _FlowResult(state)
+
+    def _transfer_store_target(
+        self, target: ast.expr, state: _State, context: _TransferContext
+    ) -> tuple[_State, _State | None, _DeferredEffects, _PolicyFacts]:
+        if isinstance(target, ast.Attribute):
+            result = self._transfer_expression(target.value, state, context)
+            return (
+                result.post_state or state,
+                result.raises,
+                result.deferred,
+                result.facts,
+            )
+        if isinstance(target, ast.Subscript):
+            values, post, raises, deferred, facts = self._transfer_expression_sequence(
+                (target.value, target.slice), state, context
+            )
+            del values
+            return post, raises, deferred, facts
+        if isinstance(target, ast.Starred):
+            return self._transfer_store_target(target.value, state, context)
+        if isinstance(target, (ast.Tuple, ast.List)):
+            current = state
+            tuple_raises: _State | None = None
+            deferred = _DeferredEffects()
+            facts = _PolicyFacts()
+            for element in target.elts:
+                (
+                    current,
+                    element_raises,
+                    element_deferred,
+                    element_facts,
+                ) = self._transfer_store_target(element, current, context)
+                tuple_raises = _join_states(tuple_raises, element_raises)
+                deferred = _join_deferred(deferred, element_deferred)
+                facts = _join_policy(facts, element_facts)
+            return current, tuple_raises, deferred, facts
+        return state, None, _DeferredEffects(), _PolicyFacts()
+
+    def _delete_target(
+        self,
+        target: ast.expr,
+        state: _State,
+        context: _TransferContext,
+    ) -> tuple[_State, _DeferredEffects, _PolicyFacts]:
+        if isinstance(target, ast.Name):
+            index = state.binding_frame_index(target.id)
+            if index is None:
+                return state, _DeferredEffects(unknown_outer_write=True), self._closure_error(
+                    target, "unresolved nonlocal binding"
+                )
+            frames = list(state.frames)
+            if target.id not in dict(frames[index].bindings):
+                return state, _DeferredEffects(unknown_outer_write=True), self._closure_error(
+                    target, f"binding skeleton does not contain {target.id}"
+                )
+            frames[index] = frames[index].replace_binding(
+                target.id, _BindingSlot(_UNKNOWN_VALUE, False, True)
+            )
+            new_state = _State(tuple(frames))
+            if context.mode == "deferred" and index < len(state.frames) - 1:
+                write = _DeferredWrite(
+                    "function",
+                    target.id,
+                    _source_location(self.source_module, target),
+                    frames[index].scope_id,
+                    "delete",
+                    _UNKNOWN_VALUE,
+                    "on-call",
+                    "zero-or-one",
+                )
+                return new_state, _DeferredEffects(writes=(write,)), self._policy_error(
+                    "deferred-effect", target, "deferred outer binding delete"
+                )
+            return new_state, _DeferredEffects(), _PolicyFacts()
+        if isinstance(target, ast.Starred):
+            return self._delete_target(target.value, state, context)
+        if isinstance(target, (ast.Tuple, ast.List)):
+            current = state
+            deferred = _DeferredEffects()
+            facts = _PolicyFacts()
+            for element in target.elts:
+                current, effect, element_facts = self._delete_target(
+                    element, current, context
+                )
+                deferred = _join_deferred(deferred, effect)
+                facts = _join_policy(facts, element_facts)
+            return current, deferred, facts
+        return state, _DeferredEffects(), _PolicyFacts()
+
+    def _import_value(self, module: str, imported_name: str | None = None) -> _AbsValue:
+        capabilities: list[_Capability] = []
+        package: str | None = None
+        identity: _ResolvedIdentity | None = _ResolvedIdentity(
+            "imported", module, "<module>"
+        )
+        if module == "sys":
+            capabilities.append("sys-module")
+        elif module == "typing":
+            capabilities.append("typing-module")
+        elif module == "builtins":
+            capabilities.append("builtins-namespace")
+        elif module == "importlib":
+            capabilities.append("import-namespace")
+        elif module == "runpy":
+            capabilities.append("dynamic-loader-module")
+        elif module == "pkgutil":
+            capabilities.append("pkgutil-module")
+        elif module == "zipimport":
+            capabilities.append("zipimport-module")
+        elif module == "operator":
+            capabilities.append("operator-module")
+        if module in _PROJECTED_PACKAGE_ROOTS:
+            capabilities.append("package-object")
+            package = module
+        if imported_name is not None:
+            identity = _ResolvedIdentity("imported", module, imported_name)
+            if module == "typing" and imported_name == "TYPE_CHECKING":
+                capabilities = ["type-checking-sentinel"]
+            elif (
+                module == "importlib" and imported_name == "import_module"
+            ) or (module == "builtins" and imported_name == "__import__"):
+                capabilities = ["import-loader"]
+            elif module == "runpy" and imported_name in {"run_module", "run_path"}:
+                capabilities = ["import-loader", "dynamic-loader-module"]
+        return _value_with_capabilities(
+            *capabilities, package=package, identity=identity
+        )
+
+    def _transfer_import(
+        self, node: ast.Import, state: _State, context: _TransferContext
+    ) -> _FlowResult:
+        current = state
+        facts = _PolicyFacts()
+        deferred = _DeferredEffects()
+        for alias in node.names:
+            if context.mode != "type-only" and alias.name in _PROJECTED_PACKAGE_ROOTS:
+                facts = _join_policy(
+                    facts,
+                    self._policy_error(
+                        "package-object",
+                        node,
+                        f"runtime package-object import: {alias.name}",
+                    ),
+                )
+            if context.mode != "type-only" and _is_importlib_target(alias.name):
+                facts = _join_policy(
+                    facts,
+                    self._closure_error(node, f"runtime importlib import: {alias.name}"),
+                )
             target = _nearest_known_module(alias.name, self.known_modules)
             if target is not None:
-                self.references.append(
-                    _ImportReference(target, self.type_checking_depth > 0)
-                )
+                facts = _join_policy(facts, self._reference_fact(target, context))
+            bound_name = alias.asname or alias.name.split(".", 1)[0]
+            imported_module = alias.name if alias.asname else alias.name.split(".", 1)[0]
+            value = self._import_value(imported_module)
+            current, effect, binding_facts = self._bind_target(
+                ast.Name(
+                    id=bound_name,
+                    ctx=ast.Store(),
+                    lineno=node.lineno,
+                    col_offset=node.col_offset,
+                ),
+                value,
+                current,
+                context,
+                operation="import",
+            )
+            deferred = _join_deferred(deferred, effect)
+            facts = _join_policy(facts, binding_facts)
+        return _FlowResult(current, deferred=deferred, facts=facts)
 
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+    def _transfer_import_from(
+        self, node: ast.ImportFrom, state: _State, context: _TransferContext
+    ) -> _FlowResult:
+        current = state
+        facts = _PolicyFacts()
+        deferred = _DeferredEffects()
         if (
-            self.type_checking_depth == 0
+            context.mode != "type-only"
             and node.level == 0
             and _is_importlib_target(node.module)
-            and id(node) not in self.initializer_policy.allowed_node_ids
+            and not self._is_initializer_allowed(node)
         ):
-            self.closure_errors.append(
-                f"{self.source_module}:{node.lineno}:"
-                f"runtime importlib import: {node.module}"
+            facts = _join_policy(
+                facts,
+                self._closure_error(node, f"runtime importlib import: {node.module}"),
             )
-        if node.level == 0 and node.module == "importlib":
-            for alias in node.names:
-                if alias.name == "import_module":
-                    self.bindings.bind(
-                        alias.asname or alias.name,
-                        _Binding(frozenset({"import-loader"})),
-                    )
-        if node.level == 0 and node.module == "builtins":
-            for alias in node.names:
-                if self.type_checking_depth == 0 and alias.name == "__import__":
-                    self.closure_errors.append(
-                        f"{self.source_module}:{node.lineno}:runtime __import__ symbol access"
-                    )
-                if alias.name == "__import__":
-                    self.bindings.bind(
-                        alias.asname or alias.name,
-                        _Binding(frozenset({"import-loader"})),
-                    )
-        if node.level == 0 and node.module == "runpy":
-            for alias in node.names:
-                if alias.name in {"run_module", "run_path"}:
-                    self.bindings.bind(
-                        alias.asname or alias.name,
-                        _Binding(
-                            frozenset(
-                                {"dynamic-loader-module", "import-loader"}
-                            )
-                        ),
-                    )
-        if node.level == 0 and node.module == "typing":
-            for alias in node.names:
-                if alias.name == "TYPE_CHECKING":
-                    self.bindings.bind(
-                        alias.asname or alias.name,
-                        _Binding(frozenset({"type-checking-sentinel"})),
-                    )
         base = _resolve_import_from_base(self.source_module, node.module, node.level)
         if base is None:
-            return
+            return _FlowResult(current, facts=facts)
         for alias in node.names:
-            candidate = f"{base}.{alias.name}" if alias.name != "*" else base
-            if alias.name != "*" and not self._has_special_import_binding(
-                node,
-                alias,
-            ):
-                if candidate in _PROJECTED_PACKAGE_ROOTS:
-                    self.bindings.bind(
-                        alias.asname or alias.name,
-                        _Binding(
-                            frozenset({"package-object"}),
-                            package_target=candidate,
-                        ),
-                    )
-                else:
-                    self.bindings.bind(alias.asname or alias.name, _Binding())
+            if alias.name == "*":
+                frames = list(current.frames)
+                frames[-1] = frames[-1].with_wildcard()
+                current = _State(tuple(frames))
+                continue
+            candidate = f"{base}.{alias.name}"
             if (
                 base in _PROJECTED_PACKAGE_ROOTS
                 and candidate not in self.known_modules
-                and self.type_checking_depth == 0
+                and context.mode != "type-only"
             ):
-                self.closure_errors.append(
-                    f"{self.source_module}:{node.lineno}:unresolved package symbol import: "
-                    f"{candidate}"
+                facts = _join_policy(
+                    facts,
+                    self._closure_error(
+                        node, f"unresolved package symbol import: {candidate}"
+                    ),
                 )
                 continue
             target = _nearest_known_module(candidate, self.known_modules)
             if target is None:
                 target = _nearest_known_module(base, self.known_modules)
             if target is not None:
-                self.references.append(
-                    _ImportReference(target, self.type_checking_depth > 0)
-                )
-
-    def visit_Assign(self, node: ast.Assign) -> None:
-        loader_kind = _dynamic_import_loader_kind(
-            node.value,
-            bindings=self.bindings,
-        )
-        if loader_kind == "nonliteral_reflection" and self.type_checking_depth == 0:
-            self.closure_errors.append(
-                f"{self.source_module}:{node.lineno}:"
-                "non-literal reflected import loader"
-            )
-        value = self._binding_for_expression(node.value)
-        self.visit(node.value)
-        for target in node.targets:
-            self.bindings.bind_target(target, value)
-
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        self.visit(node.annotation)
-        value = _Binding()
-        if node.value is not None:
-            value = self._binding_for_expression(node.value)
-            self.visit(node.value)
-        self.bindings.bind_target(node.target, value)
-
-    def visit_AugAssign(self, node: ast.AugAssign) -> None:
-        prior = self._binding_for_expression(node.target)
-        self.visit(node.target)
-        self.visit(node.value)
-        self.bindings.bind_target(
-            node.target,
-            prior.merged(_Binding(uncertain=True)),
-        )
-
-    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
-        value = self._binding_for_expression(node.value)
-        self.visit(node.value)
-        self.bindings.bind_target(node.target, value)
-
-    def visit_Delete(self, node: ast.Delete) -> None:
-        for target in node.targets:
-            self.visit(target)
-            self.bindings.bind_target(target, _Binding(uncertain=True))
-
-    def visit_For(self, node: ast.For) -> None:
-        self._visit_loop(node)
-
-    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
-        self._visit_loop(node)
-
-    def visit_While(self, node: ast.While) -> None:
-        self.visit(node.test)
-        self._visit_loop_branches(node.body, node.orelse)
-
-    def visit_With(self, node: ast.With) -> None:
-        self._visit_with(node)
-
-    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
-        self._visit_with(node)
-
-    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
-        if node.type is not None:
-            self.visit(node.type)
-        if node.name is not None:
-            self.bindings.bind(node.name, _Binding(uncertain=True))
-        self._visit_statements(node.body)
-
-    def visit_Try(self, node: ast.Try) -> None:
-        self._visit_try(node)
-
-    def visit_TryStar(self, node: ast.TryStar) -> None:
-        self._visit_try(node)
-
-    def visit_Match(self, node: ast.Match) -> None:
-        self.visit(node.subject)
-        baseline = self.bindings
-        branches: list[_LexicalBindings] = []
-        for case in node.cases:
-            self.bindings = baseline.clone()
-            self.bindings.bind_pattern(case.pattern, _Binding(uncertain=True))
-            self.visit(case.pattern)
-            if case.guard is not None:
-                self.visit(case.guard)
-            self._visit_statements(case.body)
-            branches.append(self.bindings)
-        self.bindings = baseline
-        self.bindings.merge_branches(branches)
-
-    def visit_Global(self, node: ast.Global) -> None:
-        self.bindings.declare_global(node.names)
-
-    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
-        try:
-            self.bindings.declare_nonlocal(node.names)
-        except ValueError:
-            self.closure_errors.append(
-                f"{self.source_module}:{node.lineno}:unresolved nonlocal binding"
-            )
-
-    def visit_Attribute(self, node: ast.Attribute) -> None:
-        if self.type_checking_depth == 0 and node.attr == "__import__":
-            self.closure_errors.append(
-                f"{self.source_module}:{node.lineno}:runtime __import__ symbol access"
-            )
-        package_target = self._package_object_target(node.value)
-        if package_target is not None:
-            self._record_package_attribute(
-                package_target,
-                node.attr,
-                lineno=node.lineno,
-            )
-        elif (
-            self.type_checking_depth == 0
-            and "package-object"
-            in self._binding_for_expression(node.value).capabilities
-        ):
-            self.closure_errors.append(
-                f"{self.source_module}:{node.lineno}:ambiguous package attribute"
-            )
-        if (
-            isinstance(node.value, ast.Name)
-            and node.value.id == "EvaluationScope"
-            and node.attr in _PROTECTED_SCOPES
-        ):
-            self.protected.append(f"{self.source_module}:{node.lineno}:EvaluationScope.{node.attr}")
-        self.generic_visit(node)
-
-    def visit_Call(self, node: ast.Call) -> None:
-        self._visit_package_getattr(node)
-        self._visit_reflected_builtin_import(node)
-        self._visit_runtime_executable_code(node)
-        self._visit_runpy_loader(node)
-        loader_kind = _dynamic_import_loader_kind(
-            node.func,
-            bindings=self.bindings,
-        )
-        if loader_kind == "loader":
-            self._visit_dynamic_import(node)
-        elif loader_kind == "nonliteral_reflection" and self.type_checking_depth == 0:
-            self.closure_errors.append(
-                f"{self.source_module}:{node.lineno}:"
-                "non-literal reflected import loader"
-            )
-        name = _call_name(node.func)
-        if (
-            name == "plan_cases"
-            and not _is_allowed_development_provider_plan(
-                self.source_module,
-                self.class_stack,
-                node,
-            )
-            and not _is_allowed_legacy_v1_plan(self.source_module, node)
-        ):
-            self.study_forbidden_calls.append(
-                f"{self.source_module}:{node.lineno}:plan_cases outside DevelopmentCorpusProvider"
-            )
-        elif name in _FORBIDDEN_CALL_NAMES or name == "FreeCADExportAdapter":
-            self.forbidden_calls.append(f"{self.source_module}:{node.lineno}:{name}")
-        self.generic_visit(node)
-
-    def visit_Name(self, node: ast.Name) -> None:
-        if (
-            self.type_checking_depth == 0
-            and isinstance(node.ctx, ast.Load)
-            and node.id == "__import__"
-        ):
-            self.closure_errors.append(
-                f"{self.source_module}:{node.lineno}:runtime __import__ symbol access"
-            )
-        if (
-            self.type_checking_depth == 0
-            and self.source_module in _PROJECTED_PACKAGE_ROOTS
-            and "import-loader" in self.bindings.resolve(node.id).capabilities
-            and id(node) not in self.initializer_policy.allowed_node_ids
-        ):
-            self.closure_errors.append(
-                f"{self.source_module}:{node.lineno}:"
-                "runtime importlib loader symbol access"
-            )
-
-    def visit_Subscript(self, node: ast.Subscript) -> None:
-        if self.type_checking_depth == 0 and _is_builtin_import_dict_access(
-            node,
-            bindings=self.bindings,
-        ):
-            self.closure_errors.append(
-                f"{self.source_module}:{node.lineno}:runtime __import__ symbol access"
-            )
-        self.generic_visit(node)
-
-    def _visit_reflected_builtin_import(self, node: ast.Call) -> None:
-        if (
-            self.type_checking_depth == 0
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "getattr"
-            and len(node.args) >= 2
-            and isinstance(node.args[1], ast.Constant)
-            and node.args[1].value == "__import__"
-        ):
-            self.closure_errors.append(
-                f"{self.source_module}:{node.lineno}:runtime __import__ symbol access"
-            )
-
-    def _visit_runtime_executable_code(self, node: ast.Call) -> None:
-        if (
-            self.type_checking_depth == 0
-            and isinstance(node.func, ast.Name)
-            and node.func.id in {"exec", "eval"}
-        ):
-            self.closure_errors.append(
-                f"{self.source_module}:{node.lineno}:runtime executable code: {node.func.id}"
-            )
-
-    def _visit_runpy_loader(self, node: ast.Call) -> None:
-        if self.type_checking_depth != 0:
-            return
-        if (
-            isinstance(node.func, ast.Name)
-            and "dynamic-loader-module"
-            in self.bindings.resolve(node.func.id).capabilities
-        ):
-            self.closure_errors.append(
-                f"{self.source_module}:{node.lineno}:runtime runpy loader: {node.func.id}"
-            )
-            return
-        if (
-            isinstance(node.func, ast.Attribute)
-            and node.func.attr in {"run_module", "run_path"}
-            and isinstance(node.func.value, ast.Name)
-            and "dynamic-loader-module"
-            in self.bindings.resolve(node.func.value.id).capabilities
-        ):
-            self.closure_errors.append(
-                f"{self.source_module}:{node.lineno}:runtime runpy loader: {node.func.attr}"
-            )
-
-    def _visit_dynamic_import(self, node: ast.Call) -> None:
-        if not node.args:
-            return
-        target_node = node.args[0]
-        if isinstance(target_node, ast.Constant) and isinstance(target_node.value, str):
-            target = target_node.value
-            if not _is_package_target(target):
-                return
-            if target not in self.known_modules:
-                self.closure_errors.append(
-                    f"{self.source_module}:{node.lineno}:"
-                    f"unresolved dynamic package import: {target}"
-                )
-                return
-            self.references.append(
-                _ImportReference(target, self.type_checking_depth > 0)
-            )
-            return
-        if id(node) in self.initializer_policy.allowed_node_ids:
-            return
-        self.closure_errors.append(
-            f"{self.source_module}:{node.lineno}:non-literal dynamic package import"
-        )
-
-    def _visit_package_getattr(self, node: ast.Call) -> None:
-        if (
-            not isinstance(node.func, ast.Name)
-            or node.func.id != "getattr"
-            or len(node.args) < 2
-        ):
-            return
-        package_target = self._package_object_target(node.args[0])
-        if package_target is None:
+                facts = _join_policy(facts, self._reference_fact(target, context))
             if (
-                self.type_checking_depth == 0
-                and "package-object"
-                in self._binding_for_expression(node.args[0]).capabilities
+                node.level == 0
+                and node.module == "builtins"
+                and alias.name == "__import__"
+                and context.mode != "type-only"
             ):
-                self.closure_errors.append(
-                    f"{self.source_module}:{node.lineno}:ambiguous package attribute"
+                facts = _join_policy(
+                    facts,
+                    self._policy_error(
+                        "dynamic-import", node, "runtime __import__ symbol access"
+                    ),
                 )
-            return
-        attribute_node = node.args[1]
-        if isinstance(attribute_node, ast.Constant) and isinstance(
-            attribute_node.value, str
-        ):
-            self._record_package_attribute(
-                package_target,
-                attribute_node.value,
-                lineno=node.lineno,
-            )
-            return
-        if self.type_checking_depth == 0:
-            self.closure_errors.append(
-                f"{self.source_module}:{node.lineno}:non-literal package attribute"
-            )
-
-    def _record_package_attribute(
-        self,
-        package_target: str,
-        attribute: str,
-        *,
-        lineno: int,
-    ) -> None:
-        candidate = f"{package_target}.{attribute}"
-        if candidate in self.known_modules:
-            self.references.append(
-                _ImportReference(candidate, self.type_checking_depth > 0)
-            )
-        elif self.type_checking_depth == 0:
-            self.closure_errors.append(
-                f"{self.source_module}:{lineno}:unresolved package attribute: {candidate}"
-            )
-
-    def _package_object_target(self, node: ast.AST) -> str | None:
-        if isinstance(node, ast.Name):
-            binding = self.bindings.resolve(node.id)
-            if "package-object" in binding.capabilities:
-                return binding.package_target
-            return None
-        if isinstance(node, ast.Attribute):
-            parent = self._package_object_target(node.value)
-            candidate = None if parent is None else f"{parent}.{node.attr}"
+            value = self._import_value(base, alias.name)
             if candidate in _PROJECTED_PACKAGE_ROOTS:
-                return candidate
-        return None
-
-    def _binding_for_expression(self, node: ast.AST) -> _Binding:
-        if isinstance(node, ast.Name):
-            return self.bindings.resolve(node.id)
-        if isinstance(node, ast.Attribute):
-            if node.attr == "TYPE_CHECKING" and isinstance(node.value, ast.Name):
-                typing_binding = self.bindings.resolve(node.value.id)
-                if _is_exact_capability(typing_binding, "typing-module"):
-                    return _Binding(frozenset({"type-checking-sentinel"}))
-            package_target = self._package_object_target(node)
-            if package_target is not None:
-                return _Binding(
-                    frozenset({"package-object"}),
-                    package_target=package_target,
+                value = _value_with_capabilities("package-object", package=candidate)
+            elif candidate in self.known_modules:
+                value = _value_with_capabilities(
+                    identity=_ResolvedIdentity(
+                        "imported", candidate, "<module>"
+                    )
                 )
-            loader_kind = _dynamic_import_loader_kind(
-                node,
-                bindings=self.bindings,
+            bound_name = alias.asname or alias.name
+            synthetic = ast.Name(
+                id=bound_name,
+                ctx=ast.Store(),
+                lineno=node.lineno,
+                col_offset=node.col_offset,
             )
-            if loader_kind == "loader":
-                return _Binding(frozenset({"import-loader"}))
-        return _Binding()
+            current, effect, binding_facts = self._bind_target(
+                synthetic, value, current, context, operation="import"
+            )
+            deferred = _join_deferred(deferred, effect)
+            facts = _join_policy(facts, binding_facts)
+        return _FlowResult(current, deferred=deferred, facts=facts)
 
-    def _visit_function(
+    def _transfer_if_statement(
+        self, node: ast.If, state: _State, context: _TransferContext
+    ) -> _FlowResult:
+        condition = self._transfer_expression(node.test, state, context)
+        type_only = self._is_type_checking_value(condition.value)
+        if type_only:
+            inspected = self._transfer_statements(
+                node.body,
+                condition.post_state or state,
+                _TransferContext("type-only", False, False, True),
+            )
+            normal = self._transfer_statements(
+                node.orelse,
+                condition.falsy.state if condition.falsy is not None else state,
+                context,
+            )
+            return _FlowResult(
+                normal.normal,
+                normal.breaks,
+                normal.continues,
+                normal.returns,
+                _join_states(condition.raises, normal.raises),
+                _join_deferred(condition.deferred, inspected.deferred, normal.deferred),
+                _join_policy(condition.facts, inspected.facts, normal.facts),
+            )
+        branches: list[_FlowResult] = []
+        for exit, statements in (
+            (condition.truthy, node.body),
+            (condition.falsy, node.orelse),
+        ):
+            if exit is None:
+                branches.append(
+                    self._transfer_statements(
+                        statements,
+                        condition.post_state or state,
+                        _TransferContext("unreachable", False, False, False),
+                    )
+                )
+            else:
+                branches.append(self._transfer_statements(statements, exit.state, context))
+        joined = _join_flow(*branches)
+        return _FlowResult(
+            joined.normal,
+            joined.breaks,
+            joined.continues,
+            joined.returns,
+            _join_states(condition.raises, joined.raises),
+            _join_deferred(condition.deferred, joined.deferred),
+            _join_policy(condition.facts, joined.facts),
+        )
+
+    @staticmethod
+    def _is_type_checking_value(value: _AbsValue) -> bool:
+        return (
+            value.facts.complete
+            and value.facts.may_capabilities == frozenset({"type-checking-sentinel"})
+            and value.facts.identity.state == "exact"
+            and value.facts.identity.identity
+            == _ResolvedIdentity("imported", "typing", "TYPE_CHECKING")
+        )
+
+    def _transfer_function_definition(
         self,
         node: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> None:
-        for decorator in node.decorator_list:
-            self.visit(decorator)
-        self._visit_argument_expressions(node.args)
-        if node.returns is not None:
-            self.visit(node.returns)
-        for type_param in getattr(node, "type_params", ()):
-            self.visit(type_param)
-        self.bindings.bind(node.name, _Binding())
-        self.bindings.push("function")
-        try:
-            self._predeclare_function_locals(node.body)
-            self._bind_arguments(node.args)
-            self._visit_statements(node.body)
-        finally:
-            self.bindings.pop()
-
-    def _predeclare_function_locals(self, body: Sequence[ast.stmt]) -> None:
-        collector = _FunctionLocalCollector()
-        for statement in body:
-            collector.visit(statement)
-        local_names = collector.names.difference(
-            collector.global_names,
-            collector.nonlocal_names,
+        state: _State,
+        context: _TransferContext,
+    ) -> _FlowResult:
+        expressions: list[ast.expr] = list(node.decorator_list)
+        expressions.extend(node.args.defaults)
+        expressions.extend(
+            default for default in node.args.kw_defaults if default is not None
         )
-        for name in local_names:
-            self.bindings.bind(name, _Binding(uncertain=True))
+        annotations = self._argument_annotations(node.args)
+        if node.returns is not None:
+            annotations = (*annotations, node.returns)
+        values, current, raises, deferred, facts = self._transfer_expression_sequence(
+            tuple(expressions), state, context
+        )
+        del values
+        annotation_context = (
+            _TransferContext("postponed-annotation", False, False, False)
+            if self._future_annotations
+            else context
+        )
+        for annotation in annotations:
+            result = self._transfer_expression(annotation, current, annotation_context)
+            facts = _join_policy(facts, result.facts)
+            deferred = _join_deferred(deferred, result.deferred)
+            if not self._future_annotations:
+                current = result.post_state or current
+                raises = _join_states(raises, result.raises)
+        for expression in self._type_parameter_expressions(node):
+            result = self._transfer_expression(
+                expression,
+                current,
+                _TransferContext("lazy-annotation", False, False, False),
+            )
+            facts = _join_policy(facts, result.facts)
+            deferred = _join_deferred(deferred, result.deferred)
+        location = _source_location(self.source_module, node)
+        definition_state = current.pop() if current.frames[-1].kind == "class" else current
+        kind: _DeferredKind = (
+            "async-function" if isinstance(node, ast.AsyncFunctionDef) else "function"
+        )
+        body = _DeferredBody(
+            kind,
+            location,
+            definition_state.frames[-1].scope_id,
+            definition_state,
+            node,
+        )
+        deferred = _join_deferred(deferred, _DeferredEffects(bodies=(body,)))
+        function_value = _value_with_capabilities(
+            identity=_ResolvedIdentity(
+                "function", self.source_module, node.name, location
+            ),
+            complete=not node.decorator_list,
+        )
+        synthetic = ast.Name(
+            id=node.name,
+            ctx=ast.Store(),
+            lineno=node.lineno,
+            col_offset=node.col_offset,
+        )
+        current, effect, binding_facts = self._bind_target(
+            synthetic, function_value, current, context, operation="assign"
+        )
+        return _FlowResult(
+            current,
+            raises=raises,
+            deferred=_join_deferred(deferred, effect),
+            facts=_join_policy(facts, binding_facts),
+        )
 
-    def _visit_argument_expressions(self, arguments: ast.arguments) -> None:
+    @staticmethod
+    def _argument_annotations(arguments: ast.arguments) -> tuple[ast.expr, ...]:
+        result: list[ast.expr] = []
         for argument in (
             *arguments.posonlyargs,
             *arguments.args,
             *arguments.kwonlyargs,
         ):
             if argument.annotation is not None:
-                self.visit(argument.annotation)
+                result.append(argument.annotation)
         if arguments.vararg is not None and arguments.vararg.annotation is not None:
-            self.visit(arguments.vararg.annotation)
+            result.append(arguments.vararg.annotation)
         if arguments.kwarg is not None and arguments.kwarg.annotation is not None:
-            self.visit(arguments.kwarg.annotation)
-        for default in arguments.defaults:
-            self.visit(default)
-        for keyword_default in arguments.kw_defaults:
-            if keyword_default is not None:
-                self.visit(keyword_default)
+            result.append(arguments.kwarg.annotation)
+        return tuple(result)
 
-    def _bind_arguments(self, arguments: ast.arguments) -> None:
-        uncertain = _Binding(uncertain=True)
+    @staticmethod
+    def _type_parameter_expressions(
+        node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+    ) -> tuple[ast.expr, ...]:
+        result: list[ast.expr] = []
+        for type_parameter in getattr(node, "type_params", ()):
+            bound = getattr(type_parameter, "bound", None)
+            if isinstance(bound, ast.expr):
+                result.append(bound)
+            default = getattr(type_parameter, "default_value", None)
+            if isinstance(default, ast.expr):
+                result.append(default)
+        return tuple(result)
+
+    def _transfer_class_definition(
+        self, node: ast.ClassDef, state: _State, context: _TransferContext
+    ) -> _FlowResult:
+        expressions = (
+            *node.decorator_list,
+            *node.bases,
+            *(keyword.value for keyword in node.keywords),
+        )
+        values, current, raises, deferred, facts = self._transfer_expression_sequence(
+            expressions, state, context
+        )
+        del values
+        for expression in self._type_parameter_expressions(node):
+            result = self._transfer_expression(
+                expression,
+                current,
+                _TransferContext("lazy-annotation", False, False, False),
+            )
+            facts = _join_policy(facts, result.facts)
+            deferred = _join_deferred(deferred, result.deferred)
+        declarations = self._scope_declarations(node.body)
+        frame = _Frame.create(
+            scope_id=_source_location(self.source_module, node),
+            kind="class",
+            names=tuple(declarations.local_names),
+            global_names=declarations.global_names,
+            nonlocal_names=declarations.nonlocal_names,
+        )
+        class_flow = self._transfer_statements(node.body, current.push(frame), context)
+        facts = _join_policy(facts, class_flow.facts)
+        deferred = _join_deferred(deferred, class_flow.deferred)
+        class_raises = None if class_flow.raises is None else class_flow.raises.pop()
+        raises = _join_states(raises, class_raises)
+        outer = current if class_flow.normal is None else class_flow.normal.pop()
+        class_value = _value_with_capabilities(
+            identity=_ResolvedIdentity(
+                "class",
+                self.source_module,
+                node.name,
+                _source_location(self.source_module, node),
+            ),
+            complete=not node.decorator_list,
+        )
+        synthetic = ast.Name(
+            id=node.name,
+            ctx=ast.Store(),
+            lineno=node.lineno,
+            col_offset=node.col_offset,
+        )
+        outer, effect, binding_facts = self._bind_target(
+            synthetic, class_value, outer, context, operation="assign"
+        )
+        return _FlowResult(
+            outer,
+            raises=raises,
+            deferred=_join_deferred(deferred, effect),
+            facts=_join_policy(facts, binding_facts),
+        )
+
+    def _inspect_deferred_bodies(
+        self, effects: _DeferredEffects, suffix_state: _State
+    ) -> tuple[_PolicyFacts, _DeferredEffects]:
+        facts = _PolicyFacts()
+        accumulated = _DeferredEffects(writes=effects.writes)
+        for body in effects.bodies:
+            if body.kind == "generator":
+                continue
+            definition_state = body.definition_state
+            if len(definition_state.frames) != len(suffix_state.frames):
+                envelope = definition_state
+            else:
+                envelope = definition_state.join(suffix_state)
+                self._stats.program_points.add(
+                    ("suffix", body.location, "deferred")
+                )
+                self._stats.worklist_pops += 1
+            if isinstance(body.node, ast.Lambda):
+                declarations = self._lambda_declarations(body.node)
+                arguments = body.node.args
+            elif isinstance(body.node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                declarations = self._scope_declarations(
+                    body.node.body, body.node.args
+                )
+                arguments = body.node.args
+            else:
+                facts = _join_policy(
+                    facts,
+                    self._closure_error(body.node, "invalid deferred body node"),
+                )
+                continue
+            frame = _Frame.create(
+                scope_id=body.location,
+                kind="lambda" if body.kind == "lambda" else "function",
+                names=tuple(declarations.local_names),
+                global_names=declarations.global_names,
+                nonlocal_names=declarations.nonlocal_names,
+            )
+            body_state = envelope.push(frame)
+            body_state = self._bind_arguments(arguments, body_state)
+            unresolved = tuple(
+                name
+                for name in declarations.nonlocal_names
+                if body_state._nonlocal_index(name) is None
+            )
+            if unresolved:
+                facts = _join_policy(
+                    facts,
+                    self._closure_error(
+                        body.node,
+                        f"unresolved nonlocal binding: {', '.join(sorted(unresolved))}",
+                    ),
+                )
+            deferred_context = _TransferContext("deferred", True, True, False)
+            if isinstance(body.node, ast.Lambda):
+                result = self._transfer_expression(
+                    body.node.body, body_state, deferred_context
+                )
+                body_flow = _FlowResult(
+                    result.post_state,
+                    raises=result.raises,
+                    deferred=result.deferred,
+                    facts=result.facts,
+                )
+            elif isinstance(body.node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                body_flow = self._transfer_statements(
+                    body.node.body, body_state, deferred_context
+                )
+            else:
+                continue
+            facts = _join_policy(facts, body_flow.facts)
+            accumulated = _join_deferred(accumulated, body_flow.deferred)
+            nested_suffix = body_flow.normal or body_state
+            nested_facts, nested_effects = self._inspect_deferred_bodies(
+                body_flow.deferred, nested_suffix
+            )
+            facts = _join_policy(facts, nested_facts)
+            accumulated = _join_deferred(accumulated, nested_effects)
+        return facts, accumulated
+
+    @staticmethod
+    def _bind_arguments(arguments: ast.arguments, state: _State) -> _State:
+        current = state
         for argument in (
             *arguments.posonlyargs,
             *arguments.args,
             *arguments.kwonlyargs,
         ):
-            self.bindings.bind(argument.arg, uncertain)
+            current = current.bind(argument.arg, _UNKNOWN_VALUE)
         if arguments.vararg is not None:
-            self.bindings.bind(arguments.vararg.arg, uncertain)
+            current = current.bind(arguments.vararg.arg, _UNKNOWN_VALUE)
         if arguments.kwarg is not None:
-            self.bindings.bind(arguments.kwarg.arg, uncertain)
+            current = current.bind(arguments.kwarg.arg, _UNKNOWN_VALUE)
+        return current
 
-    def _visit_comprehension(
+    def _transfer_for(
         self,
-        generators: Sequence[ast.comprehension],
-        values: Sequence[ast.expr],
-    ) -> None:
-        if not generators:
-            for value in values:
-                self.visit(value)
-            return
-        self.visit(generators[0].iter)
-        self.bindings.push("comprehension")
-        try:
-            for index, generator in enumerate(generators):
-                if index > 0:
-                    self.visit(generator.iter)
-                self.bindings.bind_target(
-                    generator.target,
-                    _Binding(uncertain=True),
-                )
-                for condition in generator.ifs:
-                    self.visit(condition)
-            for value in values:
-                self.visit(value)
-        finally:
-            self.bindings.pop()
-
-    def _visit_loop(self, node: ast.For | ast.AsyncFor) -> None:
-        self.visit(node.iter)
-        baseline = self.bindings
-        self.bindings = baseline.clone()
-        self.bindings.bind_target(node.target, _Binding(uncertain=True))
-        self._visit_statements(node.body)
-        body_branch = self.bindings
-        self.bindings = baseline.clone()
-        self._visit_statements(node.orelse)
-        else_branch = self.bindings
-        self.bindings = baseline
-        self.bindings.merge_branches((body_branch, else_branch))
-
-    def _visit_loop_branches(
-        self,
-        body: Sequence[ast.stmt],
-        orelse: Sequence[ast.stmt],
-    ) -> None:
-        baseline = self.bindings
-        self.bindings = baseline.clone()
-        self._visit_statements(body)
-        body_branch = self.bindings
-        self.bindings = baseline.clone()
-        self._visit_statements(orelse)
-        else_branch = self.bindings
-        self.bindings = baseline
-        self.bindings.merge_branches((body_branch, else_branch))
-
-    def _visit_with(self, node: ast.With | ast.AsyncWith) -> None:
-        for item in node.items:
-            self.visit(item.context_expr)
-            if item.optional_vars is not None:
-                self.bindings.bind_target(
-                    item.optional_vars,
-                    _Binding(uncertain=True),
-                )
-        self._visit_statements(node.body)
-
-    def _visit_try(self, node: ast.Try | ast.TryStar) -> None:
-        baseline = self.bindings
-        branches: list[_LexicalBindings] = []
-        self.bindings = baseline.clone()
-        body_prefixes: list[_LexicalBindings] = []
-        for statement in node.body:
-            self.visit(statement)
-            body_prefixes.append(self.bindings.clone())
-        handler_baseline = baseline.clone()
-        handler_baseline.merge_branches(body_prefixes)
-        self._visit_statements(node.orelse)
-        branches.append(self.bindings)
-        for handler in node.handlers:
-            self.bindings = handler_baseline.clone()
-            self.visit(handler)
-            branches.append(self.bindings)
-        self.bindings = baseline
-        self.bindings.merge_branches(branches)
-        self._visit_statements(node.finalbody)
-
-    def _visit_statements(self, statements: Sequence[ast.stmt]) -> None:
-        for statement in statements:
-            self.visit(statement)
-
-    @staticmethod
-    def _has_special_import_binding(node: ast.ImportFrom, alias: ast.alias) -> bool:
-        return (
-            node.level == 0
-            and (
-                (node.module == "importlib" and alias.name == "import_module")
-                or (node.module == "builtins" and alias.name == "__import__")
-                or (
-                    node.module == "runpy"
-                    and alias.name in {"run_module", "run_path"}
-                )
-                or (node.module == "typing" and alias.name == "TYPE_CHECKING")
+        node: ast.For | ast.AsyncFor,
+        state: _State,
+        context: _TransferContext,
+    ) -> _FlowResult:
+        iterable = self._transfer_expression(node.iter, state, context)
+        post = iterable.post_state
+        if post is None:
+            return _FlowResult(
+                None,
+                raises=iterable.raises,
+                deferred=iterable.deferred,
+                facts=iterable.facts,
             )
+        outcomes = iterable.value.iteration_outcomes
+        if isinstance(node, ast.AsyncFor):
+            outcomes = frozenset({"zero", "one", "many"})
+        exhaustion: _State | None = post if "zero" in outcomes else None
+        breaks: _State | None = None
+        returns: _State | None = None
+        raises = iterable.raises
+        deferred = iterable.deferred
+        facts = iterable.facts
+        if outcomes.intersection({"one", "many"}):
+            header = post
+            updates = 0
+            while True:
+                self._stats.worklist_pops += 1
+                bound, effect, binding_facts = self._bind_target(
+                    node.target,
+                    _UNKNOWN_VALUE
+                    if isinstance(node, ast.AsyncFor)
+                    else _element_value(iterable.value),
+                    header,
+                    context,
+                    operation="assign",
+                )
+                body = self._transfer_statements(node.body, bound, context)
+                deferred = _join_deferred(deferred, effect, body.deferred)
+                facts = _join_policy(facts, binding_facts, body.facts)
+                raises = _join_states(raises, body.raises)
+                returns = _join_states(returns, body.returns)
+                breaks = _join_states(breaks, body.breaks)
+                backedge = _join_states(body.normal, body.continues)
+                exhaustion = _join_states(exhaustion, backedge)
+                if "many" not in outcomes or backedge is None:
+                    break
+                grown = post.join(backedge)
+                self._stats.state_join_attempts += 1
+                if grown == header:
+                    break
+                header = header.join(grown)
+                updates += 1
+                self._stats.strict_state_updates += 1
+                if updates > self._stats.freeze().computed_height_bound:
+                    facts = _join_policy(
+                        facts,
+                        self._closure_error(node, "source dataflow did not converge"),
+                    )
+                    break
+            self._stats.max_updates_per_program_point = max(
+                self._stats.max_updates_per_program_point, updates
+            )
+        else_result = (
+            _FlowResult(exhaustion)
+            if not node.orelse or exhaustion is None
+            else self._transfer_statements(node.orelse, exhaustion, context)
         )
+        normal = _join_states(breaks, else_result.normal)
+        return _FlowResult(
+            normal,
+            returns=_join_states(returns, else_result.returns),
+            raises=_join_states(raises, else_result.raises),
+            deferred=_join_deferred(deferred, else_result.deferred),
+            facts=_join_policy(facts, else_result.facts),
+        )
+
+    def _transfer_while(
+        self, node: ast.While, state: _State, context: _TransferContext
+    ) -> _FlowResult:
+        header = state
+        exhaustion: _State | None = None
+        breaks: _State | None = None
+        returns: _State | None = None
+        raises: _State | None = None
+        deferred = _DeferredEffects()
+        facts = _PolicyFacts()
+        updates = 0
+        while True:
+            self._stats.worklist_pops += 1
+            condition = self._transfer_expression(node.test, header, context)
+            raises = _join_states(raises, condition.raises)
+            deferred = _join_deferred(deferred, condition.deferred)
+            facts = _join_policy(facts, condition.facts)
+            exhaustion = _join_states(
+                exhaustion,
+                None if condition.falsy is None else condition.falsy.state,
+            )
+            if condition.truthy is None:
+                break
+            body = self._transfer_statements(node.body, condition.truthy.state, context)
+            breaks = _join_states(breaks, body.breaks)
+            returns = _join_states(returns, body.returns)
+            raises = _join_states(raises, body.raises)
+            deferred = _join_deferred(deferred, body.deferred)
+            facts = _join_policy(facts, body.facts)
+            backedge = _join_states(body.normal, body.continues)
+            if backedge is None:
+                break
+            grown = state.join(backedge)
+            self._stats.state_join_attempts += 1
+            if grown == header:
+                break
+            header = header.join(grown)
+            updates += 1
+            self._stats.strict_state_updates += 1
+            if updates > self._stats.freeze().computed_height_bound:
+                facts = _join_policy(
+                    facts, self._closure_error(node, "source dataflow did not converge")
+                )
+                break
+        self._stats.max_updates_per_program_point = max(
+            self._stats.max_updates_per_program_point, updates
+        )
+        else_result = (
+            _FlowResult(exhaustion)
+            if not node.orelse or exhaustion is None
+            else self._transfer_statements(node.orelse, exhaustion, context)
+        )
+        return _FlowResult(
+            _join_states(breaks, else_result.normal),
+            returns=_join_states(returns, else_result.returns),
+            raises=_join_states(raises, else_result.raises),
+            deferred=_join_deferred(deferred, else_result.deferred),
+            facts=_join_policy(facts, else_result.facts),
+        )
+
+    def _transfer_match(
+        self, node: ast.Match, state: _State, context: _TransferContext
+    ) -> _FlowResult:
+        subject = self._transfer_expression(node.subject, state, context)
+        remaining = subject.post_state
+        outputs: list[_FlowResult] = []
+        facts = subject.facts
+        deferred = subject.deferred
+        raises = subject.raises
+        for case in node.cases:
+            if remaining is None:
+                inspected = self._transfer_statements(
+                    case.body,
+                    state,
+                    _TransferContext("unreachable", False, False, False),
+                )
+                facts = _join_policy(facts, inspected.facts)
+                deferred = _join_deferred(deferred, inspected.deferred)
+                continue
+            (
+                matched,
+                no_match,
+                pattern_facts,
+                pattern_deferred,
+                pattern_raises,
+            ) = self._transfer_pattern(case.pattern, subject.value, remaining, context)
+            facts = _join_policy(facts, pattern_facts)
+            deferred = _join_deferred(deferred, pattern_deferred)
+            raises = _join_states(raises, pattern_raises)
+            if case.guard is not None:
+                guard = self._transfer_expression(case.guard, matched, context)
+                facts = _join_policy(facts, guard.facts)
+                deferred = _join_deferred(deferred, guard.deferred)
+                raises = _join_states(raises, guard.raises)
+                remaining = _join_states(
+                    no_match,
+                    None if guard.falsy is None else guard.falsy.state,
+                )
+                matched_state = None if guard.truthy is None else guard.truthy.state
+            else:
+                remaining = no_match
+                matched_state = matched
+            if matched_state is not None:
+                outputs.append(self._transfer_statements(case.body, matched_state, context))
+        if remaining is not None:
+            outputs.append(_FlowResult(remaining))
+        joined = _join_flow(*outputs) if outputs else _FlowResult(None)
+        return _FlowResult(
+            joined.normal,
+            joined.breaks,
+            joined.continues,
+            joined.returns,
+            _join_states(raises, joined.raises),
+            _join_deferred(deferred, joined.deferred),
+            _join_policy(facts, joined.facts),
+        )
+
+    def _transfer_pattern(
+        self,
+        pattern: ast.pattern,
+        value: _AbsValue,
+        state: _State,
+        context: _TransferContext,
+    ) -> tuple[_State, _State | None, _PolicyFacts, _DeferredEffects, _State | None]:
+        self._stats.pattern_transfers += 1
+        self._record_point("pattern", pattern, context)
+        expressions: list[ast.expr] = []
+        always_matches = isinstance(pattern, (ast.MatchAs, ast.MatchStar)) and (
+            not isinstance(pattern, ast.MatchAs) or pattern.pattern is None
+        )
+        if isinstance(pattern, ast.MatchValue):
+            expressions.append(pattern.value)
+        elif isinstance(pattern, ast.MatchClass):
+            expressions.append(pattern.cls)
+        elif isinstance(pattern, ast.MatchMapping):
+            expressions.extend(pattern.keys)
+        _, post, raises, deferred, facts = self._transfer_expression_sequence(
+            tuple(expressions), state, context
+        )
+        bound = post.bind_pattern(pattern, value)
+        return bound, None if always_matches else state, facts, deferred, raises
+
+    def _transfer_with(
+        self,
+        node: ast.With | ast.AsyncWith,
+        state: _State,
+        context: _TransferContext,
+    ) -> _FlowResult:
+        current = state
+        raises: _State | None = None
+        deferred = _DeferredEffects()
+        facts = _PolicyFacts()
+        for item in node.items:
+            result = self._transfer_expression(item.context_expr, current, context)
+            current = result.post_state or current
+            raises = _join_states(raises, result.raises)
+            deferred = _join_deferred(deferred, result.deferred)
+            facts = _join_policy(facts, result.facts)
+            if item.optional_vars is not None:
+                target_value = _derived_value(result.value, complete=False)
+                current, effect, binding_facts = self._bind_target(
+                    item.optional_vars,
+                    target_value,
+                    current,
+                    context,
+                    operation="assign",
+                )
+                deferred = _join_deferred(deferred, effect)
+                facts = _join_policy(facts, binding_facts)
+        body = self._transfer_statements(node.body, current, context)
+        return _FlowResult(
+            _join_states(body.normal, body.raises),
+            body.breaks,
+            body.continues,
+            body.returns,
+            _join_states(raises, body.raises),
+            _join_deferred(deferred, body.deferred),
+            _join_policy(facts, body.facts),
+        )
+
+    def _transfer_try(
+        self,
+        node: ast.Try | ast.TryStar,
+        state: _State,
+        context: _TransferContext,
+    ) -> _FlowResult:
+        body = self._transfer_statements(node.body, state, context)
+        handler_input = _join_states(state, body.raises)
+        handler_outputs: list[_FlowResult] = []
+        handler_facts = _PolicyFacts()
+        handler_deferred = _DeferredEffects()
+        known_raise_names = self._possible_raise_names(node.body)
+        ordered_input = handler_input
+        for handler in node.handlers:
+            can_match = isinstance(node, ast.TryStar) or self._handler_can_match(
+                handler, known_raise_names
+            )
+            if ordered_input is None or not can_match:
+                inspected = self._transfer_statements(
+                    handler.body,
+                    state,
+                    _TransferContext("unreachable", False, False, False),
+                )
+                handler_facts = _join_policy(handler_facts, inspected.facts)
+                handler_deferred = _join_deferred(
+                    handler_deferred, inspected.deferred
+                )
+                continue
+            current = ordered_input
+            type_facts = _PolicyFacts()
+            type_deferred = _DeferredEffects()
+            type_raises: _State | None = None
+            if handler.type is not None:
+                type_result = self._transfer_expression(handler.type, current, context)
+                current = type_result.post_state or current
+                type_facts = type_result.facts
+                type_deferred = type_result.deferred
+                type_raises = type_result.raises
+            if handler.name is not None:
+                synthetic = ast.Name(
+                    id=handler.name,
+                    ctx=ast.Store(),
+                    lineno=handler.lineno,
+                    col_offset=handler.col_offset,
+                )
+                current, effect, binding_facts = self._bind_target(
+                    synthetic,
+                    _UNKNOWN_VALUE,
+                    current,
+                    context,
+                    operation="assign",
+                )
+                type_deferred = _join_deferred(type_deferred, effect)
+                type_facts = _join_policy(type_facts, binding_facts)
+            handled = self._transfer_statements(handler.body, current, context)
+            handled = _FlowResult(
+                handled.normal,
+                handled.breaks,
+                handled.continues,
+                handled.returns,
+                _join_states(type_raises, handled.raises),
+                _join_deferred(type_deferred, handled.deferred),
+                _join_policy(type_facts, handled.facts),
+            )
+            if handler.name is not None:
+                handled = self._cleanup_handler_name(handled, handler.name)
+            handler_outputs.append(handled)
+            if isinstance(node, ast.TryStar):
+                ordered_input = _join_states(ordered_input, handled.normal)
+        else_result = (
+            _FlowResult(body.normal)
+            if not node.orelse or body.normal is None
+            else self._transfer_statements(node.orelse, body.normal, context)
+        )
+        handlers = _join_flow(*handler_outputs) if handler_outputs else _FlowResult(None)
+        pre_finally = _FlowResult(
+            _join_states(else_result.normal, handlers.normal),
+            _join_states(body.breaks, else_result.breaks, handlers.breaks),
+            _join_states(body.continues, else_result.continues, handlers.continues),
+            _join_states(body.returns, else_result.returns, handlers.returns),
+            _join_states(
+                body.raises,
+                else_result.raises,
+                handlers.raises,
+            ),
+            _join_deferred(
+                body.deferred,
+                else_result.deferred,
+                handlers.deferred,
+                handler_deferred,
+            ),
+            _join_policy(
+                body.facts,
+                else_result.facts,
+                handlers.facts,
+                handler_facts,
+            ),
+        )
+        if not node.finalbody:
+            return pre_finally
+        return self._apply_finally(node.finalbody, pre_finally, context)
+
+    def _cleanup_handler_name(self, flow: _FlowResult, name: str) -> _FlowResult:
+        def cleanup(state: _State | None) -> _State | None:
+            if state is None:
+                return None
+            index = state.binding_frame_index(name)
+            if index is None or name not in dict(state.frames[index].bindings):
+                return state
+            frames = list(state.frames)
+            frames[index] = frames[index].replace_binding(
+                name, _BindingSlot(_UNKNOWN_VALUE, False, True)
+            )
+            return _State(tuple(frames))
+
+        return _FlowResult(
+            cleanup(flow.normal),
+            cleanup(flow.breaks),
+            cleanup(flow.continues),
+            cleanup(flow.returns),
+            cleanup(flow.raises),
+            flow.deferred,
+            flow.facts,
+        )
+
+    def _apply_finally(
+        self,
+        finalbody: Sequence[ast.stmt],
+        incoming: _FlowResult,
+        context: _TransferContext,
+    ) -> _FlowResult:
+        output = _FlowResult(None, deferred=incoming.deferred, facts=incoming.facts)
+        for kind, state in (
+            ("normal", incoming.normal),
+            ("break", incoming.breaks),
+            ("continue", incoming.continues),
+            ("return", incoming.returns),
+            ("raise", incoming.raises),
+        ):
+            if state is None:
+                continue
+            final = self._transfer_statements(finalbody, state, context)
+            preserved = _FlowResult(
+                final.normal if kind == "normal" else None,
+                final.normal if kind == "break" else None,
+                final.normal if kind == "continue" else None,
+                final.normal if kind == "return" else None,
+                final.normal if kind == "raise" else None,
+                final.deferred,
+                final.facts,
+            )
+            replacements = _FlowResult(
+                None,
+                final.breaks,
+                final.continues,
+                final.returns,
+                final.raises,
+                final.deferred,
+                final.facts,
+            )
+            output = _join_flow(output, preserved, replacements)
+        return output
+
+    @classmethod
+    def _handler_can_match(
+        cls,
+        handler: ast.ExceptHandler,
+        possible: frozenset[str] | None,
+    ) -> bool:
+        if possible is None or handler.type is None:
+            return True
+        names: set[str] = set()
+        candidates = (
+            handler.type.elts if isinstance(handler.type, ast.Tuple) else (handler.type,)
+        )
+        for candidate in candidates:
+            if isinstance(candidate, ast.Name):
+                names.add(candidate.id)
+            elif isinstance(candidate, ast.Attribute):
+                names.add(candidate.attr)
+        return bool(possible.intersection(names))
+
+    @classmethod
+    def _possible_raise_names(
+        cls, statements: Sequence[ast.stmt]
+    ) -> frozenset[str] | None:
+        names: set[str] = set()
+        unknown = False
+        for statement in statements:
+            if isinstance(statement, ast.Raise):
+                if statement.exc is None:
+                    unknown = True
+                elif isinstance(statement.exc, ast.Call):
+                    name = _call_name(statement.exc.func)
+                    unknown = unknown or name is None
+                    if name is not None:
+                        names.add(name)
+                elif isinstance(statement.exc, ast.Name):
+                    names.add(statement.exc.id)
+                else:
+                    unknown = True
+            elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While, ast.If)):
+                nested = cls._possible_raise_names(statement.body)
+                if nested is None:
+                    unknown = True
+                else:
+                    names.update(nested)
+                nested_else = cls._possible_raise_names(statement.orelse)
+                if nested_else is None:
+                    unknown = True
+                else:
+                    names.update(nested_else)
+            elif isinstance(statement, (ast.With, ast.AsyncWith)):
+                nested = cls._possible_raise_names(statement.body)
+                if nested is None:
+                    unknown = True
+                else:
+                    names.update(nested)
+            elif isinstance(statement, (ast.Try, ast.TryStar)):
+                final_names = cls._possible_raise_names(statement.finalbody)
+                final_always_abrupt = bool(statement.finalbody) and all(
+                    isinstance(item, (ast.Raise, ast.Return, ast.Break, ast.Continue))
+                    for item in statement.finalbody
+                )
+                if final_always_abrupt:
+                    if final_names is None:
+                        unknown = True
+                    else:
+                        names.update(final_names)
+                    continue
+                for block in (
+                    statement.body,
+                    statement.orelse,
+                    statement.finalbody,
+                    *(handler.body for handler in statement.handlers),
+                ):
+                    nested = cls._possible_raise_names(block)
+                    if nested is None:
+                        unknown = True
+                    else:
+                        names.update(nested)
+            elif isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
+                unknown = True
+        return None if unknown else frozenset(names)
 
 
 def classify_edge(
@@ -1706,10 +4218,10 @@ def scan_study_dependencies(
             f"study modules missing from projection: {', '.join(sorted(missing_study))}"
         )
 
-    visitors: dict[str, _ImportVisitor] = {}
+    flow_results: dict[str, _ModuleFlowResult] = {}
 
-    def visitor_for(module: str) -> _ImportVisitor:
-        existing = visitors.get(module)
+    def result_for(module: str) -> _ModuleFlowResult:
+        existing = flow_results.get(module)
         if existing is not None:
             return existing
         relative = module_to_path[module]
@@ -1722,14 +4234,14 @@ def scan_study_dependencies(
             tree,
             known_modules,
         )
-        visitor = _ImportVisitor(
+        analyzer = _SourceFlowAnalyzer(
             source_module=module,
             known_modules=known_modules,
             initializer_policy=initializer_policy,
         )
-        visitor.visit(tree)
-        visitors[module] = visitor
-        return visitor
+        result = analyzer.analyze(tree)
+        flow_results[module] = result
+        return result
 
     direct_actual: dict[str, set[str]] = {
         name: set() for name in protocol.direct_import_allowlist()
@@ -1746,12 +4258,13 @@ def scan_study_dependencies(
         if source in visited:
             continue
         visited.add(source)
-        source_visitor = visitor_for(source)
+        source_result = result_for(source)
+        source_facts = source_result.facts
         if source in study_owned:
-            protected.extend(source_visitor.protected)
-            forbidden_calls.extend(source_visitor.study_forbidden_calls)
-        forbidden_calls.extend(source_visitor.forbidden_calls)
-        closure_errors.extend(source_visitor.closure_errors)
+            protected.extend(source_facts.protected)
+            forbidden_calls.extend(source_facts.study_forbidden_calls)
+        forbidden_calls.extend(source_facts.forbidden_calls)
+        closure_errors.extend(source_facts.closure_errors)
         runtime_targets = runtime_graph.setdefault(source, set())
         for package in _package_initializers(source, known_modules):
             kind = classify_edge(
@@ -1763,7 +4276,7 @@ def scan_study_dependencies(
             edges.add(DependencyEdge(source, package, kind))
             runtime_targets.add(package)
             queue.append(package)
-        for reference in source_visitor.references:
+        for reference in source_facts.references:
             if reference.target not in module_to_path:
                 raise StudyRetentionError(
                     f"unprojected repository import: {source} -> {reference.target}"
@@ -1788,8 +4301,19 @@ def scan_study_dependencies(
             ):
                 direct_actual[source.rsplit(".", 1)[-1]].add(reference.target)
 
-    if closure_errors:
-        raise StudyRetentionError(sorted(closure_errors)[0])
+    selected_closure_error = (
+        None
+        if not closure_errors
+        else min(closure_errors, key=_closure_error_key)
+    )
+    delayed_deferred_error = (
+        selected_closure_error
+        if selected_closure_error is not None
+        and "source capability rejected: deferred-effect" in selected_closure_error
+        else None
+    )
+    if selected_closure_error is not None and delayed_deferred_error is None:
+        raise StudyRetentionError(selected_closure_error)
     if protected:
         raise StudyRetentionError(
             f"protected scope reference: {', '.join(sorted(protected))}"
@@ -1808,9 +4332,14 @@ def scan_study_dependencies(
     )
     if forbidden_direct:
         first = forbidden_direct[0]
-        raise StudyRetentionError(
-            f"forbidden direct import: {first.source} -> {first.target}"
+        suffix = (
+            "" if delayed_deferred_error is None else f"; {delayed_deferred_error}"
         )
+        raise StudyRetentionError(
+            f"forbidden direct import: {first.source} -> {first.target}{suffix}"
+        )
+    if delayed_deferred_error is not None:
+        raise StudyRetentionError(delayed_deferred_error)
     runtime_cycle = _study_owned_runtime_cycle(runtime_graph, study_owned)
     if runtime_cycle:
         raise StudyRetentionError(
@@ -2261,58 +4790,6 @@ def _resolve_import_from_base(source: str, module: str | None, level: int) -> st
     return ".".join(prefix)
 
 
-def _is_type_checking_test(
-    node: ast.expr,
-    *,
-    bindings: _LexicalBindings,
-) -> bool:
-    if isinstance(node, ast.Name):
-        return _is_exact_capability(
-            bindings.resolve(node.id),
-            "type-checking-sentinel",
-        )
-    if (
-        isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and node.attr == "TYPE_CHECKING"
-    ):
-        return _is_exact_capability(
-            bindings.resolve(node.value.id),
-            "typing-module",
-        )
-    return False
-
-
-def _is_exact_capability(binding: _Binding, capability: _Capability) -> bool:
-    return (
-        not binding.uncertain
-        and binding.package_target is None
-        and binding.capabilities == frozenset({capability})
-    )
-
-
-def _is_builtin_import_dict_access(
-    node: ast.Subscript,
-    *,
-    bindings: _LexicalBindings,
-) -> bool:
-    if not isinstance(node.slice, ast.Constant) or node.slice.value != "__import__":
-        return False
-    value = node.value
-    if isinstance(value, ast.Name) and value.id == "__builtins__":
-        return True
-    return (
-        isinstance(value, ast.Attribute)
-        and value.attr == "__dict__"
-        and isinstance(value.value, ast.Name)
-        and (
-            value.value.id == "__builtins__"
-            or "builtins-namespace"
-            in bindings.resolve(value.value.id).capabilities
-        )
-    )
-
-
 def _is_importlib_target(module: str | None) -> bool:
     return module == "importlib" or (
         module is not None and module.startswith("importlib.")
@@ -2711,44 +5188,6 @@ def _call_name(node: ast.expr) -> str | None:
     return None
 
 
-def _dynamic_import_loader_kind(
-    node: ast.expr,
-    *,
-    bindings: _LexicalBindings,
-) -> _DynamicImportLoaderKind | None:
-    if isinstance(node, ast.Name):
-        if (
-            node.id == "__import__"
-            or "import-loader" in bindings.resolve(node.id).capabilities
-        ):
-            return "loader"
-        return None
-    if (
-        isinstance(node, ast.Attribute)
-        and node.attr == "import_module"
-        and isinstance(node.value, ast.Name)
-        and "import-namespace" in bindings.resolve(node.value.id).capabilities
-    ):
-        return "loader"
-    if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "getattr"
-        and len(node.args) >= 2
-        and isinstance(node.args[0], ast.Name)
-        and "import-namespace" in bindings.resolve(node.args[0].id).capabilities
-    ):
-        reflected_name = node.args[1]
-        if isinstance(reflected_name, ast.Constant) and isinstance(
-            reflected_name.value, str
-        ):
-            if reflected_name.value == "import_module":
-                return "loader"
-            return None
-        return "nonliteral_reflection"
-    return None
-
-
 def _is_package_target(value: str) -> bool:
     return value == "manufacturing_vision_studio" or value.startswith(
         "manufacturing_vision_studio."
@@ -2814,6 +5253,21 @@ def _package_initializers(module: str, known_modules: frozenset[str]) -> tuple[s
 
 def _edge_key(edge: DependencyEdge) -> tuple[str, str, str]:
     return edge.source, edge.target, edge.kind
+
+
+def _closure_error_key(error: str) -> tuple[int, str]:
+    priorities = (
+        "source capability rejected: deferred-effect",
+        "source capability rejected: dynamic-import",
+        "source capability rejected: executable-code",
+        "source capability rejected: namespace-reflection",
+        "source capability rejected: import-registry",
+        "source capability rejected: package-object",
+    )
+    for priority, marker in enumerate(priorities):
+        if marker in error:
+            return priority, error
+    return len(priorities), error
 
 
 def _study_owned_runtime_cycle(

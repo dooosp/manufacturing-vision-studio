@@ -704,7 +704,11 @@ def test_late_bound_nonlocal_resolves_to_enclosing_function_scope(
         "    late_bound = object()\n",
     )
 
-    scan_study_dependencies(protocol, repo_root=repo_root)
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: deferred-effect",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
 
 
 def test_nonlocal_skips_intermediate_function_without_binding(
@@ -822,7 +826,10 @@ def test_declaration_aware_delete_invalidates_type_checking_alias(
     repo_root = _complete_repo(tmp_path, protocol)
     _append(repo_root, RUNNER_PATH, "\n" + source)
 
-    with pytest.raises(StudyRetentionError, match=r"forbidden direct import.*policy_v2"):
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: deferred-effect",
+    ):
         scan_study_dependencies(protocol, repo_root=repo_root)
 
 
@@ -1495,9 +1502,9 @@ def _nested_expression(family: str, depth: int) -> str:
         elif family == "lambda":
             expression = f"(lambda value={expression}: value)"
         elif family == "genexpr":
-            expression = f"({expression} for _ in (0,))"
+            expression = f"(value for value in ({expression},))"
         elif family == "comprehension":
-            expression = f"[{expression} for _ in (0,)]"
+            expression = f"[value for value in ({expression},)]"
         elif family == "container":
             expression = f"[{expression}]"
         else:
