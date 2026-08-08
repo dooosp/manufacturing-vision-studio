@@ -36,6 +36,8 @@ def observation(
     predicted: int = 0,
     intersection: int = 0,
     split: str = "test",
+    cad_revision: str = "rev-A",
+    view_id: str = "front",
 ) -> EvaluationObservation:
     return EvaluationObservation(
         case_id=case_id,
@@ -47,8 +49,8 @@ def observation(
         severity=severity,
         defect_type=defect_type,
         nuisance_types=nuisance_types,
-        cad_revision="rev-A",
-        view_id="front",
+        cad_revision=cad_revision,
+        view_id=view_id,
         truth_positive_pixels=truth,
         predicted_positive_pixels=predicted,
         intersection_pixels=intersection,
@@ -252,3 +254,197 @@ def test_calibration_confirmation_can_be_computed_without_test_observations() ->
     assert result["evaluation_split"] == "calibration"
     assert result["image_level"]["confusion"]["sample_count"] == 2
     assert result["gate_summary"] == {"passed": 4, "total": 4, "all_passed": True}
+
+
+def test_recall_slice_dispatch_preserves_complete_metric_parity() -> None:
+    from manufacturing_vision_studio.e1.metrics import _recall_slices
+
+    assert _recall_slices([], "severity") == {}
+    assert _recall_slices([], "defect_type") == {}
+
+    observations = [
+        observation(
+            "high-detected",
+            expected="ANOMALY",
+            actual="ANOMALY",
+            group="defect",
+            score=0.9,
+            severity="HIGH",
+            defect_type="burr",
+        ),
+        observation(
+            "high-missed",
+            expected="ANOMALY",
+            actual="ABSTAIN",
+            group="defect",
+            score=None,
+            severity="HIGH",
+            defect_type="burr",
+        ),
+        observation(
+            "low-missed",
+            expected="ANOMALY",
+            actual="NORMAL",
+            group="defect",
+            score=0.1,
+            severity="LOW",
+            defect_type="scratch",
+        ),
+        observation(
+            "missing-detected",
+            expected="ANOMALY",
+            actual="ANOMALY",
+            group="defect",
+            score=0.8,
+        ),
+        observation(
+            "empty-detected",
+            expected="ANOMALY",
+            actual="ANOMALY",
+            group="defect",
+            score=0.7,
+            severity="",
+            defect_type="",
+        ),
+    ]
+
+    recall_by_severity = _recall_slices(observations, "severity")
+    assert list(recall_by_severity) == ["HIGH", "LOW", "unknown"]
+    assert recall_by_severity == {
+        "HIGH": {
+            "value": 0.5,
+            "reason": None,
+            "numerator": 1,
+            "denominator": 2,
+            "confidence_interval": [0.09453120573423074, 0.9054687942657693],
+        },
+        "LOW": {
+            "value": 0.0,
+            "reason": None,
+            "numerator": 0,
+            "denominator": 1,
+            "confidence_interval": [0.0, 0.7934506856227626],
+        },
+        "unknown": {
+            "value": 1.0,
+            "reason": None,
+            "numerator": 2,
+            "denominator": 2,
+            "confidence_interval": [0.34238022750665303, 1.0],
+        },
+    }
+    recall_by_defect_type = _recall_slices(observations, "defect_type")
+    assert list(recall_by_defect_type) == ["burr", "scratch", "unknown"]
+    assert recall_by_defect_type == {
+        "burr": {
+            "value": 0.5,
+            "reason": None,
+            "numerator": 1,
+            "denominator": 2,
+            "confidence_interval": [0.09453120573423074, 0.9054687942657693],
+        },
+        "scratch": {
+            "value": 0.0,
+            "reason": None,
+            "numerator": 0,
+            "denominator": 1,
+            "confidence_interval": [0.0, 0.7934506856227626],
+        },
+        "unknown": {
+            "value": 1.0,
+            "reason": None,
+            "numerator": 2,
+            "denominator": 2,
+            "confidence_interval": [0.34238022750665303, 1.0],
+        },
+    }
+
+
+def test_accuracy_slice_dispatch_preserves_complete_metric_parity() -> None:
+    from manufacturing_vision_studio.e1.metrics import _accuracy_slices
+
+    assert _accuracy_slices([], "cad_revision") == {}
+    assert _accuracy_slices([], "view_id") == {}
+
+    observations = [
+        observation(
+            "rev-a-front-correct",
+            expected="NORMAL",
+            actual="NORMAL",
+            group="clean",
+            score=0.1,
+            cad_revision="rev-A",
+            view_id="front",
+        ),
+        observation(
+            "rev-a-front-incorrect",
+            expected="NORMAL",
+            actual="ANOMALY",
+            group="clean",
+            score=0.9,
+            cad_revision="rev-A",
+            view_id="front",
+        ),
+        observation(
+            "rev-b-side-correct",
+            expected="NORMAL",
+            actual="NORMAL",
+            group="clean",
+            score=0.2,
+            cad_revision="rev-B",
+            view_id="side",
+        ),
+        observation(
+            "missing-correct",
+            expected="NORMAL",
+            actual="NORMAL",
+            group="clean",
+            score=0.3,
+            cad_revision="",
+            view_id="",
+        ),
+        observation(
+            "empty-incorrect",
+            expected="NORMAL",
+            actual="ABSTAIN",
+            group="clean",
+            score=None,
+            cad_revision="",
+            view_id="",
+        ),
+    ]
+
+    half_correct = {
+        "value": 0.5,
+        "reason": None,
+        "numerator": 1,
+        "denominator": 2,
+        "confidence_interval": [0.09453120573423074, 0.9054687942657693],
+    }
+    fully_correct = {
+        "value": 1.0,
+        "reason": None,
+        "numerator": 1,
+        "denominator": 1,
+        "confidence_interval": [0.20654931437723745, 1.0],
+    }
+    accuracy_by_revision = _accuracy_slices(observations, "cad_revision")
+    assert list(accuracy_by_revision) == ["rev-A", "rev-B", "unknown"]
+    assert accuracy_by_revision == {
+        "rev-A": {
+            **half_correct,
+        },
+        "rev-B": {
+            **fully_correct,
+        },
+        "unknown": {
+            **half_correct,
+        },
+    }
+    accuracy_by_view = _accuracy_slices(observations, "view_id")
+    assert list(accuracy_by_view) == ["front", "side", "unknown"]
+    assert accuracy_by_view == {
+        "front": {**half_correct},
+        "side": {**fully_correct},
+        "unknown": {**half_correct},
+    }
