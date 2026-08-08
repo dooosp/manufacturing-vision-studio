@@ -53,7 +53,12 @@ def _git(repo_root: Path, *args: str) -> str:
     return completed.stdout.strip()
 
 
-def _complete_repo(tmp_path: Path, protocol: StudyProtocolV2) -> Path:
+def _complete_repo(
+    tmp_path: Path,
+    protocol: StudyProtocolV2,
+    *,
+    preserve_real_cli: bool = False,
+) -> Path:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     source_root = PROJECT_ROOT / "src/manufacturing_vision_studio"
@@ -66,7 +71,7 @@ def _complete_repo(tmp_path: Path, protocol: StudyProtocolV2) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
         if Path(relative) == RUNNER_PATH:
             destination.write_bytes(SYNTHETIC_RUNNER)
-        elif Path(relative) == CLI_PATH:
+        elif Path(relative) == CLI_PATH and not preserve_real_cli:
             destination.write_bytes(SYNTHETIC_CLI)
         else:
             destination.write_bytes((PROJECT_ROOT / relative).read_bytes())
@@ -81,6 +86,11 @@ def _complete_repo(tmp_path: Path, protocol: StudyProtocolV2) -> Path:
 def _append(repo_root: Path, relative: Path, source: str) -> None:
     path = repo_root / relative
     path.write_text(path.read_text() + source)
+
+
+def _compiled_source(source: str) -> str:
+    compile(source, "<dependency-guard-fixture>", "exec")
+    return source
 
 
 def test_real_task_7_checkout_has_the_exact_reviewed_dependency_closure() -> None:
@@ -1333,3 +1343,222 @@ def test_projection_rejects_intermediate_parent_swap_before_hashing(
             "src/manufacturing_vision_studio/registry.py"
         ] != retention_module.sha256_bytes(outside_payload)
     assert swapped is True
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_category"),
+    (
+        (
+            "import sys as carrier\n"
+            "EMPTY = [(carrier := carrier.stdout) for _ in (0,) if False]\n"
+            "REGISTRY = carrier.modules\n",
+            "import-registry",
+        ),
+        (
+            "import sys as carrier\n"
+            "HEAP = [item for _ in (0,) if False "
+            "for item in (0,) if (carrier := carrier.stdout)]\n"
+            "REGISTRY = carrier.modules\n",
+            "import-registry",
+        ),
+        (
+            "import sys as carrier\n"
+            "DEFERRED = ((carrier := carrier.stdout) for _ in (0,))\n"
+            "REGISTRY = carrier.modules\n",
+            "deferred-effect",
+        ),
+        (
+            "import sys as carrier\n"
+            "EMPTY = [(carrier := carrier.stdout) for _ in ()]\n"
+            "REGISTRY = carrier.modules\n",
+            "import-registry",
+        ),
+    ),
+)
+def test_nonexecuted_comprehension_paths_preserve_sys_authority(
+    tmp_path: Path,
+    source: str,
+    expected_category: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    with pytest.raises(
+        StudyRetentionError,
+        match=rf"source capability rejected: {expected_category}",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_dormant_function_global_rebinding_preserves_sys_authority(tmp_path: Path) -> None:
+    source = _compiled_source(
+        "import sys as carrier\n"
+        "def deferred() -> None:\n"
+        "    global carrier\n"
+        "    carrier = carrier.stdout\n"
+        "REGISTRY = carrier.modules\n"
+    )
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+    assert namespace["carrier"] is sys
+
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+    with pytest.raises(StudyRetentionError, match="source capability rejected: deferred-effect"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import sys\nfor carrier in (sys,):\n    REGISTRY = carrier.modules\n",
+        "import sys\nmatch sys:\n    case carrier:\n        REGISTRY = carrier.modules\n",
+    ),
+)
+def test_loop_and_match_bindings_preserve_sys_authority(tmp_path: Path, source: str) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    with pytest.raises(StudyRetentionError, match="source capability rejected: import-registry"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_async_for_unknown_target_rejects_sensitive_access(tmp_path: Path) -> None:
+    source = _compiled_source(
+        "async def inspect(source: object) -> None:\n"
+        "    async for carrier in source:\n"
+        "        REGISTRY = carrier.modules\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(StudyRetentionError, match="source capability rejected: import-registry"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("source", "runtime_assertion"),
+    (
+        (
+            "SAFE = lambda _=(eval := 0): eval\n",
+            lambda namespace: namespace["SAFE"]() == 0,
+        ),
+        (
+            "import sys as carrier\n"
+            "SAFE = ((False and object()) or (carrier := carrier.stdout))\n"
+            "WRITE = getattr(carrier, 'write')\n",
+            lambda namespace: namespace["SAFE"] is sys.stdout
+            and callable(namespace["WRITE"]),
+        ),
+    ),
+)
+def test_ordered_expression_effects_keep_safe_sources_allowed(
+    tmp_path: Path,
+    source: str,
+    runtime_assertion: object,
+) -> None:
+    source = _compiled_source(source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+    assert callable(runtime_assertion)
+    assert runtime_assertion(namespace)
+
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def _nested_expression(family: str, depth: int) -> str:
+    expression = "object()"
+    for _ in range(depth):
+        if family == "dunder":
+            expression = f"({expression}).__getattribute__('x')"
+        elif family == "boolop":
+            expression = f"(False or {expression})"
+        elif family == "ifexp":
+            expression = f"({expression} if True else object())"
+        elif family == "lambda":
+            expression = f"(lambda value={expression}: value)"
+        elif family == "genexpr":
+            expression = f"({expression} for _ in (0,))"
+        elif family == "comprehension":
+            expression = f"[{expression} for _ in (0,)]"
+        elif family == "container":
+            expression = f"[{expression}]"
+        else:
+            raise AssertionError(f"unknown fixture family: {family}")
+    return f"VALUE = {expression}\n"
+
+
+@pytest.mark.parametrize("depth", (1, 2, 4, 8, 16, 32, 64))
+@pytest.mark.parametrize(
+    "family",
+    ("dunder", "boolop", "ifexp", "lambda", "genexpr", "comprehension", "container"),
+)
+def test_transfer_is_single_pass_for_structural_fixture_families(
+    tmp_path: Path,
+    family: str,
+    depth: int,
+) -> None:
+    """Task 1 records stable baseline acceptance; Task 5 adds canonical counters."""
+
+    source = _compiled_source(_nested_expression(family, depth))
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("relative", "position"),
+    (
+        (Path("src/manufacturing_vision_studio/__init__.py"), "early"),
+        (Path("src/manufacturing_vision_studio/__init__.py"), "late"),
+        (Path("src/manufacturing_vision_studio/e1/__init__.py"), "early"),
+        (Path("src/manufacturing_vision_studio/e1/__init__.py"), "late"),
+    ),
+)
+def test_exact_initializer_rejects_import_module_rebinding(
+    tmp_path: Path,
+    relative: Path,
+    position: str,
+) -> None:
+    rebind = "class Fake:\n    Thing = 7\n\n\nimport_module = lambda module_name: Fake\n"
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    path = repo_root / relative
+    source = path.read_text()
+    if position == "early":
+        import_boundary = "from typing import TYPE_CHECKING, Any\n"
+        source = source.replace(import_boundary, import_boundary + "\n" + rebind, 1)
+    else:
+        source += "\n" + rebind
+    path.write_text(source)
+
+    with pytest.raises(StudyRetentionError, match="initializer capability structure"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    "source",
+    ("getattr = lambda value, name: 'spoofed'\n", "_json_value = lambda value: 'spoofed'\n"),
+)
+def test_real_cli_namespace_reflection_bindings_are_rejected(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol, preserve_real_cli=True)
+    _append(repo_root, CLI_PATH, "\n" + _compiled_source(source))
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: namespace-reflection",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
