@@ -1725,7 +1725,15 @@ def test_exception_target_is_unbound_after_handler(tmp_path: Path) -> None:
     )
     assert trace_namespace["trace"] == ["RuntimeError", "unbound"]
 
-    source = _compiled_source(
+    binding_source = _compiled_source(
+        "from typing import TYPE_CHECKING\n"
+        "try:\n"
+        "    raise RuntimeError('handled')\n"
+        "except RuntimeError as TYPE_CHECKING:\n"
+        "    if TYPE_CHECKING:\n"
+        "        from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n"
+    )
+    cleanup_source = _compiled_source(
         "from typing import TYPE_CHECKING\n"
         "try:\n"
         "    raise RuntimeError('handled')\n"
@@ -1735,10 +1743,20 @@ def test_exception_target_is_unbound_after_handler(tmp_path: Path) -> None:
         "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n"
     )
     protocol = load_study_protocol_v2()
-    repo_root = _complete_repo(tmp_path, protocol)
-    _append(repo_root, RUNNER_PATH, "\n" + source)
+    binding_fixture = tmp_path / "handler-binding"
+    binding_fixture.mkdir()
+    binding_repo = _complete_repo(binding_fixture, protocol)
+    _append(binding_repo, RUNNER_PATH, "\n" + binding_source)
 
-    scan_study_dependencies(protocol, repo_root=repo_root)
+    with pytest.raises(StudyRetentionError, match=r"forbidden direct import.*policy_v2"):
+        scan_study_dependencies(protocol, repo_root=binding_repo)
+
+    cleanup_fixture = tmp_path / "handler-cleanup"
+    cleanup_fixture.mkdir()
+    cleanup_repo = _complete_repo(cleanup_fixture, protocol)
+    _append(cleanup_repo, RUNNER_PATH, "\n" + cleanup_source)
+
+    scan_study_dependencies(protocol, repo_root=cleanup_repo)
 
 
 def test_with_target_preserves_context_capability_provenance(tmp_path: Path) -> None:
@@ -1759,14 +1777,25 @@ def test_with_target_preserves_context_capability_provenance(tmp_path: Path) -> 
     )
     assert trace_namespace["trace"] == ["enter", "entered-value", "exit"]
 
-    source = _compiled_source(
+    retained_source = _compiled_source(
         "import sys\n"
         "with sys as carrier:\n"
-        "    REGISTRY = carrier.modules\n"
+        "    derived = carrier.stdout\n"
+        "    SAFE = derived.modules\n"
+    )
+    incomplete_source = _compiled_source(
+        "def inspect_context(context: object) -> None:\n"
+        "    with context as carrier:\n"
+        "        derived = carrier.stdout\n"
+        "        REGISTRY = derived.modules\n"
     )
     protocol = load_study_protocol_v2()
     repo_root = _complete_repo(tmp_path, protocol)
-    _append(repo_root, RUNNER_PATH, "\n" + source)
+    _append(repo_root, RUNNER_PATH, "\n" + retained_source)
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+    _append(repo_root, RUNNER_PATH, "\n" + incomplete_source)
 
     with pytest.raises(StudyRetentionError, match="source capability rejected: import-registry"):
         scan_study_dependencies(protocol, repo_root=repo_root)
@@ -1834,16 +1863,17 @@ def test_nonfuture_annotations_follow_python_312_definition_order(
         "apply:outer",
     ]
 
-    source = _compiled_source(
+    runtime_state_source = _compiled_source(
         "import sys\n"
         "carrier = sys\n"
         "def observed(value: (carrier := carrier.stdout) = (carrier := sys)) -> None:\n"
         "    pass\n"
-        "WRITE = carrier.write\n"
     )
     namespace = {}
-    _execute_source(source, namespace)
+    _execute_source(runtime_state_source, namespace)
     assert namespace["carrier"] is sys.stdout
+
+    source = _compiled_source(runtime_state_source + "REGISTRY = carrier.modules\n")
 
     protocol = load_study_protocol_v2()
     repo_root = _complete_repo(tmp_path, protocol)
@@ -1884,16 +1914,17 @@ def test_python312_type_parameter_bounds_are_lazy_but_policy_inspected(
 
 
 def test_class_body_global_write_is_eager(tmp_path: Path) -> None:
-    source = _compiled_source(
+    runtime_state_source = _compiled_source(
         "import sys as carrier\n"
         "class Scope:\n"
         "    global carrier\n"
         "    carrier = carrier.stdout\n"
-        "WRITE = carrier.write\n"
     )
     namespace: dict[str, object] = {}
-    _execute_source(source, namespace)
+    _execute_source(runtime_state_source, namespace)
     assert namespace["carrier"] is sys.stdout
+
+    source = _compiled_source(runtime_state_source + "REGISTRY = carrier.modules\n")
 
     protocol = load_study_protocol_v2()
     repo_root = _complete_repo(tmp_path, protocol)
@@ -2030,34 +2061,38 @@ def test_finally_completion_replaces_each_incoming_exit(
     trace_source = _compiled_source(
         "trace = []\n"
         "def observed():\n"
-        "    for _ in (0,):\n"
-        "        try:\n"
-        f"            {incoming_statement}\n"
-        "        finally:\n"
-        "            trace.append('finally')\n"
-        "            break\n"
+        "    try:\n"
+        "        for _ in (0,):\n"
+        "            try:\n"
+        f"                {incoming_statement}\n"
+        "            finally:\n"
+        "                trace.append('finally')\n"
+        "                raise LookupError('replacement')\n"
+        "    except LookupError:\n"
+        "        trace.append('replacement-handler')\n"
         "    trace.append('after')\n"
         "observed()\n"
     )
     trace_namespace: dict[str, object] = {}
     _execute_source(trace_source, trace_namespace)
-    assert trace_namespace["trace"] == ["finally", "after"]
+    assert trace_namespace["trace"] == ["finally", "replacement-handler", "after"]
 
     source = _compiled_source(
         "def deferred() -> None:\n"
-        "    import sys as carrier\n"
-        "    for _ in (0,):\n"
-        "        try:\n"
-        f"            {incoming_statement}\n"
-        "        finally:\n"
-        "            break\n"
-        "    REGISTRY = carrier.modules\n"
+        "    try:\n"
+        "        for _ in (0,):\n"
+        "            try:\n"
+        f"                {incoming_statement}\n"
+        "            finally:\n"
+        "                raise LookupError('replacement')\n"
+        "    except LookupError:\n"
+        "        from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n"
     )
     protocol = load_study_protocol_v2()
     repo_root = _complete_repo(tmp_path, protocol)
     _append(repo_root, RUNNER_PATH, "\n" + source)
 
-    with pytest.raises(StudyRetentionError, match="source capability rejected: import-registry"):
+    with pytest.raises(StudyRetentionError, match=r"forbidden direct import.*policy_v2"):
         scan_study_dependencies(protocol, repo_root=repo_root)
 
 
