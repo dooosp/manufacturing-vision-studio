@@ -1380,6 +1380,11 @@ def test_nonexecuted_comprehension_paths_preserve_sys_authority(
     source: str,
     expected_category: str,
 ) -> None:
+    if expected_category == "deferred-effect":
+        namespace: dict[str, object] = {}
+        exec(_compiled_source(source), namespace)
+        assert namespace["carrier"] is sys
+
     protocol = load_study_protocol_v2()
     repo_root = _complete_repo(tmp_path, protocol)
     _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
@@ -1539,7 +1544,7 @@ def test_exact_initializer_rejects_import_module_rebinding(
         source = source.replace(import_boundary, import_boundary + "\n" + rebind, 1)
     else:
         source += "\n" + rebind
-    path.write_text(source)
+    path.write_text(_compiled_source(source))
 
     with pytest.raises(StudyRetentionError, match="initializer capability structure"):
         scan_study_dependencies(protocol, repo_root=repo_root)
