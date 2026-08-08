@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import subprocess
 import sys
 import textwrap
@@ -2293,3 +2294,397 @@ def test_deferred_outer_writes_fail_closed(
 
     with pytest.raises(StudyRetentionError, match="source capability rejected: deferred-effect"):
         scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("source", "is_runtime_reachable"),
+    (
+        (
+            "if [item for item in ()]:\n"
+            "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n",
+            False,
+        ),
+        (
+            "if [item for item in (0,)]:\n"
+            "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n",
+            True,
+        ),
+        (
+            "if [item for item in (0,) if False]:\n"
+            "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n",
+            False,
+        ),
+    ),
+)
+def test_comprehension_truth_controls_runtime_dependency_edges(
+    tmp_path: Path,
+    source: str,
+    *,
+    is_runtime_reachable: bool,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    if is_runtime_reachable:
+        with pytest.raises(
+            StudyRetentionError,
+            match=r"forbidden direct import.*policy_v2",
+        ):
+            scan_study_dependencies(protocol, repo_root=repo_root)
+    else:
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import sys\n"
+        "match (sys,):\n"
+        "    case [carrier, missing]:\n"
+        "        pass\n"
+        "    case _ if carrier.modules:\n"
+        "        pass\n",
+        "import sys\n"
+        "match {'carrier': sys}:\n"
+        "    case {'carrier': carrier, 'missing': missing}:\n"
+        "        pass\n"
+        "    case _ if carrier.modules:\n"
+        "        pass\n",
+        "import sys\n"
+        "match (sys,):\n"
+        "    case tuple(carrier, missing):\n"
+        "        pass\n"
+        "    case _ if carrier.modules:\n"
+        "        pass\n",
+        "import sys\n"
+        "match (sys,):\n"
+        "    case [carrier, missing] | [carrier, missing, _]:\n"
+        "        pass\n"
+        "    case _ if carrier.modules:\n"
+        "        pass\n",
+        "import sys\n"
+        "match (sys,):\n"
+        "    case [carrier, missing] as whole:\n"
+        "        pass\n"
+        "    case _ if carrier.modules:\n"
+        "        pass\n",
+    ),
+)
+def test_failed_decomposition_pattern_carries_partial_capture_provenance(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: import-registry",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("early_operation", "has_earlier_possible_raise"),
+    (("", False), ("object()", True), ("1 / 0", True)),
+)
+def test_try_handlers_receive_only_actual_may_raise_prefix_states(
+    tmp_path: Path,
+    early_operation: str,
+    *,
+    has_earlier_possible_raise: bool,
+) -> None:
+    early_statement = "" if not early_operation else f"    {early_operation}\n"
+    source = _compiled_source(
+        "from typing import TYPE_CHECKING\n"
+        "guard = TYPE_CHECKING\n"
+        "try:\n"
+        f"{early_statement}"
+        "    guard = False\n"
+        "    raise RuntimeError\n"
+        "except RuntimeError:\n"
+        "    if guard:\n"
+        "        from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    if has_earlier_possible_raise:
+        with pytest.raises(
+            StudyRetentionError,
+            match=r"forbidden direct import.*policy_v2",
+        ):
+            scan_study_dependencies(protocol, repo_root=repo_root)
+    else:
+        trace_namespace: dict[str, object] = {}
+        _execute_source(source, trace_namespace)
+        assert trace_namespace["guard"] is False
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_implicit_exception_keeps_matching_handler_reachable(tmp_path: Path) -> None:
+    trace_namespace: dict[str, object] = {}
+    _execute_source(
+        _compiled_source(
+            "trace = []\n"
+            "try:\n"
+            "    1 / 0\n"
+            "except ZeroDivisionError:\n"
+            "    trace.append('handled')\n"
+        ),
+        trace_namespace,
+    )
+    assert trace_namespace["trace"] == ["handled"]
+
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\n"
+        + _compiled_source(
+            "try:\n"
+            "    1 / 0\n"
+            "except ZeroDivisionError:\n"
+            "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n"
+        ),
+    )
+
+    with pytest.raises(StudyRetentionError, match=r"forbidden direct import.*policy_v2"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_exact_explicit_raise_keeps_disjoint_handler_policy_only(tmp_path: Path) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\n"
+        + _compiled_source(
+            "try:\n"
+            "    raise ValueError\n"
+            "except TypeError:\n"
+            "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n"
+        ),
+    )
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_except_star_later_handler_receives_prior_raised_handler_state(
+    tmp_path: Path,
+) -> None:
+    source = _compiled_source(
+        "import sys\n"
+        "carrier = sys.stdout\n"
+        "try:\n"
+        "    raise ExceptionGroup('group', [ValueError(), TypeError()])\n"
+        "except* ValueError:\n"
+        "    carrier = sys\n"
+        "    raise LookupError\n"
+        "except* TypeError:\n"
+        "    REGISTRY = carrier.modules\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: import-registry",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_ordinary_handlers_do_not_receive_prior_handler_effects(
+    tmp_path: Path,
+) -> None:
+    source = _compiled_source(
+        "import sys\n"
+        "carrier = sys.stdout\n"
+        "try:\n"
+        "    raise ValueError\n"
+        "except ValueError:\n"
+        "    carrier = sys\n"
+        "except TypeError:\n"
+        "    REGISTRY = carrier.modules\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize("late_loader", ("globals", "len"))
+def test_generator_body_uses_iteration_time_suffix_bindings(
+    tmp_path: Path,
+    late_loader: str,
+) -> None:
+    call_arguments = "" if late_loader == "globals" else "()"
+    source = _compiled_source(
+        "loader = len\n"
+        f"deferred = (loader({call_arguments}) for _ in (1,))\n"
+        f"loader = {late_loader}\n"
+    )
+    namespace: dict[str, object] = {}
+    _execute_source(source, namespace)
+    deferred = namespace["deferred"]
+    assert hasattr(deferred, "__next__")
+    if late_loader == "globals":
+        assert isinstance(next(deferred), dict)
+    else:
+        assert next(deferred) == 0
+
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+    if late_loader == "globals":
+        with pytest.raises(
+            StudyRetentionError,
+            match="source capability rejected: namespace-reflection",
+        ):
+            scan_study_dependencies(protocol, repo_root=repo_root)
+    else:
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    "alias_value",
+    (
+        "tuple[int]",
+        "__builtins__['__import__']("
+        "'manufacturing_vision_studio.e1.policy_v2')",
+    ),
+)
+def test_python312_type_alias_never_falls_through_source_flow(
+    tmp_path: Path,
+    alias_value: str,
+) -> None:
+    source = _compiled_source(f"type Alias = {alias_value}\n")
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="unsupported source-flow syntax: TypeAlias",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def _analyze_source(source: str) -> tuple[ast.Module, object]:
+    tree = ast.parse(_compiled_source(source))
+    analyzer = retention_module._SourceFlowAnalyzer(
+        source_module="source_flow_stats_fixture",
+        known_modules=frozenset(),
+        initializer_policy=retention_module._InitializerPolicy(frozenset(), ()),
+    )
+    return tree, analyzer.analyze(tree)
+
+
+@pytest.mark.parametrize("depth", (1, 2, 4, 8, 16, 32, 64))
+def test_analysis_stats_are_canonical_for_straight_line_dunder_chains(
+    depth: int,
+) -> None:
+    expression = "object()"
+    for _ in range(depth):
+        expression = f"({expression}).__getattribute__('x')"
+    tree, result = _analyze_source(f"VALUE = {expression}\n")
+    stats = result.stats
+    syntax_nodes = len(tuple(ast.walk(tree)))
+
+    assert syntax_nodes == 4 * depth + 7
+    assert stats == retention_module._AnalysisStats(
+        program_points=3 * depth + 3,
+        cfg_edges=3 * depth + 2,
+        expression_transfers=3 * depth + 2,
+        statement_transfers=1,
+        pattern_transfers=0,
+        state_join_attempts=0,
+        strict_state_updates=0,
+        worklist_pops=0,
+        max_updates_per_program_point=0,
+        computed_height_bound=67,
+    )
+    assert stats.expression_transfers <= 2 * syntax_nodes
+    assert stats.max_updates_per_program_point <= stats.computed_height_bound
+    assert stats.worklist_pops <= stats.program_points * (
+        stats.computed_height_bound + 1
+    )
+    assert stats.transfer_steps <= stats.program_points * (
+        stats.computed_height_bound + 1
+    )
+
+
+def test_analysis_stats_count_diamond_joins_and_reverse_suffix_work() -> None:
+    _, result = _analyze_source(
+        "alias = len\n"
+        "if object():\n"
+        "    alias = str\n"
+        "else:\n"
+        "    alias = bytes\n"
+        "def deferred() -> object:\n"
+        "    return alias\n"
+        "alias = tuple\n"
+    )
+    stats = result.stats
+
+    assert stats.cfg_edges >= stats.transfer_steps - 1
+    assert stats.state_join_attempts > 0
+    assert stats.strict_state_updates > 0
+    assert stats.worklist_pops >= 5
+    assert stats.max_updates_per_program_point <= stats.computed_height_bound
+    assert stats.worklist_pops <= stats.program_points * (
+        stats.computed_height_bound + 1
+    )
+    assert stats.transfer_steps <= stats.program_points * (
+        stats.computed_height_bound + 1
+    )
+
+
+@pytest.mark.parametrize(
+    "definition",
+    (
+        "def deferred() -> object:\n"
+        "    return carrier.modules\n",
+        "deferred = lambda: carrier.modules\n",
+        "deferred = (carrier.modules for _ in (0,))\n",
+    ),
+)
+def test_suffix_envelope_retains_transient_post_definition_state(
+    tmp_path: Path,
+    definition: str,
+) -> None:
+    source = _compiled_source(
+        "import sys\n"
+        "carrier = sys.stdout\n"
+        f"{definition}"
+        "carrier = sys\n"
+        "carrier = sys.stdout\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: import-registry",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_computed_height_uses_one_real_program_point_shape() -> None:
+    _, result = _analyze_source(
+        "wide = None\n"
+        "nested = None\n"
+        "def wide() -> None:\n"
+        "    a = b = c = d = e = f = g = h = i = j = None\n"
+        "nested = lambda: (lambda: None)\n"
+    )
+
+    assert result.stats.computed_height_bound == 783

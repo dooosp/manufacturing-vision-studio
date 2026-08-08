@@ -651,6 +651,17 @@ class _SourceLocation:
     end_col_offset: int
 
 
+_ProgramPoint = tuple[str, _SourceLocation, _TransferMode]
+_FrameSkeleton = tuple[
+    _SourceLocation,
+    _ScopeKind,
+    int,
+    frozenset[str],
+    frozenset[str],
+]
+_StateSkeleton = tuple[_FrameSkeleton, ...]
+
+
 @dataclass(frozen=True, slots=True, order=True)
 class _ResolvedIdentity:
     kind: _IdentityKind
@@ -878,17 +889,16 @@ class _State:
                 right.nonlocal_names,
             ):
                 raise ValueError("cannot join states with different frame skeletons")
-            left_bindings = dict(left.bindings)
-            right_bindings = dict(right.bindings)
-            if left_bindings.keys() != right_bindings.keys():
-                raise ValueError("cannot grow a frame skeleton during join")
-            bindings = tuple(
-                (
-                    name,
-                    _join_slots(left_bindings[name], right_bindings[name]),
+            bindings_list: list[tuple[str, _BindingSlot]] = []
+            for (left_name, left_slot), (right_name, right_slot) in zip(
+                left.bindings, right.bindings, strict=True
+            ):
+                if left_name != right_name:
+                    raise ValueError("cannot grow a frame skeleton during join")
+                bindings_list.append(
+                    (left_name, _join_slots(left_slot, right_slot))
                 )
-                for name in sorted(left_bindings)
-            )
+            bindings = tuple(bindings_list)
             joined.append(
                 _Frame(
                     left.scope_id,
@@ -1071,10 +1081,10 @@ class _ModuleFlowResult:
 
 @dataclass(slots=True)
 class _StatsBuilder:
-    program_points: set[tuple[str, _SourceLocation, _TransferMode]] = field(
+    program_points: set[_ProgramPoint] = field(default_factory=set)
+    cfg_edges: set[tuple[_ProgramPoint, _ProgramPoint]] = field(
         default_factory=set
     )
-    cfg_edges: int = 0
     expression_transfers: int = 0
     statement_transfers: int = 0
     pattern_transfers: int = 0
@@ -1082,25 +1092,72 @@ class _StatsBuilder:
     strict_state_updates: int = 0
     worklist_pops: int = 0
     max_updates_per_program_point: int = 0
-    max_binding_slots: int = 0
-    max_frames: int = 1
+    max_observed_point_height: int = 1
+    precomputed_height_bound: int | None = None
+    updates_by_program_point: dict[_ProgramPoint, int] = field(
+        default_factory=dict
+    )
+
+    def record_transfer(self, kind: str) -> None:
+        if kind == "expression":
+            self.expression_transfers += 1
+        elif kind == "statement":
+            self.statement_transfers += 1
+        elif kind == "pattern":
+            self.pattern_transfers += 1
+        else:
+            raise ValueError(f"unknown transfer kind: {kind}")
+
+    def record_cfg_edge(
+        self, source: _ProgramPoint, target: _ProgramPoint
+    ) -> None:
+        if source != target:
+            self.cfg_edges.add((source, target))
+
+    def merge_program_point(
+        self,
+        point: _ProgramPoint,
+        current: _State,
+        candidate: _State,
+    ) -> tuple[_State, bool]:
+        self.state_join_attempts += 1
+        joined = current.join(candidate)
+        if joined == current:
+            return current, False
+        self.strict_state_updates += 1
+        updates = self.updates_by_program_point.get(point, 0) + 1
+        self.updates_by_program_point[point] = updates
+        self.max_updates_per_program_point = max(
+            self.max_updates_per_program_point, updates
+        )
+        return joined, True
+
+    def configure_height_bound(self, bound: int) -> None:
+        if bound < 1:
+            raise ValueError("analysis height bound must be positive")
+        self.precomputed_height_bound = bound
 
     def observe_state(self, state: _State) -> None:
-        self.max_binding_slots = max(
-            self.max_binding_slots, sum(len(frame.bindings) for frame in state.frames)
-        )
-        self.max_frames = max(self.max_frames, len(state.frames))
-
-    def freeze(self) -> _AnalysisStats:
         capability_bits = len(getattr(_Capability, "__args__", ()))
         value_height = 3 * (capability_bits + 2 + 2 + 1) + 3
-        height = max(
-            1,
-            1 + self.max_binding_slots * (value_height + 2) + self.max_frames,
+        point_height = (
+            1
+            + sum(len(frame.bindings) for frame in state.frames)
+            * (value_height + 2)
+            + len(state.frames)
         )
+        self.max_observed_point_height = max(
+            self.max_observed_point_height, point_height
+        )
+
+    def freeze(self) -> _AnalysisStats:
+        observed_height = self.max_observed_point_height
+        height = self.precomputed_height_bound or observed_height
+        if observed_height > height:
+            raise ValueError("precomputed analysis height bound was too small")
         return _AnalysisStats(
             program_points=len(self.program_points),
-            cfg_edges=self.cfg_edges,
+            cfg_edges=len(self.cfg_edges),
             expression_transfers=self.expression_transfers,
             statement_transfers=self.statement_transfers,
             pattern_transfers=self.pattern_transfers,
@@ -1354,13 +1411,24 @@ def _literal_value(value: object) -> _AbsValue:
         return _container_value(
             tuple(_literal_value(item) for item in value), kind="tuple"
         )
+    truth = _truth_for_constant(value)
     return _AbsValue(
         iteration_outcomes=(
             frozenset({"zero"})
-            if value in {"", b""}
+            if truth is _Truth.FALSE
+            else frozenset({"one"})
+            if truth is _Truth.TRUE
             else frozenset({"zero", "one", "many"})
         )
     )
+
+
+def _truth_for_value(value: _AbsValue) -> _Truth:
+    if value.iteration_outcomes == frozenset({"zero"}):
+        return _Truth.FALSE
+    if "zero" not in value.iteration_outcomes:
+        return _Truth.TRUE
+    return _Truth.UNKNOWN
 
 
 def _container_value(values: Sequence[_AbsValue], *, kind: str) -> _AbsValue:
@@ -1490,6 +1558,11 @@ class _ScopeDeclarationCollector(ast.NodeVisitor):
         for type_param in getattr(node, "type_params", ()):
             self.visit(type_param)
 
+    def visit_TypeAlias(self, node: ast.AST) -> None:
+        name = getattr(node, "name", None)
+        if isinstance(name, ast.Name):
+            self.local_names.add(name.id)
+
     def visit_Lambda(self, node: ast.Lambda) -> None:
         for default in (*node.args.defaults, *node.args.kw_defaults):
             if default is not None:
@@ -1553,6 +1626,78 @@ class _ScopeDeclarationCollector(ast.NodeVisitor):
             self.visit(type_param)
 
 
+@dataclass(slots=True)
+class _ActiveTransfer:
+    point: _ProgramPoint
+    retained_for_suffix: bool
+    last_child: _ProgramPoint | None = None
+    last_suffix_child: _ProgramPoint | None = None
+
+
+_ExpressionTransfer = Callable[
+    ["_SourceFlowAnalyzer", ast.expr, _State, _TransferContext], _ExprResult
+]
+_StatementTransfer = Callable[
+    ["_SourceFlowAnalyzer", ast.stmt, _State, _TransferContext], _FlowResult
+]
+_PatternTransfer = Callable[
+    ["_SourceFlowAnalyzer", ast.pattern, _AbsValue, _State, _TransferContext],
+    tuple[_State, _State | None, _PolicyFacts, _DeferredEffects, _State | None],
+]
+
+
+def _instrument_expression_transfer(
+    method: _ExpressionTransfer,
+) -> _ExpressionTransfer:
+    def wrapped(
+        analyzer: _SourceFlowAnalyzer,
+        node: ast.expr,
+        state: _State,
+        context: _TransferContext,
+    ) -> _ExprResult:
+        point = analyzer._begin_transfer("expression", node, state, context)
+        result = method(analyzer, node, state, context)
+        analyzer._finish_transfer(point, result)
+        return result
+
+    return wrapped
+
+
+def _instrument_statement_transfer(
+    method: _StatementTransfer,
+) -> _StatementTransfer:
+    def wrapped(
+        analyzer: _SourceFlowAnalyzer,
+        node: ast.stmt,
+        state: _State,
+        context: _TransferContext,
+    ) -> _FlowResult:
+        point = analyzer._begin_transfer("statement", node, state, context)
+        result = method(analyzer, node, state, context)
+        analyzer._finish_transfer(point, result)
+        return result
+
+    return wrapped
+
+
+def _instrument_pattern_transfer(
+    method: _PatternTransfer,
+) -> _PatternTransfer:
+    def wrapped(
+        analyzer: _SourceFlowAnalyzer,
+        pattern: ast.pattern,
+        value: _AbsValue,
+        state: _State,
+        context: _TransferContext,
+    ) -> tuple[_State, _State | None, _PolicyFacts, _DeferredEffects, _State | None]:
+        point = analyzer._begin_transfer("pattern", pattern, state, context)
+        result = method(analyzer, pattern, value, state, context)
+        analyzer._finish_transfer(point, result)
+        return result
+
+    return wrapped
+
+
 class _SourceFlowAnalyzer:
     def __init__(
         self,
@@ -1566,8 +1711,20 @@ class _SourceFlowAnalyzer:
         self.initializer_policy = initializer_policy
         self._future_annotations = False
         self._stats = _StatsBuilder()
+        self._active_transfers: list[_ActiveTransfer] = []
+        self._capture_point_outputs = True
+        self._point_outputs: dict[_ProgramPoint, _State] = {}
+        self._point_output_skeletons: dict[_ProgramPoint, _StateSkeleton] = {}
+        self._suffix_edges: set[tuple[_ProgramPoint, _ProgramPoint]] = set()
+        self._body_completion: dict[
+            tuple[_DeferredKind, _SourceLocation], _ProgramPoint
+        ] = {}
+        self._suffix_cache: dict[
+            _StateSkeleton, dict[_ProgramPoint, _State]
+        ] = {}
 
     def analyze(self, tree: ast.Module) -> _ModuleFlowResult:
+        self._stats.configure_height_bound(self._precomputed_height_bound(tree))
         self._future_annotations = any(
             isinstance(statement, ast.ImportFrom)
             and statement.module == "__future__"
@@ -1591,6 +1748,7 @@ class _SourceFlowAnalyzer:
         self._stats.observe_state(state)
         context = _TransferContext("eager", True, True, False)
         flow = self._transfer_statements(tree.body, state, context)
+        self._capture_point_outputs = False
         final_state = flow.normal or state
         deferred_facts, deferred_effects = self._inspect_deferred_bodies(
             flow.deferred, final_state
@@ -1625,6 +1783,121 @@ class _SourceFlowAnalyzer:
             )
         final_states = () if flow.normal is None else (flow.normal,)
         return _ModuleFlowResult(final_states, facts, stats)
+
+    def _precomputed_height_bound(self, tree: ast.Module) -> int:
+        capability_bits = len(getattr(_Capability, "__args__", ()))
+        value_height = 3 * (capability_bits + 2 + 2 + 1) + 3
+        declarations = self._scope_declarations(tree.body)
+        module_global_names = {
+            name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Global)
+            for name in node.names
+        }
+        module_slots = len(declarations.local_names | module_global_names)
+        maximum = 1 + module_slots * (value_height + 2) + 1
+        pending: list[tuple[ast.AST, tuple[int, ...]]] = [
+            (statement, (module_slots,)) for statement in reversed(tree.body)
+        ]
+        while pending:
+            node, slot_counts = pending.pop()
+            maximum = max(
+                maximum,
+                1 + sum(slot_counts) * (value_height + 2) + len(slot_counts),
+            )
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                definition_children: tuple[ast.AST, ...] = (
+                    *node.decorator_list,
+                    *node.args.defaults,
+                    *(item for item in node.args.kw_defaults if item is not None),
+                    *(item for item in self._argument_annotations(node.args)),
+                    *((node.returns,) if node.returns is not None else ()),
+                    *getattr(node, "type_params", ()),
+                )
+                pending.extend(
+                    (child, slot_counts) for child in reversed(definition_children)
+                )
+                child_declarations = self._scope_declarations(node.body, node.args)
+                child_slots = (*slot_counts, len(child_declarations.local_names))
+                maximum = max(
+                    maximum,
+                    1
+                    + sum(child_slots) * (value_height + 2)
+                    + len(child_slots),
+                )
+                pending.extend(
+                    (statement, child_slots) for statement in reversed(node.body)
+                )
+                continue
+            if isinstance(node, ast.ClassDef):
+                definition_children = (
+                    *node.decorator_list,
+                    *node.bases,
+                    *(keyword.value for keyword in node.keywords),
+                    *getattr(node, "type_params", ()),
+                )
+                pending.extend(
+                    (child, slot_counts) for child in reversed(definition_children)
+                )
+                child_declarations = self._scope_declarations(node.body)
+                child_slots = (*slot_counts, len(child_declarations.local_names))
+                maximum = max(
+                    maximum,
+                    1
+                    + sum(child_slots) * (value_height + 2)
+                    + len(child_slots),
+                )
+                pending.extend(
+                    (statement, child_slots) for statement in reversed(node.body)
+                )
+                continue
+            if isinstance(node, ast.Lambda):
+                defaults = tuple(
+                    default
+                    for default in (*node.args.defaults, *node.args.kw_defaults)
+                    if default is not None
+                )
+                pending.extend((default, slot_counts) for default in reversed(defaults))
+                child_declarations = self._lambda_declarations(node)
+                child_slots = (*slot_counts, len(child_declarations.local_names))
+                maximum = max(
+                    maximum,
+                    1
+                    + sum(child_slots) * (value_height + 2)
+                    + len(child_slots),
+                )
+                pending.append((node.body, child_slots))
+                continue
+            if isinstance(
+                node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+            ):
+                pending.append((node.generators[0].iter, slot_counts))
+                child_declarations = self._comprehension_declarations(node.generators)
+                child_slots = (*slot_counts, len(child_declarations.local_names))
+                maximum = max(
+                    maximum,
+                    1
+                    + sum(child_slots) * (value_height + 2)
+                    + len(child_slots),
+                )
+                deferred_children: list[ast.AST] = []
+                for index, generator in enumerate(node.generators):
+                    if index:
+                        deferred_children.append(generator.iter)
+                    deferred_children.extend(generator.ifs)
+                if isinstance(node, ast.DictComp):
+                    deferred_children.extend((node.key, node.value))
+                else:
+                    deferred_children.append(node.elt)
+                pending.extend(
+                    (child, child_slots) for child in reversed(deferred_children)
+                )
+                continue
+            pending.extend(
+                (child, slot_counts)
+                for child in reversed(tuple(ast.iter_child_nodes(node)))
+            )
+        return max(1, maximum)
 
     def _scope_declarations(
         self,
@@ -1672,12 +1945,129 @@ class _SourceFlowAnalyzer:
             return self._builtin_value(name), False
         return _UNKNOWN_VALUE, True
 
-    def _record_point(
+    def _program_point(
         self, kind: str, node: ast.AST, context: _TransferContext
-    ) -> None:
-        self._stats.program_points.add(
-            (kind, _source_location(self.source_module, node), context.mode)
+    ) -> _ProgramPoint:
+        return kind, _source_location(self.source_module, node), context.mode
+
+    def _begin_transfer(
+        self,
+        kind: str,
+        node: ast.AST,
+        state: _State,
+        context: _TransferContext,
+    ) -> _ProgramPoint | None:
+        self._stats.record_transfer(kind)
+        point = self._program_point(kind, node, context)
+        self._stats.program_points.add(point)
+        self._stats.observe_state(state)
+        if context.mode not in {"eager", "deferred"}:
+            return None
+        retained_for_suffix = kind in {"statement", "pattern"} or isinstance(
+            node, (ast.NamedExpr, ast.Lambda, ast.GeneratorExp)
         )
+        self._active_transfers.append(
+            _ActiveTransfer(point, retained_for_suffix)
+        )
+        return point
+
+    def _record_cfg_edge(
+        self, source: _ProgramPoint | None, target: _ProgramPoint | None
+    ) -> None:
+        if source is not None and target is not None:
+            self._stats.record_cfg_edge(source, target)
+
+    def _record_suffix_edge(
+        self, source: _ProgramPoint | None, target: _ProgramPoint | None
+    ) -> None:
+        if source is not None and target is not None and source != target:
+            self._suffix_edges.add((source, target))
+
+    def _finish_transfer(
+        self,
+        point: _ProgramPoint | None,
+        result: _ExprResult
+        | _FlowResult
+        | tuple[
+            _State,
+            _State | None,
+            _PolicyFacts,
+            _DeferredEffects,
+            _State | None,
+        ],
+    ) -> None:
+        if point is None:
+            return
+        if not self._active_transfers or self._active_transfers[-1].point != point:
+            raise ValueError("source-flow transfer stack mismatch")
+        active = self._active_transfers.pop()
+        self._record_cfg_edge(active.last_child, point)
+        suffix_completion = active.last_suffix_child
+        if active.retained_for_suffix:
+            self._record_suffix_edge(active.last_suffix_child, point)
+            suffix_completion = point
+        states: tuple[_State | None, ...]
+        if isinstance(result, _ExprResult):
+            states = (
+                None if result.truthy is None else result.truthy.state,
+                None if result.falsy is None else result.falsy.state,
+                result.raises,
+            )
+            deferred = result.deferred
+        elif isinstance(result, _FlowResult):
+            states = (
+                result.normal,
+                result.breaks,
+                result.continues,
+                result.returns,
+                result.raises,
+            )
+            deferred = result.deferred
+        else:
+            states = (result[0], result[1], result[4])
+            deferred = result[3]
+        output = _join_states(*states)
+        if (
+            output is not None
+            and self._capture_point_outputs
+            and active.retained_for_suffix
+        ):
+            previous = self._point_outputs.get(point)
+            self._point_outputs[point] = (
+                output if previous is None else previous.join(output)
+            )
+            self._point_output_skeletons.setdefault(
+                point, self._state_skeleton(output)
+            )
+        if self._capture_point_outputs:
+            for body in deferred.bodies:
+                if body.location == point[1]:
+                    self._body_completion[(body.kind, body.location)] = point
+        if self._active_transfers:
+            parent = self._active_transfers[-1]
+            if not (
+                point[0] == "statement" and parent.point[0] == "statement"
+            ):
+                self._record_cfg_edge(parent.last_child, point)
+                parent.last_child = point
+                self._record_suffix_edge(
+                    parent.last_suffix_child, suffix_completion
+                )
+                if suffix_completion is not None:
+                    parent.last_suffix_child = suffix_completion
+
+    def _join_program_point(
+        self, point: _ProgramPoint, *states: _State | None
+    ) -> _State | None:
+        reachable = tuple(state for state in states if state is not None)
+        if not reachable:
+            return None
+        result = reachable[0]
+        for candidate in reachable[1:]:
+            result, _ = self._stats.merge_program_point(
+                point, result, candidate
+            )
+        return result
 
     def _closure_error(self, node: ast.AST, detail: str) -> _PolicyFacts:
         return _PolicyFacts(
@@ -1721,13 +2111,10 @@ class _SourceFlowAnalyzer:
             facts=facts,
         )
 
+    @_instrument_expression_transfer
     def _transfer_expression(
         self, node: ast.expr, state: _State, context: _TransferContext
     ) -> _ExprResult:
-        self._stats.expression_transfers += 1
-        self._record_point("expression", node, context)
-        self._stats.observe_state(state)
-
         if isinstance(node, ast.Constant):
             return self._expr_from_parts(
                 _literal_value(node.value), state, _truth_for_constant(node.value)
@@ -1795,7 +2182,10 @@ class _SourceFlowAnalyzer:
             sequence = self._transfer_expression_sequence(expressions, state, context)
             return self._sequence_as_container(sequence, "dict")
         if isinstance(node, ast.BinOp):
-            return self._transfer_generic_operands((node.left, node.right), state, context)
+            result = self._transfer_generic_operands(
+                (node.left, node.right), state, context
+            )
+            return _result_with(result, raises=result.post_state)
         if isinstance(node, ast.Await):
             return self._transfer_expression(node.value, state, context)
         if isinstance(node, ast.Yield):
@@ -1848,9 +2238,11 @@ class _SourceFlowAnalyzer:
                 facts,
                 self._closure_error(node, "runtime importlib loader symbol access"),
             )
-        truth = _Truth.UNKNOWN
-        if self._is_type_checking_value(value):
-            truth = _Truth.FALSE
+        truth = (
+            _Truth.FALSE
+            if self._is_type_checking_value(value)
+            else _truth_for_value(value)
+        )
         return self._expr_from_parts(
             value,
             state,
@@ -2648,6 +3040,7 @@ class _SourceFlowAnalyzer:
         self._stats.observe_state(base)
         values: list[_AbsValue] = []
         exits: list[_State] = []
+        may_be_empty = "zero" in outer.value.iteration_outcomes
         deferred = outer.deferred
         facts = outer.facts
         raises = outer.raises
@@ -2655,9 +3048,15 @@ class _SourceFlowAnalyzer:
         if "zero" in outer_outcomes:
             exits.append(base.pop())
         if outer_outcomes.intersection({"one", "many"}):
-            iteration, produced, step_raises, step_deferred, step_facts = self._comprehension_step(
-                node, 0, base, outer.value, context
-            )
+            (
+                iteration,
+                produced,
+                step_may_skip,
+                step_raises,
+                step_deferred,
+                step_facts,
+            ) = self._comprehension_step(node, 0, base, outer.value, context)
+            may_be_empty = may_be_empty or step_may_skip
             projected_step_raises = (
                 None if step_raises is None else step_raises.pop()
             )
@@ -2668,17 +3067,27 @@ class _SourceFlowAnalyzer:
                 exits.append(iteration.pop())
             values.extend(produced)
             if "many" in outer_outcomes and iteration is not None:
-                header = base.join(iteration)
-                updates = 1
+                loop_point: _ProgramPoint = (
+                    "comprehension-loop",
+                    _source_location(self.source_module, node),
+                    context.mode,
+                )
+                self._stats.program_points.add(loop_point)
+                self._stats.worklist_pops += 1
+                header, _ = self._stats.merge_program_point(
+                    loop_point, base, iteration
+                )
                 while True:
                     self._stats.worklist_pops += 1
                     (
                         next_state,
                         next_values,
+                        next_may_skip,
                         next_raises,
                         next_deferred,
                         next_facts,
                     ) = self._comprehension_step(node, 0, header, outer.value, context)
+                    may_be_empty = may_be_empty or next_may_skip
                     projected_next_raises = (
                         None if next_raises is None else next_raises.pop()
                     )
@@ -2688,28 +3097,34 @@ class _SourceFlowAnalyzer:
                     values.extend(next_values)
                     if next_state is None:
                         break
-                    grown = header.join(next_state)
-                    if grown == header:
+                    header, changed = self._stats.merge_program_point(
+                        loop_point, header, next_state
+                    )
+                    if not changed:
                         exits.append(next_state.pop())
                         break
-                    header = grown
-                    updates += 1
-                    self._stats.strict_state_updates += 1
-                    if updates > self._stats.freeze().computed_height_bound:
+                    if (
+                        self._stats.updates_by_program_point.get(loop_point, 0)
+                        > (self._stats.precomputed_height_bound or 1)
+                    ):
                         facts = _join_policy(
                             facts,
                             self._closure_error(node, "source dataflow did not converge"),
                         )
                         break
-                self._stats.max_updates_per_program_point = max(
-                    self._stats.max_updates_per_program_point, updates
-                )
         post = _join_states(*exits) or state
         value = _container_value(values, kind=type(node).__name__.lower())
+        truth = (
+            _Truth.FALSE
+            if not values
+            else _Truth.UNKNOWN
+            if may_be_empty
+            else _Truth.TRUE
+        )
         return self._expr_from_parts(
             value,
             post,
-            _Truth.TRUE,
+            truth,
             raises=raises,
             deferred=deferred,
             facts=facts,
@@ -2722,17 +3137,32 @@ class _SourceFlowAnalyzer:
         state: _State,
         iterable: _AbsValue,
         context: _TransferContext,
-    ) -> tuple[_State | None, list[_AbsValue], _State | None, _DeferredEffects, _PolicyFacts]:
+        *,
+        bind_target: bool = True,
+    ) -> tuple[
+        _State | None,
+        list[_AbsValue],
+        bool,
+        _State | None,
+        _DeferredEffects,
+        _PolicyFacts,
+    ]:
         generator = node.generators[index]
-        current, deferred, facts = self._bind_target(
-            generator.target,
-            _element_value(iterable),
-            state,
-            context,
-            operation="assign",
-        )
+        if bind_target:
+            current, deferred, facts = self._bind_target(
+                generator.target,
+                _element_value(iterable),
+                state,
+                context,
+                operation="assign",
+            )
+        else:
+            current = state
+            deferred = _DeferredEffects()
+            facts = _PolicyFacts()
         raises: _State | None = None
         completed: _State | None = None
+        may_skip = False
         for condition in generator.ifs:
             result = self._transfer_expression(condition, current, context)
             raises = _join_states(raises, result.raises)
@@ -2742,8 +3172,9 @@ class _SourceFlowAnalyzer:
                 completed,
                 None if result.falsy is None else result.falsy.state,
             )
+            may_skip = may_skip or result.falsy is not None
             if result.truthy is None:
-                return completed, [], raises, deferred, facts
+                return completed, [], True, raises, deferred, facts
             current = result.truthy.state
         if index + 1 < len(node.generators):
             next_generator = node.generators[index + 1]
@@ -2759,6 +3190,7 @@ class _SourceFlowAnalyzer:
                 (
                     nested_state,
                     nested_values,
+                    nested_may_skip,
                     nested_raises,
                     nested_deferred,
                     nested_facts,
@@ -2766,12 +3198,14 @@ class _SourceFlowAnalyzer:
                     node, index + 1, next_state, next_iterable.value, context
                 )
                 completed = _join_states(completed, nested_state)
+                may_skip = may_skip or nested_may_skip
                 raises = _join_states(raises, nested_raises)
                 deferred = _join_deferred(deferred, nested_deferred)
                 facts = _join_policy(facts, nested_facts)
             if "zero" in next_iterable.value.iteration_outcomes:
                 completed = _join_states(completed, next_state)
-            return completed, nested_values, raises, deferred, facts
+                may_skip = True
+            return completed, nested_values, may_skip, raises, deferred, facts
         expressions: tuple[ast.expr, ...] = (
             (node.key, node.value)
             if isinstance(node, ast.DictComp)
@@ -2787,6 +3221,7 @@ class _SourceFlowAnalyzer:
         return (
             _join_states(completed, result_state),
             list(values),
+            may_skip,
             _join_states(raises, expression_raises),
             _join_deferred(deferred, expression_deferred),
             _join_policy(facts, expression_facts),
@@ -2806,25 +3241,23 @@ class _SourceFlowAnalyzer:
         )
         deferred_state = post.push(frame)
         deferred_context = _TransferContext("deferred", True, True, False)
-        _, values, raises, effects, facts = self._comprehension_step(
-            node, 0, deferred_state, outer.value, deferred_context
+        deferred_state, effects, facts = self._bind_target(
+            node.generators[0].target,
+            _element_value(outer.value),
+            deferred_state,
+            deferred_context,
+            operation="assign",
         )
-        del raises
-        element = _ValueFacts(complete=False)
-        if values:
-            element = _flatten_facts(values[0])
-            for value in values[1:]:
-                element = _join_value_facts(element, _flatten_facts(value))
         generator_value = _AbsValue(
-            iterable_element=element,
-            contained=_as_contained(element),
+            iterable_element=_ValueFacts(complete=False),
+            contained=_ValueFacts(complete=False),
             iteration_outcomes=frozenset({"zero", "one", "many"}),
         )
         body = _DeferredBody(
             "generator",
             _source_location(self.source_module, node),
             post.frames[-1].scope_id,
-            post,
+            deferred_state,
             node,
         )
         return self._expr_from_parts(
@@ -2852,6 +3285,24 @@ class _SourceFlowAnalyzer:
         deferred = _DeferredEffects()
         facts = _PolicyFacts()
         unreachable_seed = state
+        runtime = context.mode in {"eager", "deferred"}
+        parent_point = (
+            self._active_transfers[-1].point
+            if runtime and self._active_transfers
+            else None
+        )
+        entry_predecessor = (
+            self._active_transfers[-1].last_child
+            if runtime and self._active_transfers
+            else None
+        )
+        entry_suffix_predecessor = (
+            self._active_transfers[-1].last_suffix_child
+            if runtime and self._active_transfers
+            else None
+        )
+        normal_predecessor: _ProgramPoint | None = None
+        terminal_point: _ProgramPoint | None = None
         for statement in statements:
             if current is None:
                 inspected = self._transfer_statement(
@@ -2862,6 +3313,15 @@ class _SourceFlowAnalyzer:
                 deferred = _join_deferred(deferred, inspected.deferred)
                 facts = _join_policy(facts, inspected.facts)
                 continue
+            point = self._program_point("statement", statement, context)
+            self._record_cfg_edge(
+                normal_predecessor or entry_predecessor,
+                point,
+            )
+            self._record_suffix_edge(
+                normal_predecessor or entry_suffix_predecessor,
+                point,
+            )
             result = self._transfer_statement(statement, current, context)
             breaks = _join_states(breaks, result.breaks)
             continues = _join_states(continues, result.continues)
@@ -2871,16 +3331,20 @@ class _SourceFlowAnalyzer:
             facts = _join_policy(facts, result.facts)
             unreachable_seed = current
             current = result.normal
+            terminal_point = point
+            normal_predecessor = point if current is not None else None
+            entry_predecessor = None
+            entry_suffix_predecessor = None
+        self._record_cfg_edge(terminal_point, parent_point)
+        self._record_suffix_edge(terminal_point, parent_point)
         return _FlowResult(
             current, breaks, continues, returns, raises, deferred, facts
         )
 
+    @_instrument_statement_transfer
     def _transfer_statement(
         self, node: ast.stmt, state: _State, context: _TransferContext
     ) -> _FlowResult:
-        self._stats.statement_transfers += 1
-        self._record_point("statement", node, context)
-        self._stats.observe_state(state)
         if isinstance(node, ast.Expr):
             result = self._transfer_expression(node.value, state, context)
             return _FlowResult(
@@ -3054,7 +3518,48 @@ class _SourceFlowAnalyzer:
                 deferred=result.deferred,
                 facts=result.facts,
             )
-        return _FlowResult(state)
+        inspected_deferred, inspected_facts = self._inspect_unsupported_children(
+            node, state
+        )
+        return _FlowResult(
+            state,
+            deferred=inspected_deferred,
+            facts=_join_policy(
+                inspected_facts,
+                self._closure_error(
+                    node, f"unsupported source-flow syntax: {type(node).__name__}"
+                ),
+            ),
+        )
+
+    def _inspect_unsupported_children(
+        self, node: ast.AST, state: _State
+    ) -> tuple[_DeferredEffects, _PolicyFacts]:
+        context = _TransferContext("unreachable", False, False, False)
+        deferred = _DeferredEffects()
+        facts = _PolicyFacts()
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.expr):
+                expr_result = self._transfer_expression(child, state, context)
+                deferred = _join_deferred(deferred, expr_result.deferred)
+                facts = _join_policy(facts, expr_result.facts)
+            elif isinstance(child, ast.stmt):
+                statement_result = self._transfer_statement(child, state, context)
+                deferred = _join_deferred(deferred, statement_result.deferred)
+                facts = _join_policy(facts, statement_result.facts)
+            elif isinstance(child, ast.pattern):
+                _, _, child_facts, child_deferred, _ = self._transfer_pattern(
+                    child, _UNKNOWN_VALUE, state, context
+                )
+                deferred = _join_deferred(deferred, child_deferred)
+                facts = _join_policy(facts, child_facts)
+            else:
+                child_deferred, child_facts = self._inspect_unsupported_children(
+                    child, state
+                )
+                deferred = _join_deferred(deferred, child_deferred)
+                facts = _join_policy(facts, child_facts)
+        return deferred, facts
 
     def _transfer_store_target(
         self, target: ast.expr, state: _State, context: _TransferContext
@@ -3527,24 +4032,211 @@ class _SourceFlowAnalyzer:
             facts=_join_policy(facts, binding_facts),
         )
 
+    @staticmethod
+    def _state_skeleton(state: _State) -> _StateSkeleton:
+        return tuple(
+            (
+                frame.scope_id,
+                frame.kind,
+                len(frame.bindings),
+                frame.global_names,
+                frame.nonlocal_names,
+            )
+            for frame in state.frames
+        )
+
+    @classmethod
+    def _project_state(
+        cls, state: _State, skeleton: _StateSkeleton
+    ) -> _State | None:
+        if len(state.frames) < len(skeleton):
+            return None
+        projected = _State(state.frames[: len(skeleton)])
+        if cls._state_skeleton(projected) != skeleton:
+            return None
+        return projected
+
+    def _reverse_suffix_envelopes(
+        self, definition_state: _State
+    ) -> dict[_ProgramPoint, _State]:
+        skeleton = self._state_skeleton(definition_state)
+        cached = self._suffix_cache.get(skeleton)
+        if cached is not None:
+            return cached
+        outputs: dict[_ProgramPoint, _State] = {}
+        for point, state in self._point_outputs.items():
+            output_skeleton = self._point_output_skeletons[point]
+            if (
+                len(output_skeleton) >= len(skeleton)
+                and output_skeleton[: len(skeleton)] == skeleton
+            ):
+                outputs[point] = _State(state.frames[: len(skeleton)])
+        successors: dict[_ProgramPoint, set[_ProgramPoint]] = {
+            point: set() for point in outputs
+        }
+        predecessors: dict[_ProgramPoint, set[_ProgramPoint]] = {
+            point: set() for point in outputs
+        }
+        for source, target in self._suffix_edges:
+            if source not in outputs or target not in outputs:
+                continue
+            successors[source].add(target)
+            predecessors[target].add(source)
+        envelopes = dict(outputs)
+        ordered_points = sorted(
+            outputs,
+            key=lambda point: (point[1], point[0], point[2]),
+            reverse=True,
+        )
+        worklist = deque(ordered_points)
+        queued = set(ordered_points)
+        while worklist:
+            point = worklist.popleft()
+            queued.remove(point)
+            self._stats.worklist_pops += 1
+            suffix_point: _ProgramPoint = ("suffix", point[1], "deferred")
+            self._stats.program_points.add(suffix_point)
+            current = envelopes[point]
+            grew = False
+            for successor in sorted(
+                successors[point],
+                key=lambda item: (item[1], item[0], item[2]),
+            ):
+                current, changed = self._stats.merge_program_point(
+                    suffix_point, current, envelopes[successor]
+                )
+                grew = grew or changed
+            if not grew:
+                continue
+            envelopes[point] = current
+            for predecessor in sorted(
+                predecessors[point],
+                key=lambda item: (item[1], item[0], item[2]),
+            ):
+                if predecessor not in queued:
+                    worklist.append(predecessor)
+                    queued.add(predecessor)
+        self._suffix_cache[skeleton] = envelopes
+        return envelopes
+
+    def _suffix_envelope(
+        self, body: _DeferredBody, fallback_state: _State
+    ) -> tuple[_State, _PolicyFacts, bool]:
+        definition_state = body.definition_state
+        generator_frame: _Frame | None = None
+        if body.kind == "generator":
+            if definition_state.frames[-1].kind != "comprehension":
+                return (
+                    definition_state,
+                    self._closure_error(
+                        body.node, "generator frame skeleton is incompatible"
+                    ),
+                    False,
+                )
+            generator_frame = definition_state.frames[-1]
+            definition_state = definition_state.pop()
+        completion = self._body_completion.get((body.kind, body.location))
+        if completion is None:
+            runtime_point_exists = any(
+                point[1] == body.location
+                and point[2] in {"eager", "deferred"}
+                for point in self._stats.program_points
+            )
+            if runtime_point_exists:
+                return (
+                    body.definition_state,
+                    self._closure_error(
+                        body.node, "deferred body completion point is missing"
+                    ),
+                    False,
+                )
+            return body.definition_state, _PolicyFacts(), False
+        envelopes = self._reverse_suffix_envelopes(definition_state)
+        suffix = envelopes.get(completion)
+        if suffix is None:
+            return (
+                body.definition_state,
+                self._closure_error(
+                    body.node, "deferred body frame skeleton is incompatible"
+                ),
+                False,
+            )
+        fallback = self._project_state(
+            fallback_state, self._state_skeleton(definition_state)
+        )
+        if fallback is not None:
+            suffix = suffix.join(fallback)
+        envelope = definition_state.join(suffix)
+        if generator_frame is not None:
+            envelope = envelope.push(generator_frame)
+        return envelope, _PolicyFacts(), True
+
+    @staticmethod
+    def _has_nested_deferred_syntax(node: ast.AST) -> bool:
+        pending = list(ast.iter_child_nodes(node))
+        while pending:
+            child = pending.pop()
+            if isinstance(
+                child,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.GeneratorExp),
+            ):
+                return True
+            pending.extend(ast.iter_child_nodes(child))
+        return False
+
     def _inspect_deferred_bodies(
         self, effects: _DeferredEffects, suffix_state: _State
     ) -> tuple[_PolicyFacts, _DeferredEffects]:
         facts = _PolicyFacts()
         accumulated = _DeferredEffects(writes=effects.writes)
         for body in effects.bodies:
-            if body.kind == "generator":
-                continue
-            definition_state = body.definition_state
-            if len(definition_state.frames) != len(suffix_state.frames):
-                envelope = definition_state
-            else:
-                envelope = definition_state.join(suffix_state)
-                self._stats.program_points.add(
-                    ("suffix", body.location, "deferred")
+            envelope, envelope_facts, runtime_body = self._suffix_envelope(
+                body, suffix_state
+            )
+            facts = _join_policy(facts, envelope_facts)
+            previous_capture = self._capture_point_outputs
+            self._capture_point_outputs = (
+                runtime_body and self._has_nested_deferred_syntax(body.node)
+            )
+            deferred_context = (
+                _TransferContext("deferred", True, True, False)
+                if runtime_body
+                else _TransferContext("unreachable", False, False, False)
+            )
+            if isinstance(body.node, ast.GeneratorExp):
+                if body.kind != "generator":
+                    facts = _join_policy(
+                        facts,
+                        self._closure_error(
+                            body.node, "invalid deferred generator kind"
+                        ),
+                    )
+                    self._capture_point_outputs = previous_capture
+                    continue
+                (
+                    iteration,
+                    values,
+                    may_skip,
+                    raises,
+                    body_deferred,
+                    body_facts,
+                ) = self._comprehension_step(
+                    body.node,
+                    0,
+                    envelope,
+                    _UNKNOWN_VALUE,
+                    deferred_context,
+                    bind_target=False,
                 )
-                self._stats.worklist_pops += 1
-            if isinstance(body.node, ast.Lambda):
+                del values, may_skip
+                body_flow = _FlowResult(
+                    iteration,
+                    raises=raises,
+                    deferred=body_deferred,
+                    facts=body_facts,
+                )
+                body_state = envelope
+            elif isinstance(body.node, ast.Lambda):
                 declarations = self._lambda_declarations(body.node)
                 arguments = body.node.args
             elif isinstance(body.node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -3557,46 +4249,49 @@ class _SourceFlowAnalyzer:
                     facts,
                     self._closure_error(body.node, "invalid deferred body node"),
                 )
+                self._capture_point_outputs = previous_capture
                 continue
-            frame = _Frame.create(
-                scope_id=body.location,
-                kind="lambda" if body.kind == "lambda" else "function",
-                names=tuple(declarations.local_names),
-                global_names=declarations.global_names,
-                nonlocal_names=declarations.nonlocal_names,
-            )
-            body_state = envelope.push(frame)
-            body_state = self._bind_arguments(arguments, body_state)
-            unresolved = tuple(
-                name
-                for name in declarations.nonlocal_names
-                if body_state._nonlocal_index(name) is None
-            )
-            if unresolved:
-                facts = _join_policy(
-                    facts,
-                    self._closure_error(
-                        body.node,
-                        f"unresolved nonlocal binding: {', '.join(sorted(unresolved))}",
-                    ),
+            if not isinstance(body.node, ast.GeneratorExp):
+                frame = _Frame.create(
+                    scope_id=body.location,
+                    kind="lambda" if body.kind == "lambda" else "function",
+                    names=tuple(declarations.local_names),
+                    global_names=declarations.global_names,
+                    nonlocal_names=declarations.nonlocal_names,
                 )
-            deferred_context = _TransferContext("deferred", True, True, False)
-            if isinstance(body.node, ast.Lambda):
-                result = self._transfer_expression(
-                    body.node.body, body_state, deferred_context
+                body_state = envelope.push(frame)
+                body_state = self._bind_arguments(arguments, body_state)
+                unresolved = tuple(
+                    name
+                    for name in declarations.nonlocal_names
+                    if body_state._nonlocal_index(name) is None
                 )
-                body_flow = _FlowResult(
-                    result.post_state,
-                    raises=result.raises,
-                    deferred=result.deferred,
-                    facts=result.facts,
-                )
-            elif isinstance(body.node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                body_flow = self._transfer_statements(
-                    body.node.body, body_state, deferred_context
-                )
-            else:
-                continue
+                if unresolved:
+                    facts = _join_policy(
+                        facts,
+                        self._closure_error(
+                            body.node,
+                            f"unresolved nonlocal binding: {', '.join(sorted(unresolved))}",
+                        ),
+                    )
+                if isinstance(body.node, ast.Lambda):
+                    result = self._transfer_expression(
+                        body.node.body, body_state, deferred_context
+                    )
+                    body_flow = _FlowResult(
+                        result.post_state,
+                        raises=result.raises,
+                        deferred=result.deferred,
+                        facts=result.facts,
+                    )
+                elif isinstance(body.node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    body_flow = self._transfer_statements(
+                        body.node.body, body_state, deferred_context
+                    )
+                else:
+                    self._capture_point_outputs = previous_capture
+                    continue
+            self._capture_point_outputs = previous_capture
             facts = _join_policy(facts, body_flow.facts)
             accumulated = _join_deferred(accumulated, body_flow.deferred)
             nested_suffix = body_flow.normal or body_state
@@ -3648,7 +4343,12 @@ class _SourceFlowAnalyzer:
         facts = iterable.facts
         if outcomes.intersection({"one", "many"}):
             header = post
-            updates = 0
+            loop_point: _ProgramPoint = (
+                "loop",
+                _source_location(self.source_module, node),
+                context.mode,
+            )
+            self._stats.program_points.add(loop_point)
             while True:
                 self._stats.worklist_pops += 1
                 bound, effect, binding_facts = self._bind_target(
@@ -3670,22 +4370,20 @@ class _SourceFlowAnalyzer:
                 exhaustion = _join_states(exhaustion, backedge)
                 if "many" not in outcomes or backedge is None:
                     break
-                grown = post.join(backedge)
-                self._stats.state_join_attempts += 1
-                if grown == header:
+                header, changed = self._stats.merge_program_point(
+                    loop_point, header, backedge
+                )
+                if not changed:
                     break
-                header = header.join(grown)
-                updates += 1
-                self._stats.strict_state_updates += 1
-                if updates > self._stats.freeze().computed_height_bound:
+                if (
+                    self._stats.updates_by_program_point.get(loop_point, 0)
+                    > (self._stats.precomputed_height_bound or 1)
+                ):
                     facts = _join_policy(
                         facts,
                         self._closure_error(node, "source dataflow did not converge"),
                     )
                     break
-            self._stats.max_updates_per_program_point = max(
-                self._stats.max_updates_per_program_point, updates
-            )
         else_result = (
             _FlowResult(exhaustion)
             if not node.orelse or exhaustion is None
@@ -3710,7 +4408,12 @@ class _SourceFlowAnalyzer:
         raises: _State | None = None
         deferred = _DeferredEffects()
         facts = _PolicyFacts()
-        updates = 0
+        loop_point: _ProgramPoint = (
+            "loop",
+            _source_location(self.source_module, node),
+            context.mode,
+        )
+        self._stats.program_points.add(loop_point)
         while True:
             self._stats.worklist_pops += 1
             condition = self._transfer_expression(node.test, header, context)
@@ -3732,21 +4435,19 @@ class _SourceFlowAnalyzer:
             backedge = _join_states(body.normal, body.continues)
             if backedge is None:
                 break
-            grown = state.join(backedge)
-            self._stats.state_join_attempts += 1
-            if grown == header:
+            header, changed = self._stats.merge_program_point(
+                loop_point, header, backedge
+            )
+            if not changed:
                 break
-            header = header.join(grown)
-            updates += 1
-            self._stats.strict_state_updates += 1
-            if updates > self._stats.freeze().computed_height_bound:
+            if (
+                self._stats.updates_by_program_point.get(loop_point, 0)
+                > (self._stats.precomputed_height_bound or 1)
+            ):
                 facts = _join_policy(
                     facts, self._closure_error(node, "source dataflow did not converge")
                 )
                 break
-        self._stats.max_updates_per_program_point = max(
-            self._stats.max_updates_per_program_point, updates
-        )
         else_result = (
             _FlowResult(exhaustion)
             if not node.orelse or exhaustion is None
@@ -3817,6 +4518,7 @@ class _SourceFlowAnalyzer:
             _join_policy(facts, joined.facts),
         )
 
+    @_instrument_pattern_transfer
     def _transfer_pattern(
         self,
         pattern: ast.pattern,
@@ -3824,8 +4526,6 @@ class _SourceFlowAnalyzer:
         state: _State,
         context: _TransferContext,
     ) -> tuple[_State, _State | None, _PolicyFacts, _DeferredEffects, _State | None]:
-        self._stats.pattern_transfers += 1
-        self._record_point("pattern", pattern, context)
         expressions: list[ast.expr] = []
         always_matches = isinstance(pattern, (ast.MatchAs, ast.MatchStar)) and (
             not isinstance(pattern, ast.MatchAs) or pattern.pattern is None
@@ -3840,7 +4540,13 @@ class _SourceFlowAnalyzer:
             tuple(expressions), state, context
         )
         bound = post.bind_pattern(pattern, value)
-        return bound, None if always_matches else state, facts, deferred, raises
+        if always_matches:
+            failed = None
+        else:
+            failed = self._join_program_point(
+                self._program_point("pattern", pattern, context), post, bound
+            )
+        return bound, failed, facts, deferred, raises
 
     def _transfer_with(
         self,
@@ -3887,7 +4593,7 @@ class _SourceFlowAnalyzer:
         context: _TransferContext,
     ) -> _FlowResult:
         body = self._transfer_statements(node.body, state, context)
-        handler_input = _join_states(state, body.raises)
+        handler_input = body.raises
         handler_outputs: list[_FlowResult] = []
         handler_facts = _PolicyFacts()
         handler_deferred = _DeferredEffects()
@@ -3935,6 +4641,17 @@ class _SourceFlowAnalyzer:
                 type_deferred = _join_deferred(type_deferred, effect)
                 type_facts = _join_policy(type_facts, binding_facts)
             handled = self._transfer_statements(handler.body, current, context)
+            if handler.name is not None:
+                handled = self._cleanup_handler_name(handled, handler.name)
+            handler_point: _ProgramPoint = (
+                "handler",
+                _source_location(self.source_module, handler),
+                context.mode,
+            )
+            self._stats.program_points.add(handler_point)
+            ordered_effect = self._join_program_point(
+                handler_point, handled.normal, handled.raises
+            )
             handled = _FlowResult(
                 handled.normal,
                 handled.breaks,
@@ -3944,11 +4661,11 @@ class _SourceFlowAnalyzer:
                 _join_deferred(type_deferred, handled.deferred),
                 _join_policy(type_facts, handled.facts),
             )
-            if handler.name is not None:
-                handled = self._cleanup_handler_name(handled, handler.name)
             handler_outputs.append(handled)
             if isinstance(node, ast.TryStar):
-                ordered_input = _join_states(ordered_input, handled.normal)
+                ordered_input = self._join_program_point(
+                    handler_point, ordered_input, ordered_effect
+                )
         else_result = (
             _FlowResult(body.normal)
             if not node.orelse or body.normal is None
@@ -4064,40 +4781,76 @@ class _SourceFlowAnalyzer:
 
     @classmethod
     def _possible_raise_names(
-        cls, statements: Sequence[ast.stmt]
+        cls,
+        statements: Sequence[ast.stmt],
     ) -> frozenset[str] | None:
         names: set[str] = set()
-        unknown = False
         for statement in statements:
             if isinstance(statement, ast.Raise):
                 if statement.exc is None:
-                    unknown = True
+                    return None
                 elif isinstance(statement.exc, ast.Call):
                     name = _call_name(statement.exc.func)
-                    unknown = unknown or name is None
-                    if name is not None:
-                        names.add(name)
+                    if name is None:
+                        return None
+                    names.add(name)
                 elif isinstance(statement.exc, ast.Name):
                     names.add(statement.exc.id)
                 else:
-                    unknown = True
-            elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While, ast.If)):
-                nested = cls._possible_raise_names(statement.body)
-                if nested is None:
-                    unknown = True
-                else:
-                    names.update(nested)
-                nested_else = cls._possible_raise_names(statement.orelse)
-                if nested_else is None:
-                    unknown = True
-                else:
-                    names.update(nested_else)
-            elif isinstance(statement, (ast.With, ast.AsyncWith)):
-                nested = cls._possible_raise_names(statement.body)
-                if nested is None:
-                    unknown = True
-                else:
-                    names.update(nested)
+                    return None
+                continue
+            if isinstance(
+                statement,
+                (
+                    ast.Pass,
+                    ast.Global,
+                    ast.Nonlocal,
+                    ast.Break,
+                    ast.Continue,
+                ),
+            ):
+                continue
+            if isinstance(statement, ast.Return):
+                if (
+                    statement.value is not None
+                    and not cls._literal_expression_is_nonraising(statement.value)
+                ):
+                    return None
+                continue
+            if isinstance(statement, ast.Expr):
+                if not cls._literal_expression_is_nonraising(statement.value):
+                    return None
+                continue
+            if isinstance(statement, ast.Assign):
+                if (
+                    not cls._literal_expression_is_nonraising(statement.value)
+                    or not all(isinstance(target, ast.Name) for target in statement.targets)
+                ):
+                    return None
+                continue
+            if isinstance(statement, ast.AnnAssign):
+                if (
+                    not isinstance(statement.target, ast.Name)
+                    or not cls._literal_expression_is_nonraising(statement.annotation)
+                    or (
+                        statement.value is not None
+                        and not cls._literal_expression_is_nonraising(statement.value)
+                    )
+                ):
+                    return None
+                continue
+            blocks: tuple[Sequence[ast.stmt], ...]
+            if isinstance(statement, (ast.If, ast.While)):
+                if not cls._literal_expression_is_nonraising(statement.test):
+                    return None
+                blocks = (statement.body, statement.orelse)
+            elif isinstance(statement, ast.For):
+                if (
+                    not isinstance(statement.target, ast.Name)
+                    or not cls._literal_expression_is_nonraising(statement.iter)
+                ):
+                    return None
+                blocks = (statement.body, statement.orelse)
             elif isinstance(statement, (ast.Try, ast.TryStar)):
                 final_names = cls._possible_raise_names(statement.finalbody)
                 final_always_abrupt = bool(statement.finalbody) and all(
@@ -4106,24 +4859,35 @@ class _SourceFlowAnalyzer:
                 )
                 if final_always_abrupt:
                     if final_names is None:
-                        unknown = True
-                    else:
-                        names.update(final_names)
+                        return None
+                    names.update(final_names)
                     continue
-                for block in (
+                blocks = (
                     statement.body,
                     statement.orelse,
                     statement.finalbody,
                     *(handler.body for handler in statement.handlers),
-                ):
-                    nested = cls._possible_raise_names(block)
-                    if nested is None:
-                        unknown = True
-                    else:
-                        names.update(nested)
-            elif isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
-                unknown = True
-        return None if unknown else frozenset(names)
+                )
+            else:
+                # Imports, async iteration, context-manager protocols, complex
+                # stores, definitions, pattern matching, and every remaining
+                # statement family may raise an exception whose type cannot be
+                # recovered from syntax alone.
+                return None
+            for block in blocks:
+                nested = cls._possible_raise_names(block)
+                if nested is None:
+                    return None
+                names.update(nested)
+        return frozenset(names)
+
+    @staticmethod
+    def _literal_expression_is_nonraising(node: ast.expr) -> bool:
+        try:
+            ast.literal_eval(node)
+        except (TypeError, ValueError):
+            return False
+        return True
 
 
 def classify_edge(
@@ -5257,6 +6021,7 @@ def _edge_key(edge: DependencyEdge) -> tuple[str, str, str]:
 
 def _closure_error_key(error: str) -> tuple[int, str]:
     priorities = (
+        "unsupported source-flow syntax",
         "source capability rejected: deferred-effect",
         "source capability rejected: dynamic-import",
         "source capability rejected: executable-code",
