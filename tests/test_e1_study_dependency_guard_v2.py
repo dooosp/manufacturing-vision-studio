@@ -89,8 +89,13 @@ def _append(repo_root: Path, relative: Path, source: str) -> None:
 
 
 def _compiled_source(source: str) -> str:
-    compile(source, "<dependency-guard-fixture>", "exec")
+    compile(source, "<dependency-guard-fixture>", "exec", dont_inherit=True)
     return source
+
+
+def _execute_source(source: str, namespace: dict[str, object]) -> None:
+    code = compile(source, "<dependency-guard-runtime-trace>", "exec", dont_inherit=True)
+    exec(code, namespace)
 
 
 def test_real_task_7_checkout_has_the_exact_reviewed_dependency_closure() -> None:
@@ -1566,4 +1571,625 @@ def test_real_cli_namespace_reflection_bindings_are_rejected(
         StudyRetentionError,
         match="source capability rejected: namespace-reflection",
     ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_assignment_target_expressions_are_transferred(tmp_path: Path) -> None:
+    source = (
+        "sink = {}\n"
+        "sink[__import__('manufacturing_vision_studio.e1.policy_v2')] = 1\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    with pytest.raises(StudyRetentionError, match="source capability rejected: dynamic-import"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_scope_declarations_apply_to_the_complete_function_body(
+    tmp_path: Path,
+) -> None:
+    source = (
+        "from typing import TYPE_CHECKING\n"
+        "def deferred(flag: bool) -> None:\n"
+        "    if flag:\n"
+        "        global TYPE_CHECKING\n"
+        "    TYPE_CHECKING = False\n"
+        "    if TYPE_CHECKING:\n"
+        "        from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    with pytest.raises(StudyRetentionError, match="source capability rejected: deferred-effect"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_loop_else_receives_normal_exhaustion_state(tmp_path: Path) -> None:
+    trace_namespace: dict[str, object] = {}
+    _execute_source(
+        _compiled_source(
+            "trace = []\n"
+            "for marker in ('iteration',):\n"
+            "    trace.append(marker)\n"
+            "else:\n"
+            "    trace.append(f'else:{marker}')\n"
+        ),
+        trace_namespace,
+    )
+    assert trace_namespace["trace"] == ["iteration", "else:iteration"]
+
+    source = _compiled_source(
+        "import sys\n"
+        "carrier = sys.stdout\n"
+        "for carrier in (sys,):\n"
+        "    pass\n"
+        "else:\n"
+        "    REGISTRY = carrier.modules\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(StudyRetentionError, match="source capability rejected: import-registry"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_failed_match_guard_effect_reaches_later_cases(tmp_path: Path) -> None:
+    trace_namespace: dict[str, object] = {}
+    _execute_source(
+        _compiled_source(
+            "trace = []\n"
+            "carrier = 'before'\n"
+            "match 1:\n"
+            "    case 1 if (trace.append('guard') or (carrier := 'guard')) == 'no':\n"
+            "        trace.append('first')\n"
+            "    case _:\n"
+            "        trace.append(f'second:{carrier}')\n"
+        ),
+        trace_namespace,
+    )
+    assert trace_namespace["trace"] == ["guard", "second:guard"]
+
+    source = _compiled_source(
+        "import sys\n"
+        "carrier = sys.stdout\n"
+        "match 1:\n"
+        "    case 1 if ((carrier := sys) and False):\n"
+        "        pass\n"
+        "    case _:\n"
+        "        REGISTRY = carrier.modules\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(StudyRetentionError, match="source capability rejected: import-registry"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_except_star_handlers_preserve_prior_handler_effects(tmp_path: Path) -> None:
+    trace_namespace: dict[str, object] = {}
+    _execute_source(
+        _compiled_source(
+            "trace = []\n"
+            "carrier = 'before'\n"
+            "try:\n"
+            "    raise ExceptionGroup('group', [ValueError(), TypeError()])\n"
+            "except* ValueError:\n"
+            "    trace.append('value')\n"
+            "    carrier = 'value-handler'\n"
+            "except* TypeError:\n"
+            "    trace.append(f'type:{carrier}')\n"
+        ),
+        trace_namespace,
+    )
+    assert trace_namespace["trace"] == ["value", "type:value-handler"]
+
+    source = _compiled_source(
+        "import sys\n"
+        "carrier = sys.stdout\n"
+        "try:\n"
+        "    raise ExceptionGroup('group', [ValueError(), TypeError()])\n"
+        "except* ValueError:\n"
+        "    carrier = sys\n"
+        "except* TypeError:\n"
+        "    REGISTRY = carrier.modules\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(StudyRetentionError, match="source capability rejected: import-registry"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_exception_target_is_unbound_after_handler(tmp_path: Path) -> None:
+    trace_namespace: dict[str, object] = {}
+    _execute_source(
+        _compiled_source(
+            "trace = []\n"
+            "problem = 'outer'\n"
+            "try:\n"
+            "    raise RuntimeError('handled')\n"
+            "except RuntimeError as problem:\n"
+            "    trace.append(type(problem).__name__)\n"
+            "try:\n"
+            "    problem\n"
+            "except NameError:\n"
+            "    trace.append('unbound')\n"
+        ),
+        trace_namespace,
+    )
+    assert trace_namespace["trace"] == ["RuntimeError", "unbound"]
+
+    source = _compiled_source(
+        "from typing import TYPE_CHECKING\n"
+        "try:\n"
+        "    raise RuntimeError('handled')\n"
+        "except RuntimeError as TYPE_CHECKING:\n"
+        "    pass\n"
+        "if TYPE_CHECKING:\n"
+        "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_with_target_preserves_context_capability_provenance(tmp_path: Path) -> None:
+    trace_namespace: dict[str, object] = {}
+    _execute_source(
+        _compiled_source(
+            "trace = []\n"
+            "class Context:\n"
+            "    def __enter__(self):\n"
+            "        trace.append('enter')\n"
+            "        return 'entered-value'\n"
+            "    def __exit__(self, *_args):\n"
+            "        trace.append('exit')\n"
+            "with Context() as carrier:\n"
+            "    trace.append(carrier)\n"
+        ),
+        trace_namespace,
+    )
+    assert trace_namespace["trace"] == ["enter", "entered-value", "exit"]
+
+    source = _compiled_source(
+        "import sys\n"
+        "with sys as carrier:\n"
+        "    REGISTRY = carrier.modules\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(StudyRetentionError, match="source capability rejected: import-registry"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_future_annotations_do_not_commit_runtime_named_expression_effects(
+    tmp_path: Path,
+) -> None:
+    source = _compiled_source(
+        "from __future__ import annotations\n"
+        "import sys as carrier\n"
+        "def observed(value: [(carrier := carrier.stdout) for _ in (0,)]) -> None:\n"
+        "    pass\n"
+        "REGISTRY = carrier.modules\n"
+    )
+    namespace: dict[str, object] = {}
+    _execute_source(source, namespace)
+    assert namespace["carrier"] is sys
+
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    runner = repo_root / RUNNER_PATH
+    runner.write_text(source + "\n" + runner.read_text())
+
+    with pytest.raises(StudyRetentionError, match="source capability rejected: import-registry"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_nonfuture_annotations_follow_python_312_definition_order(
+    tmp_path: Path,
+) -> None:
+    trace_namespace: dict[str, object] = {}
+    _execute_source(
+        _compiled_source(
+            "trace = []\n"
+            "def mark(label):\n"
+            "    trace.append(label)\n"
+            "    return object()\n"
+            "def decorate(label):\n"
+            "    trace.append(f'eval:{label}')\n"
+            "    def apply(function):\n"
+            "        trace.append(f'apply:{label}')\n"
+            "        return function\n"
+            "    return apply\n"
+            "@decorate('outer')\n"
+            "@decorate('inner')\n"
+            "def observed(\n"
+            "    positional: mark('annotation:positional') = mark('default:positional'),\n"
+            "    *,\n"
+            "    keyword: mark('annotation:keyword') = mark('default:keyword'),\n"
+            ") -> mark('annotation:return'):\n"
+            "    pass\n"
+        ),
+        trace_namespace,
+    )
+    assert trace_namespace["trace"] == [
+        "eval:outer",
+        "eval:inner",
+        "default:positional",
+        "default:keyword",
+        "annotation:positional",
+        "annotation:keyword",
+        "annotation:return",
+        "apply:inner",
+        "apply:outer",
+    ]
+
+    source = _compiled_source(
+        "import sys\n"
+        "carrier = sys\n"
+        "def observed(value: (carrier := carrier.stdout) = (carrier := sys)) -> None:\n"
+        "    pass\n"
+        "WRITE = carrier.write\n"
+    )
+    namespace = {}
+    _execute_source(source, namespace)
+    assert namespace["carrier"] is sys.stdout
+
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_python312_type_parameter_bounds_are_lazy_but_policy_inspected(
+    tmp_path: Path,
+) -> None:
+    trace_namespace: dict[str, object] = {}
+    _execute_source(
+        _compiled_source(
+            "trace = []\n"
+            "def bound():\n"
+            "    trace.append('bound')\n"
+            "    return object\n"
+            "def generic[T: bound()]() -> None:\n"
+            "    pass\n"
+        ),
+        trace_namespace,
+    )
+    assert trace_namespace["trace"] == []
+
+    source = _compiled_source(
+        "def generic[\n"
+        "    T: __import__('manufacturing_vision_studio.e1.policy_v2').E1V2Policy,\n"
+        "]() -> None:\n"
+        "    pass\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(StudyRetentionError, match="source capability rejected: dynamic-import"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_class_body_global_write_is_eager(tmp_path: Path) -> None:
+    source = _compiled_source(
+        "import sys as carrier\n"
+        "class Scope:\n"
+        "    global carrier\n"
+        "    carrier = carrier.stdout\n"
+        "WRITE = carrier.write\n"
+    )
+    namespace: dict[str, object] = {}
+    _execute_source(source, namespace)
+    assert namespace["carrier"] is sys.stdout
+
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_class_local_write_does_not_escape(tmp_path: Path) -> None:
+    source = _compiled_source(
+        "import sys as carrier\n"
+        "class Scope:\n"
+        "    carrier = carrier.stdout\n"
+        "REGISTRY = carrier.modules\n"
+    )
+    namespace: dict[str, object] = {}
+    _execute_source(source, namespace)
+    assert namespace["carrier"] is sys
+    assert namespace["Scope"].carrier is sys.stdout
+
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(StudyRetentionError, match="source capability rejected: import-registry"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("completion", "source"),
+    (
+        (
+            "break",
+            "import sys as carrier\n"
+            "for _ in (0,):\n"
+            "    break\n"
+            "    carrier = carrier.stdout\n"
+            "REGISTRY = carrier.modules\n",
+        ),
+        (
+            "continue",
+            "import sys as carrier\n"
+            "for _ in (0,):\n"
+            "    continue\n"
+            "    carrier = carrier.stdout\n"
+            "REGISTRY = carrier.modules\n",
+        ),
+        (
+            "return",
+            "def deferred() -> None:\n"
+            "    import sys as carrier\n"
+            "    try:\n"
+            "        return\n"
+            "        carrier = carrier.stdout\n"
+            "    finally:\n"
+            "        REGISTRY = carrier.modules\n",
+        ),
+        (
+            "raise",
+            "def deferred() -> None:\n"
+            "    import sys as carrier\n"
+            "    try:\n"
+            "        raise RuntimeError('expected')\n"
+            "        carrier = carrier.stdout\n"
+            "    except RuntimeError:\n"
+            "        REGISTRY = carrier.modules\n",
+        ),
+    ),
+)
+def test_abrupt_exit_channels_do_not_feed_following_statements(
+    tmp_path: Path,
+    completion: str,
+    source: str,
+) -> None:
+    trace_source = {
+        "break": (
+            "trace = []\n"
+            "for _ in (0,):\n"
+            "    break\n"
+            "    trace.append('unreachable')\n"
+            "trace.append('after')\n"
+        ),
+        "continue": (
+            "trace = []\n"
+            "for _ in (0,):\n"
+            "    continue\n"
+            "    trace.append('unreachable')\n"
+            "trace.append('after')\n"
+        ),
+        "return": (
+            "trace = []\n"
+            "def observed():\n"
+            "    trace.append('before')\n"
+            "    return\n"
+            "    trace.append('unreachable')\n"
+            "observed()\n"
+            "trace.append('after')\n"
+        ),
+        "raise": (
+            "trace = []\n"
+            "try:\n"
+            "    trace.append('before')\n"
+            "    raise RuntimeError('expected')\n"
+            "    trace.append('unreachable')\n"
+            "except RuntimeError:\n"
+            "    trace.append('after')\n"
+        ),
+    }[completion]
+    trace_namespace: dict[str, object] = {}
+    _execute_source(_compiled_source(trace_source), trace_namespace)
+    expected_trace = ["after"] if completion in {"break", "continue"} else ["before", "after"]
+    assert trace_namespace["trace"] == expected_trace
+
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    with pytest.raises(StudyRetentionError, match="source capability rejected: import-registry"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize("incoming", ("pass", "break", "continue", "return", "raise"))
+def test_finally_completion_replaces_each_incoming_exit(
+    tmp_path: Path,
+    incoming: str,
+) -> None:
+    incoming_statement = {
+        "pass": "pass",
+        "break": "break",
+        "continue": "continue",
+        "return": "return",
+        "raise": "raise RuntimeError('replaced')",
+    }[incoming]
+    trace_source = _compiled_source(
+        "trace = []\n"
+        "def observed():\n"
+        "    for _ in (0,):\n"
+        "        try:\n"
+        f"            {incoming_statement}\n"
+        "        finally:\n"
+        "            trace.append('finally')\n"
+        "            break\n"
+        "    trace.append('after')\n"
+        "observed()\n"
+    )
+    trace_namespace: dict[str, object] = {}
+    _execute_source(trace_source, trace_namespace)
+    assert trace_namespace["trace"] == ["finally", "after"]
+
+    source = _compiled_source(
+        "def deferred() -> None:\n"
+        "    import sys as carrier\n"
+        "    for _ in (0,):\n"
+        "        try:\n"
+        f"            {incoming_statement}\n"
+        "        finally:\n"
+        "            break\n"
+        "    REGISTRY = carrier.modules\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(StudyRetentionError, match="source capability rejected: import-registry"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_deferred_free_reads_use_the_call_time_suffix_envelope(tmp_path: Path) -> None:
+    trace_namespace: dict[str, object] = {}
+    _execute_source(
+        _compiled_source(
+            "trace = []\n"
+            "carrier = 'definition-time'\n"
+            "def deferred():\n"
+            "    trace.append(carrier)\n"
+            "carrier = 'call-time'\n"
+            "deferred()\n"
+        ),
+        trace_namespace,
+    )
+    assert trace_namespace["trace"] == ["call-time"]
+
+    source = _compiled_source(
+        "import sys\n"
+        "carrier = sys.stdout\n"
+        "def deferred() -> object:\n"
+        "    return carrier.modules\n"
+        "carrier = sys\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(StudyRetentionError, match="source capability rejected: import-registry"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("case_id", "source"),
+    (
+        (
+            "function-global-assignment",
+            "marker = 0\n"
+            "def deferred() -> None:\n"
+            "    global marker\n"
+            "    marker = 1\n",
+        ),
+        (
+            "async-function-global-assignment",
+            "marker = 0\n"
+            "async def deferred() -> None:\n"
+            "    global marker\n"
+            "    marker = 1\n",
+        ),
+        (
+            "function-nonlocal-assignment",
+            "def outer() -> None:\n"
+            "    marker = 0\n"
+            "    def deferred() -> None:\n"
+            "        nonlocal marker\n"
+            "        marker = 1\n",
+        ),
+        (
+            "async-function-nonlocal-assignment",
+            "def outer() -> None:\n"
+            "    marker = 0\n"
+            "    async def deferred() -> None:\n"
+            "        nonlocal marker\n"
+            "        marker = 1\n",
+        ),
+        (
+            "global-delete",
+            "marker = 0\n"
+            "def deferred() -> None:\n"
+            "    global marker\n"
+            "    del marker\n",
+        ),
+        (
+            "nonlocal-delete",
+            "def outer() -> None:\n"
+            "    marker = 0\n"
+            "    def deferred() -> None:\n"
+            "        nonlocal marker\n"
+            "        del marker\n",
+        ),
+        (
+            "global-augmented-assignment",
+            "marker = 0\n"
+            "def deferred() -> None:\n"
+            "    global marker\n"
+            "    marker += 1\n",
+        ),
+        (
+            "nonlocal-augmented-assignment",
+            "def outer() -> None:\n"
+            "    marker = 0\n"
+            "    def deferred() -> None:\n"
+            "        nonlocal marker\n"
+            "        marker += 1\n",
+        ),
+        (
+            "global-import-alias-binding",
+            "marker = None\n"
+            "def deferred() -> None:\n"
+            "    global marker\n"
+            "    import sys as marker\n",
+        ),
+        (
+            "nonlocal-import-alias-binding",
+            "def outer() -> None:\n"
+            "    marker = None\n"
+            "    def deferred() -> None:\n"
+            "        nonlocal marker\n"
+            "        import sys as marker\n",
+        ),
+        (
+            "generator-walrus-function-frame",
+            "def deferred() -> None:\n"
+            "    marker = 0\n"
+            "    pending = ((marker := item) for item in (1,))\n",
+        ),
+        (
+            "generator-walrus-lambda-frame",
+            "deferred = lambda: ((marker := item) for item in (1,))\n",
+        ),
+    ),
+)
+def test_deferred_outer_writes_fail_closed(
+    tmp_path: Path,
+    case_id: str,
+    source: str,
+) -> None:
+    del case_id
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    with pytest.raises(StudyRetentionError, match="source capability rejected: deferred-effect"):
         scan_study_dependencies(protocol, repo_root=repo_root)
