@@ -2046,7 +2046,16 @@ def test_abrupt_exit_channels_do_not_feed_following_statements(
         scan_study_dependencies(protocol, repo_root=repo_root)
 
 
-@pytest.mark.parametrize("incoming", ("pass", "break", "continue", "return", "raise"))
+@pytest.mark.parametrize(
+    "incoming",
+    (
+        pytest.param("pass", id="normal"),
+        "break",
+        "continue",
+        "return",
+        "raise",
+    ),
+)
 def test_finally_completion_replaces_each_incoming_exit(
     tmp_path: Path,
     incoming: str,
@@ -2077,23 +2086,72 @@ def test_finally_completion_replaces_each_incoming_exit(
     _execute_source(trace_source, trace_namespace)
     assert trace_namespace["trace"] == ["finally", "replacement-handler", "after"]
 
-    source = _compiled_source(
-        "def deferred() -> None:\n"
+    control_trace_source = _compiled_source(
+        "trace = []\n"
+        "def observed():\n"
         "    try:\n"
         "        for _ in (0,):\n"
         "            try:\n"
         f"                {incoming_statement}\n"
         "            finally:\n"
-        "                raise LookupError('replacement')\n"
+        "                trace.append('finally-normal')\n"
         "    except LookupError:\n"
-        "        from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n"
+        "        trace.append('replacement-handler')\n"
+        "    trace.append('function-after')\n"
+        "try:\n"
+        "    observed()\n"
+        "except RuntimeError:\n"
+        "    trace.append('runtime-error')\n"
+        "trace.append('caller-after')\n"
     )
-    protocol = load_study_protocol_v2()
-    repo_root = _complete_repo(tmp_path, protocol)
-    _append(repo_root, RUNNER_PATH, "\n" + source)
+    control_trace_namespace: dict[str, object] = {}
+    _execute_source(control_trace_source, control_trace_namespace)
+    expected_control_trace = {
+        "pass": ["finally-normal", "function-after", "caller-after"],
+        "break": ["finally-normal", "function-after", "caller-after"],
+        "continue": ["finally-normal", "function-after", "caller-after"],
+        "return": ["finally-normal", "caller-after"],
+        "raise": ["finally-normal", "runtime-error", "caller-after"],
+    }[incoming]
+    assert control_trace_namespace["trace"] == expected_control_trace
 
-    with pytest.raises(StudyRetentionError, match=r"forbidden direct import.*policy_v2"):
-        scan_study_dependencies(protocol, repo_root=repo_root)
+    source_prefix = (
+        "def deferred() -> None:\n"
+        "    import sys\n"
+        "    carrier = sys\n"
+        "    try:\n"
+        "        for _ in (0,):\n"
+        "            try:\n"
+        f"                {incoming_statement}\n"
+        "            finally:\n"
+    )
+    source_suffix = (
+        "    except LookupError:\n"
+        "        carrier = carrier.stdout\n"
+        "    REGISTRY = carrier.modules\n"
+    )
+    replacement_source = _compiled_source(
+        source_prefix
+        + "                raise LookupError('replacement')\n"
+        + source_suffix
+    )
+    control_source = _compiled_source(source_prefix + "                pass\n" + source_suffix)
+
+    protocol = load_study_protocol_v2()
+    replacement_fixture = tmp_path / "replacement"
+    replacement_fixture.mkdir()
+    replacement_repo = _complete_repo(replacement_fixture, protocol)
+    _append(replacement_repo, RUNNER_PATH, "\n" + replacement_source)
+
+    scan_study_dependencies(protocol, repo_root=replacement_repo)
+
+    control_fixture = tmp_path / "control"
+    control_fixture.mkdir()
+    control_repo = _complete_repo(control_fixture, protocol)
+    _append(control_repo, RUNNER_PATH, "\n" + control_source)
+
+    with pytest.raises(StudyRetentionError, match="source capability rejected: import-registry"):
+        scan_study_dependencies(protocol, repo_root=control_repo)
 
 
 def test_deferred_free_reads_use_the_call_time_suffix_envelope(tmp_path: Path) -> None:
