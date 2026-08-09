@@ -547,11 +547,11 @@ class _ImportReference:
 
 @dataclass(frozen=True, slots=True)
 class _InitializerPolicy:
-    allowed_node_ids: frozenset[int]
+    exact_call_sites: tuple[_ExactCallSite, ...]
     lazy_targets: tuple[tuple[str, str, str], ...]
 
 
-_EMPTY_INITIALIZER_POLICY = _InitializerPolicy(frozenset(), ())
+_EMPTY_INITIALIZER_POLICY = _InitializerPolicy((), ())
 
 
 @dataclass(frozen=True, slots=True)
@@ -607,7 +607,7 @@ class _Truth(Enum):
     UNKNOWN = "unknown"
 
 
-_IdentityKind = Literal["builtin", "imported", "function", "class"]
+_IdentityKind = Literal["builtin", "imported", "function", "class", "literal"]
 _ExactState = Literal["none", "exact", "top"]
 _IterationOutcome = Literal["zero", "one", "many"]
 _DeferredKind = Literal["function", "async-function", "lambda", "generator"]
@@ -1787,6 +1787,9 @@ class _SourceFlowAnalyzer:
         self.source_module = source_module
         self.known_modules = known_modules
         self.initializer_policy = initializer_policy
+        self._exact_sites_by_location = {
+            site.location: site for site in initializer_policy.exact_call_sites
+        }
         self._future_annotations = False
         self._stats = _StatsBuilder()
         self._active_transfers: list[_ActiveTransfer] = []
@@ -1833,6 +1836,11 @@ class _SourceFlowAnalyzer:
         )
         all_deferred = _join_deferred(flow.deferred, deferred_effects)
         facts = _join_policy(flow.facts, deferred_facts)
+        final_states = () if flow.normal is None else (flow.normal,)
+        facts = _join_policy(
+            facts,
+            self._validate_exact_call_sites(facts.pending_exact_uses, final_states),
+        )
         if all_deferred.unknown_outer_write:
             facts = _join_policy(
                 facts,
@@ -1859,8 +1867,101 @@ class _SourceFlowAnalyzer:
                 facts,
                 self._closure_error(tree, "source dataflow transfer bound exceeded"),
             )
-        final_states = () if flow.normal is None else (flow.normal,)
         return _ModuleFlowResult(final_states, facts, stats)
+
+    def _exact_call_site(self, node: ast.AST) -> _ExactCallSite | None:
+        return self._exact_sites_by_location.get(
+            _source_location(self.source_module, node)
+        )
+
+    @staticmethod
+    def _pending_exact_use(site: _ExactCallSite | None) -> _PolicyFacts:
+        if site is None:
+            return _PolicyFacts()
+        return _PolicyFacts(pending_exact_uses=(site,))
+
+    @staticmethod
+    def _has_completed_identity(
+        state: _State,
+        name: str,
+        expected: _ResolvedIdentity,
+    ) -> bool:
+        if any(frame.wildcard_shadowed for frame in state.frames):
+            return False
+        index = state._resolution_index(name)
+        if index is None:
+            return expected == _ResolvedIdentity("builtin", "builtins", name)
+        slot = dict(state.frames[index].bindings)[name]
+        return (
+            slot.may_be_bound
+            and not slot.may_be_unbound
+            and slot.value.facts.complete
+            and slot.value.facts.identity.state == "exact"
+            and slot.value.facts.identity.identity == expected
+        )
+
+    def _validate_exact_call_sites(
+        self,
+        observed: tuple[_ExactCallSite, ...],
+        final_states: tuple[_State, ...],
+    ) -> _PolicyFacts:
+        expected = frozenset(self.initializer_policy.exact_call_sites)
+        seen = frozenset(observed)
+        missing = expected.difference(seen)
+        mismatches = {
+            name
+            for site in expected
+            for name, identity in site.required_bindings
+            if any(
+                not self._has_completed_identity(state, name, identity)
+                for state in final_states
+            )
+        }
+        if not missing and not mismatches:
+            return _PolicyFacts()
+        details: list[str] = []
+        if missing:
+            details.append(
+                "unobserved exact roles: "
+                + ", ".join(sorted(site.role for site in missing))
+            )
+        if mismatches:
+            details.append(
+                "completed binding mismatch: " + ", ".join(sorted(mismatches))
+            )
+        detail = "; ".join(details)
+        if self.source_module in _PROJECTED_PACKAGE_ROOTS:
+            error = f"{self.source_module}:0:initializer capability structure: {detail}"
+        else:
+            error = (
+                f"{self.source_module}:0:{detail}; "
+                "source capability rejected: namespace-reflection"
+            )
+        return _PolicyFacts(closure_errors=frozenset({error}))
+
+    def _exact_binding_write_error(
+        self,
+        node: ast.AST,
+        name: str,
+        detail: str,
+    ) -> _PolicyFacts:
+        protected = {
+            binding
+            for site in self.initializer_policy.exact_call_sites
+            for binding, _ in site.required_bindings
+        }
+        if name not in protected:
+            return self._policy_error("deferred-effect", node, detail)
+        if self.source_module in _PROJECTED_PACKAGE_ROOTS:
+            return self._closure_error(
+                node,
+                f"initializer capability structure: deferred write to {name}",
+            )
+        return self._policy_error(
+            "namespace-reflection",
+            node,
+            f"completed binding mutation: deferred write to {name}",
+        )
 
     def _precomputed_height_bound(self, tree: ast.Module) -> int:
         capability_bits = len(getattr(_Capability, "__args__", ()))
@@ -2315,6 +2416,8 @@ class _SourceFlowAnalyzer:
             value = slot.value
             maybe_unbound = slot.may_be_unbound
         facts = _PolicyFacts()
+        exact_site = self._exact_call_site(node)
+        facts = _join_policy(facts, self._pending_exact_use(exact_site))
         if node.id == "__import__" and context.mode != "type-only":
             facts = self._policy_error(
                 "dynamic-import", node, "runtime __import__ symbol access"
@@ -2322,7 +2425,10 @@ class _SourceFlowAnalyzer:
         if (
             self.source_module in _PROJECTED_PACKAGE_ROOTS
             and "import-loader" in value.facts.may_capabilities
-            and not self._is_initializer_allowed(node)
+            and (
+                exact_site is None
+                or exact_site.role != "pep562-import-module"
+            )
         ):
             facts = _join_policy(
                 facts,
@@ -2594,6 +2700,8 @@ class _SourceFlowAnalyzer:
             arguments, post, context
         )
         facts = _join_policy(function.facts, facts)
+        exact_site = self._exact_call_site(node.func)
+        facts = _join_policy(facts, self._pending_exact_use(exact_site))
         deferred = _join_deferred(function.deferred, deferred)
         raises = _join_states(function.raises, raises, post)
         function_value = function.value
@@ -2609,12 +2717,19 @@ class _SourceFlowAnalyzer:
             else None
         )
         if exact_builtin == "getattr":
-            value, call_facts = self._transfer_getattr_call(node, values, context)
+            value, call_facts = self._transfer_getattr_call(
+                node, values, context, exact_site
+            )
             facts = _join_policy(facts, call_facts)
         elif exact_builtin in {"vars", "globals", "locals"}:
             if (exact_builtin == "vars" and values and (
                 "builtins-namespace" in values[0].facts.may_capabilities
-            )) or (exact_builtin == "globals" and self._is_initializer_allowed(node)):
+            )) or (
+                exact_builtin == "globals"
+                and exact_site is not None
+                and exact_site.role
+                in {"pep562-cache-globals", "pep562-dir-globals"}
+            ):
                 value = _value_with_capabilities("namespace-mapping")
             else:
                 facts = _join_policy(
@@ -2643,7 +2758,10 @@ class _SourceFlowAnalyzer:
             facts = _join_policy(
                 facts,
                 self._dynamic_import_call_facts(
-                    node, context, legacy_detail=legacy_detail
+                    node,
+                    context,
+                    exact_site=exact_site,
+                    legacy_detail=legacy_detail,
                 ),
             )
             value = _value_with_capabilities("package-object", complete=False)
@@ -2706,7 +2824,7 @@ class _SourceFlowAnalyzer:
         if (
             sensitive_crossing
             and exact_builtin not in {"getattr", "vars"}
-            and not self._is_initializer_allowed(node)
+            and exact_site is None
         ):
             category: _PolicyCapability = "namespace-reflection"
             if "import-loader" in sensitive_crossing:
@@ -2735,6 +2853,7 @@ class _SourceFlowAnalyzer:
         node: ast.Call,
         values: tuple[_AbsValue, ...],
         context: _TransferContext,
+        exact_site: _ExactCallSite | None,
     ) -> tuple[_AbsValue, _PolicyFacts]:
         if len(node.args) < 2 or len(values) < 2:
             return _UNKNOWN_VALUE, self._policy_error(
@@ -2743,7 +2862,10 @@ class _SourceFlowAnalyzer:
         receiver = values[0]
         attribute = self._string_constant(node.args[1])
         if attribute is None:
-            if self._is_initializer_allowed(node) or self._is_cli_structural_getattr(node):
+            if exact_site is not None and exact_site.role in {
+                "pep562-getattr",
+                "cli-dataclass-getattr",
+            }:
                 return _UNKNOWN_VALUE, _PolicyFacts()
             if "package-object" in receiver.facts.may_capabilities:
                 return _UNKNOWN_VALUE, self._policy_error(
@@ -2792,9 +2914,10 @@ class _SourceFlowAnalyzer:
         node: ast.Call,
         context: _TransferContext,
         *,
+        exact_site: _ExactCallSite | None,
         legacy_detail: str | None,
     ) -> _PolicyFacts:
-        if self._is_initializer_allowed(node):
+        if exact_site is not None and exact_site.role == "pep562-import-module":
             return _PolicyFacts()
         detail_prefix = "" if legacy_detail is None else f"{legacy_detail}; "
         if not node.args:
@@ -2826,21 +2949,6 @@ class _SourceFlowAnalyzer:
                 node,
                 f"{detail_prefix}runtime dynamic package import",
             ),
-        )
-
-    def _is_initializer_allowed(self, node: ast.AST) -> bool:
-        return id(node) in self.initializer_policy.allowed_node_ids
-
-    def _is_cli_structural_getattr(self, node: ast.Call) -> bool:
-        return (
-            self.source_module == "manufacturing_vision_studio.e1.study_cli_v2"
-            and len(node.args) == 2
-            and isinstance(node.args[0], ast.Name)
-            and node.args[0].id == "value"
-            and isinstance(node.args[1], ast.Attribute)
-            and isinstance(node.args[1].value, ast.Name)
-            and node.args[1].value.id == "field"
-            and node.args[1].attr == "name"
         )
 
     def _bind_expression_target(
@@ -2919,8 +3027,10 @@ class _SourceFlowAnalyzer:
                 return (
                     new_state,
                     _DeferredEffects(writes=(write,)),
-                    self._policy_error(
-                        "deferred-effect", target, "deferred outer binding write"
+                    self._exact_binding_write_error(
+                        target,
+                        target.id,
+                        "deferred outer binding write",
                     ),
                 )
             return new_state, _DeferredEffects(), _PolicyFacts()
@@ -3506,6 +3616,9 @@ class _SourceFlowAnalyzer:
             if current is None:
                 return _FlowResult(None, raises=raises, deferred=deferred, facts=facts)
             for target in node.targets:
+                bound_value = self._reviewed_literal_value(
+                    node, target, value_result.value
+                )
                 current, target_raises, target_deferred, target_facts = self._transfer_store_target(
                     target, current, context
                 )
@@ -3514,7 +3627,7 @@ class _SourceFlowAnalyzer:
                 facts = _join_policy(facts, target_facts)
                 current, effect, binding_facts = self._bind_target(
                     target,
-                    value_result.value,
+                    bound_value,
                     current,
                     context,
                     operation="assign",
@@ -3537,7 +3650,7 @@ class _SourceFlowAnalyzer:
             if node.value is not None:
                 result = self._transfer_expression(node.value, current, context)
                 current = result.post_state or current
-                value = result.value
+                value = self._reviewed_literal_value(node, node.target, result.value)
                 raises = _join_states(raises, result.raises)
                 deferred = _join_deferred(deferred, result.deferred)
                 facts = _join_policy(facts, result.facts)
@@ -3705,6 +3818,33 @@ class _SourceFlowAnalyzer:
                 facts = _join_policy(facts, child_facts)
         return deferred, facts
 
+    def _reviewed_literal_value(
+        self,
+        statement: ast.Assign | ast.AnnAssign,
+        target: ast.expr,
+        value: _AbsValue,
+    ) -> _AbsValue:
+        if (
+            self.source_module not in _PROJECTED_PACKAGE_ROOTS
+            or not isinstance(target, ast.Name)
+            or target.id not in {"_LAZY_EXPORTS", "__all__"}
+            or not isinstance(
+                statement.value,
+                (ast.Dict, ast.List, ast.Tuple, ast.Set),
+            )
+        ):
+            return value
+        identity = _ResolvedIdentity(
+            "literal",
+            self.source_module,
+            target.id,
+            _source_location(self.source_module, statement),
+        )
+        return replace(
+            value,
+            facts=replace(value.facts, identity=_exact_identity(identity)),
+        )
+
     def _transfer_store_target(
         self, target: ast.expr, state: _State, context: _TransferContext
     ) -> tuple[_State, _State | None, _DeferredEffects, _PolicyFacts]:
@@ -3774,8 +3914,14 @@ class _SourceFlowAnalyzer:
                     "on-call",
                     "zero-or-one",
                 )
-                return new_state, _DeferredEffects(writes=(write,)), self._policy_error(
-                    "deferred-effect", target, "deferred outer binding delete"
+                return (
+                    new_state,
+                    _DeferredEffects(writes=(write,)),
+                    self._exact_binding_write_error(
+                        target,
+                        target.id,
+                        "deferred outer binding delete",
+                    ),
                 )
             return new_state, _DeferredEffects(), _PolicyFacts()
         if isinstance(target, ast.Starred):
@@ -3879,13 +4025,17 @@ class _SourceFlowAnalyzer:
         self, node: ast.ImportFrom, state: _State, context: _TransferContext
     ) -> _FlowResult:
         current = state
-        facts = _PolicyFacts()
+        exact_site = self._exact_call_site(node)
+        facts = self._pending_exact_use(exact_site)
         deferred = _DeferredEffects()
         if (
             context.mode != "type-only"
             and node.level == 0
             and _is_importlib_target(node.module)
-            and not self._is_initializer_allowed(node)
+            and (
+                exact_site is None
+                or exact_site.role != "pep562-import-module"
+            )
         ):
             facts = _join_policy(
                 facts,
@@ -5154,7 +5304,7 @@ def scan_study_dependencies(
         initializer_policy = _validate_initializer_policy(
             module,
             tree,
-            known_modules,
+            frozenset(module_to_path),
         )
         analyzer = _SourceFlowAnalyzer(
             source_module=module,
@@ -5721,8 +5871,10 @@ def _is_importlib_target(module: str | None) -> bool:
 def _validate_initializer_policy(
     source_module: str,
     tree: ast.Module,
-    known_modules: frozenset[str],
+    projected_modules: frozenset[str],
 ) -> _InitializerPolicy:
+    if source_module == "manufacturing_vision_studio.e1.study_cli_v2":
+        return _validate_cli_json_policy(source_module, tree)
     if source_module not in _PROJECTED_PACKAGE_ROOTS:
         return _EMPTY_INITIALIZER_POLICY
 
@@ -5783,9 +5935,25 @@ def _validate_initializer_policy(
         attribute_name = _string_literal(value.elts[1])
         if module_name is None or attribute_name is None:
             fail("_LAZY_EXPORTS values must be two-string tuples")
-        if module_name not in known_modules:
-            fail(f"lazy target is not a known module: {module_name}")
+        if module_name not in projected_modules:
+            fail(f"lazy target is not projected: {module_name}")
         lazy_targets.append((export_name, module_name, attribute_name))
+
+    all_assignments = [
+        statement for statement in tree.body if _statement_binds_name(statement, "__all__")
+    ]
+    if len(all_assignments) != 1 or not isinstance(all_assignments[0], ast.Assign):
+        fail("expected one literal module-level __all__ assignment")
+    all_assignment = all_assignments[0]
+    if (
+        len(all_assignment.targets) != 1
+        or not _is_name(all_assignment.targets[0], "__all__", ast.Store)
+        or not isinstance(all_assignment.value, ast.List)
+        or any(_string_literal(item) is None for item in all_assignment.value.elts)
+        or len({_string_literal(item) for item in all_assignment.value.elts})
+        != len(all_assignment.value.elts)
+    ):
+        fail("__all__ must be assigned one unique literal string list")
 
     getattr_function = _one_module_function(tree, "__getattr__", fail)
     if not _has_exact_getattr_signature(getattr_function):
@@ -5821,16 +5989,97 @@ def _validate_initializer_policy(
     lookup_try = cast(ast.Try, getattr_function.body[0])
     lookup_assignment = cast(ast.Assign, lookup_try.body[0])
     lookup_subscript = cast(ast.Subscript, lookup_assignment.value)
-    allowed_names = {
-        id(outer_getattr.func),
-        id(import_call.func),
-        id(cache_globals.func),
-        id(dir_globals.func),
+    lookup_handler = lookup_try.handlers[0]
+    key_error_name = cast(ast.Name, lookup_handler.type)
+    attribute_error_call = cast(ast.Call, cast(ast.Raise, lookup_handler.body[0]).exc)
+    dir_sorted = cast(ast.Call, cast(ast.Return, dir_return).value)
+    dir_union = cast(ast.BinOp, dir_sorted.args[0])
+    dir_left_set = cast(ast.Call, dir_union.left)
+    dir_right_set = cast(ast.Call, dir_union.right)
+    required_bindings = tuple(
+        sorted(
+            (
+                ("import_module", _ResolvedIdentity("imported", "importlib", "import_module")),
+                ("getattr", _ResolvedIdentity("builtin", "builtins", "getattr")),
+                ("globals", _ResolvedIdentity("builtin", "builtins", "globals")),
+                ("KeyError", _ResolvedIdentity("builtin", "builtins", "KeyError")),
+                (
+                    "AttributeError",
+                    _ResolvedIdentity("builtin", "builtins", "AttributeError"),
+                ),
+                ("sorted", _ResolvedIdentity("builtin", "builtins", "sorted")),
+                ("set", _ResolvedIdentity("builtin", "builtins", "set")),
+                (
+                    "_LAZY_EXPORTS",
+                    _ResolvedIdentity(
+                        "literal",
+                        source_module,
+                        "_LAZY_EXPORTS",
+                        _source_location(source_module, lazy_assignment),
+                    ),
+                ),
+                (
+                    "__all__",
+                    _ResolvedIdentity(
+                        "literal",
+                        source_module,
+                        "__all__",
+                        _source_location(source_module, all_assignment),
+                    ),
+                ),
+                (
+                    "__getattr__",
+                    _ResolvedIdentity(
+                        "function",
+                        source_module,
+                        "__getattr__",
+                        _source_location(source_module, getattr_function),
+                    ),
+                ),
+                (
+                    "__dir__",
+                    _ResolvedIdentity(
+                        "function",
+                        source_module,
+                        "__dir__",
+                        _source_location(source_module, dir_function),
+                    ),
+                ),
+            )
+        )
+    )
+    exact_nodes: tuple[tuple[_ExactRole, ast.AST], ...] = (
+        ("pep562-import-module", import_statement),
+        ("pep562-import-module", import_call.func),
+        ("pep562-getattr", outer_getattr.func),
+        ("pep562-getattr", key_error_name),
+        ("pep562-getattr", attribute_error_call.func),
+        ("pep562-cache-globals", cache_globals.func),
+        ("pep562-dir-globals", dir_sorted.func),
+        ("pep562-dir-globals", dir_left_set.func),
+        ("pep562-dir-globals", dir_globals.func),
+        ("pep562-dir-globals", dir_right_set.func),
+    )
+    exact_call_sites = tuple(
+        _ExactCallSite(
+            role,
+            _source_location(source_module, node),
+            required_bindings,
+        )
+        for role, node in exact_nodes
+    )
+    allowed_capability_names = {
+        site.location
+        for site in exact_call_sites
+        if site.location.node_kind == "Name"
     }
-    allowed_lazy_export_names = {
-        id(lazy_assignment.targets[0]),
-        id(lookup_subscript.value),
+    allowed_literal_names = {
+        _source_location(source_module, lazy_assignment.targets[0]),
+        _source_location(source_module, lookup_subscript.value),
+        _source_location(source_module, all_assignment.targets[0]),
+        _source_location(source_module, dir_right_set.args[0]),
     }
+    import_statement_location = _source_location(source_module, import_statement)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import) and any(
             _is_importlib_target(alias.name) for alias in node.names
@@ -5839,44 +6088,224 @@ def _validate_initializer_policy(
         if (
             isinstance(node, ast.ImportFrom)
             and _is_importlib_target(node.module)
-            and id(node) != id(import_statement)
+            and _source_location(source_module, node) != import_statement_location
         ):
             fail("unexpected importlib loader import")
         if (
             isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
             and node.id in {"getattr", "globals"}
-            and id(node) not in allowed_names
+            and _source_location(source_module, node) not in allowed_capability_names
         ):
             fail(f"unexpected {node.id} capability node")
         if (
             isinstance(node, ast.Call)
             and _is_name(node.func, "import_module", ast.Load)
-            and id(node) != id(import_call)
+            and _source_location(source_module, node.func)
+            != _source_location(source_module, import_call.func)
         ):
             fail("unexpected import_module call")
         if isinstance(node, ast.Attribute) and node.attr == "import_module":
             fail("unexpected import_module reflection node")
         if (
             isinstance(node, ast.Name)
-            and node.id == "_LAZY_EXPORTS"
-            and id(node) not in allowed_lazy_export_names
+            and isinstance(node.ctx, ast.Load)
+            and node.id in {"_LAZY_EXPORTS", "__all__"}
+            and _source_location(source_module, node) not in allowed_literal_names
         ):
-            fail("unexpected _LAZY_EXPORTS binding or access")
-        if isinstance(node, ast.Name) and node.id in {"__dir__", "__getattr__"}:
+            fail(f"unexpected {node.id} binding or access")
+        if (
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id in {"__dir__", "__getattr__"}
+        ):
             fail(f"unexpected {node.id} binding or access")
 
-    allowed_node_ids: set[int] = set()
-    for root in (
-        import_statement,
-        value_assignment,
-        cache_assignment,
-        value_return,
-        dir_return,
-    ):
-        allowed_node_ids.update(id(node) for node in ast.walk(root))
     return _InitializerPolicy(
-        frozenset(allowed_node_ids),
+        exact_call_sites,
         tuple(sorted(lazy_targets)),
+    )
+
+
+def _validate_cli_json_policy(
+    source_module: str,
+    tree: ast.Module,
+) -> _InitializerPolicy:
+    candidates = [
+        statement
+        for statement in tree.body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and statement.name == "_json_value"
+    ]
+    if not candidates:
+        return _EMPTY_INITIALIZER_POLICY
+
+    def fail(detail: str) -> NoReturn:
+        raise StudyRetentionError(
+            f"{source_module}:0:{detail}; "
+            "source capability rejected: namespace-reflection"
+        )
+
+    if len(candidates) != 1 or not isinstance(candidates[0], ast.FunctionDef):
+        fail("expected one top-level synchronous _json_value")
+    function = candidates[0]
+    arguments = function.args
+    if not (
+        not function.decorator_list
+        and not arguments.posonlyargs
+        and len(arguments.args) == 1
+        and arguments.args[0].arg == "value"
+        and _is_name(arguments.args[0].annotation, "object", ast.Load)
+        and arguments.vararg is None
+        and not arguments.kwonlyargs
+        and arguments.kwarg is None
+        and not arguments.defaults
+        and not arguments.kw_defaults
+        and _is_name(function.returns, "object", ast.Load)
+    ):
+        fail("_json_value must preserve its exact undecorated signature")
+    if len(function.body) != 7:
+        fail("_json_value must preserve its exact branch structure")
+    dataclass_if = function.body[5]
+    if not isinstance(dataclass_if, ast.If):
+        fail("_json_value must preserve the dataclass guard")
+    guard = dataclass_if.test
+    if (
+        not isinstance(guard, ast.BoolOp)
+        or not isinstance(guard.op, ast.And)
+        or len(guard.values) != 2
+        or not _is_one_name_call(guard.values[0], "is_dataclass", "value")
+        or not isinstance(guard.values[1], ast.UnaryOp)
+        or not isinstance(guard.values[1].op, ast.Not)
+        or not _is_two_name_call(
+            guard.values[1].operand,
+            "isinstance",
+            "value",
+            "type",
+        )
+    ):
+        fail("_json_value must preserve the exact dataclass guard")
+    if len(dataclass_if.body) != 1 or dataclass_if.orelse:
+        fail("_json_value must preserve the dataclass return")
+    dataclass_return = dataclass_if.body[0]
+    if not isinstance(dataclass_return, ast.Return) or not isinstance(
+        dataclass_return.value, ast.DictComp
+    ):
+        fail("_json_value must preserve the dataclass comprehension")
+    comprehension = dataclass_return.value
+    if len(comprehension.generators) != 1:
+        fail("_json_value must preserve one fields comprehension")
+    generator = comprehension.generators[0]
+    if (
+        generator.is_async
+        or not _is_name(generator.target, "field", ast.Store)
+        or not _is_one_name_call(generator.iter, "fields", "value")
+        or len(generator.ifs) != 1
+        or not _is_private_field_filter(generator.ifs[0])
+        or not _is_field_name(comprehension.key)
+    ):
+        fail("_json_value must preserve fields and the private-name filter")
+    recursive_call = comprehension.value
+    if (
+        not isinstance(recursive_call, ast.Call)
+        or not _is_name(recursive_call.func, "_json_value", ast.Load)
+        or len(recursive_call.args) != 1
+        or recursive_call.keywords
+        or not isinstance(recursive_call.args[0], ast.Call)
+    ):
+        fail("_json_value must preserve its recursive dataclass call")
+    reflected = recursive_call.args[0]
+    if (
+        not _is_name(reflected.func, "getattr", ast.Load)
+        or len(reflected.args) != 2
+        or reflected.keywords
+        or not _is_name(reflected.args[0], "value", ast.Load)
+        or not _is_field_name(reflected.args[1])
+    ):
+        fail("_json_value must preserve its exact dataclass getattr")
+    required_bindings = tuple(
+        sorted(
+            (
+                ("fields", _ResolvedIdentity("imported", "dataclasses", "fields")),
+                (
+                    "is_dataclass",
+                    _ResolvedIdentity("imported", "dataclasses", "is_dataclass"),
+                ),
+                ("getattr", _ResolvedIdentity("builtin", "builtins", "getattr")),
+                (
+                    "isinstance",
+                    _ResolvedIdentity("builtin", "builtins", "isinstance"),
+                ),
+                ("type", _ResolvedIdentity("builtin", "builtins", "type")),
+                (
+                    "_json_value",
+                    _ResolvedIdentity(
+                        "function",
+                        source_module,
+                        "_json_value",
+                        _source_location(source_module, function),
+                    ),
+                ),
+            )
+        )
+    )
+    return _InitializerPolicy(
+        (
+            _ExactCallSite(
+                "cli-dataclass-getattr",
+                _source_location(source_module, reflected.func),
+                required_bindings,
+            ),
+        ),
+        (),
+    )
+
+
+def _is_one_name_call(node: ast.AST, function: str, argument: str) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and _is_name(node.func, function, ast.Load)
+        and len(node.args) == 1
+        and _is_name(node.args[0], argument, ast.Load)
+        and not node.keywords
+    )
+
+
+def _is_two_name_call(
+    node: ast.AST,
+    function: str,
+    first: str,
+    second: str,
+) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and _is_name(node.func, function, ast.Load)
+        and len(node.args) == 2
+        and _is_name(node.args[0], first, ast.Load)
+        and _is_name(node.args[1], second, ast.Load)
+        and not node.keywords
+    )
+
+
+def _is_field_name(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and _is_name(node.value, "field", ast.Load)
+        and node.attr == "name"
+    )
+
+
+def _is_private_field_filter(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, ast.Not)
+        and isinstance(node.operand, ast.Call)
+        and isinstance(node.operand.func, ast.Attribute)
+        and _is_field_name(node.operand.func.value)
+        and node.operand.func.attr == "startswith"
+        and len(node.operand.args) == 1
+        and _string_literal(node.operand.args[0]) == "_"
+        and not node.operand.keywords
     )
 
 

@@ -1084,6 +1084,25 @@ def test_pep562_initializer_requires_exact_capability_structure(
         scan_study_dependencies(protocol, repo_root=repo_root)
 
 
+def test_pep562_lazy_target_must_be_projected_not_merely_repository_known(
+    tmp_path: Path,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    path = repo_root / "src/manufacturing_vision_studio/__init__.py"
+    source = path.read_text()
+    changed = source.replace(
+        '"manufacturing_vision_studio.registry", "CaseRegistry"',
+        '"manufacturing_vision_studio.api", "CaseRegistry"',
+        1,
+    )
+    assert changed != source
+    path.write_text(_compiled_source(changed))
+
+    with pytest.raises(StudyRetentionError, match="lazy target is not projected"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
 @pytest.mark.parametrize(
     ("relative", "source"),
     [
@@ -1580,6 +1599,201 @@ def test_real_cli_namespace_reflection_bindings_are_rejected(
         match="source capability rejected: namespace-reflection",
     ):
         scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+_COMPLETED_MODULE_REBIND_KINDS = (
+    "assignment",
+    "annotated-assignment",
+    "augmented-assignment",
+    "deletion",
+    "import-alias",
+    "star-import",
+    "conditional",
+    "loop-target",
+    "match-target",
+    "with-target",
+    "exception-target",
+    "function-definition",
+    "class-definition",
+    "decorated-definition",
+    "second-function-definition",
+    "deferred-outer-write",
+)
+
+
+def _completed_module_rebind_source(name: str, kind: str) -> str:
+    safe_name = name.strip("_") or "binding"
+    if kind == "assignment":
+        return f"{name} = object()\n"
+    if kind == "annotated-assignment":
+        return f"{name}: object = object()\n"
+    if kind == "augmented-assignment":
+        return f"{name} += ()\n"
+    if kind == "deletion":
+        return f"del {name}\n"
+    if kind == "import-alias":
+        return f"from types import SimpleNamespace as {name}\n"
+    if kind == "star-import":
+        return "from math import *\n"
+    if kind == "conditional":
+        return f"if object():\n    {name} = object()\n"
+    if kind == "loop-target":
+        return f"for {name} in (object(),):\n    pass\n"
+    if kind == "match-target":
+        return f"match object():\n    case {name}:\n        pass\n"
+    if kind == "with-target":
+        return (
+            "from contextlib import nullcontext\n"
+            f"with nullcontext() as {name}:\n"
+            "    pass\n"
+        )
+    if kind == "exception-target":
+        return (
+            "try:\n"
+            "    raise Exception\n"
+            f"except Exception as {name}:\n"
+            "    pass\n"
+        )
+    if kind == "function-definition":
+        return f"def {name}(*args: object) -> object:\n    return args\n"
+    if kind == "class-definition":
+        return f"class {name}:\n    pass\n"
+    if kind == "decorated-definition":
+        return (
+            f"def _decorate_{safe_name}(value: object) -> object:\n"
+            "    return value\n"
+            f"@_decorate_{safe_name}\n"
+            f"def {name}(*args: object) -> object:\n"
+            "    return args\n"
+        )
+    if kind == "second-function-definition":
+        return (
+            f"def {name}(*args: object) -> object:\n"
+            "    return args\n"
+            f"def {name}(*args: object) -> object:\n"
+            "    return args\n"
+        )
+    if kind == "deferred-outer-write":
+        return (
+            f"def _write_{safe_name}() -> None:\n"
+            f"    global {name}\n"
+            f"    {name} = object()\n"
+        )
+    raise AssertionError(f"unknown completed-module mutation: {kind}")
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "import_module",
+        "getattr",
+        "globals",
+        "KeyError",
+        "AttributeError",
+        "sorted",
+        "set",
+        "_LAZY_EXPORTS",
+        "__all__",
+        "__getattr__",
+        "__dir__",
+    ),
+)
+@pytest.mark.parametrize("kind", _COMPLETED_MODULE_REBIND_KINDS)
+def test_pep562_exception_rejects_completed_module_binding_mutations(
+    tmp_path: Path,
+    name: str,
+    kind: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    source = _compiled_source(_completed_module_rebind_source(name, kind))
+    _append(
+        repo_root,
+        Path("src/manufacturing_vision_studio/__init__.py"),
+        "\n" + source,
+    )
+
+    with pytest.raises(StudyRetentionError, match="initializer capability structure"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ("fields", "is_dataclass", "getattr", "isinstance", "type", "_json_value"),
+)
+@pytest.mark.parametrize("kind", _COMPLETED_MODULE_REBIND_KINDS)
+def test_cli_dataclass_exception_rejects_completed_module_binding_mutations(
+    tmp_path: Path,
+    name: str,
+    kind: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol, preserve_real_cli=True)
+    source = _compiled_source(_completed_module_rebind_source(name, kind))
+    _append(repo_root, CLI_PATH, "\n" + source)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: namespace-reflection",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("relative", "preserve_real_cli", "name"),
+    (
+        *(
+            (
+                Path("src/manufacturing_vision_studio/__init__.py"),
+                False,
+                name,
+            )
+            for name in (
+                "import_module",
+                "getattr",
+                "globals",
+                "KeyError",
+                "AttributeError",
+                "sorted",
+                "set",
+                "_LAZY_EXPORTS",
+                "__all__",
+                "__getattr__",
+                "__dir__",
+            )
+        ),
+        *(
+            (CLI_PATH, True, name)
+            for name in (
+                "fields",
+                "is_dataclass",
+                "getattr",
+                "isinstance",
+                "type",
+                "_json_value",
+            )
+        ),
+    ),
+)
+def test_unrelated_nested_local_shadow_preserves_exact_module_identity(
+    tmp_path: Path,
+    relative: Path,
+    preserve_real_cli: bool,
+    name: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(
+        tmp_path,
+        protocol,
+        preserve_real_cli=preserve_real_cli,
+    )
+    source = _compiled_source(
+        "def unrelated_local_shadow() -> None:\n"
+        f"    {name} = object()\n"
+    )
+    _append(repo_root, relative, "\n" + source)
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
 
 
 def test_assignment_target_expressions_are_transferred(tmp_path: Path) -> None:
@@ -2698,7 +2912,7 @@ def _analyze_source(source: str) -> tuple[ast.Module, object]:
     analyzer = retention_module._SourceFlowAnalyzer(
         source_module="source_flow_stats_fixture",
         known_modules=frozenset(),
-        initializer_policy=retention_module._InitializerPolicy(frozenset(), ()),
+        initializer_policy=retention_module._InitializerPolicy((), ()),
     )
     return tree, analyzer.analyze(tree)
 
