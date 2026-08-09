@@ -2336,6 +2336,122 @@ def test_comprehension_truth_controls_runtime_dependency_edges(
         scan_study_dependencies(protocol, repo_root=repo_root)
 
 
+def test_noniterable_comprehension_reaches_type_error_handler(tmp_path: Path) -> None:
+    trace_source = _compiled_source(
+        "trace = []\n"
+        "try:\n"
+        "    result = [item for item in 0]\n"
+        "except TypeError:\n"
+        "    trace.append('handled')\n"
+    )
+    trace_namespace: dict[str, object] = {}
+    _execute_source(trace_source, trace_namespace)
+    assert trace_namespace["trace"] == ["handled"]
+
+    source = _compiled_source(
+        "try:\n"
+        "    result = [item for item in 0]\n"
+        "except TypeError:\n"
+        "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(StudyRetentionError, match=r"forbidden direct import.*policy_v2"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_noniterable_for_reaches_type_error_handler(tmp_path: Path) -> None:
+    trace_source = _compiled_source(
+        "trace = []\n"
+        "try:\n"
+        "    for item in 0:\n"
+        "        trace.append(item)\n"
+        "except TypeError:\n"
+        "    trace.append('handled')\n"
+    )
+    trace_namespace: dict[str, object] = {}
+    _execute_source(trace_source, trace_namespace)
+    assert trace_namespace["trace"] == ["handled"]
+
+    source = _compiled_source(
+        "try:\n"
+        "    for item in 0:\n"
+        "        pass\n"
+        "except TypeError:\n"
+        "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(StudyRetentionError, match=r"forbidden direct import.*policy_v2"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("iterable", "has_runtime_body_edge"),
+    (("1", False), ("()", False), ("(0,)", True)),
+)
+def test_comprehension_condition_distinguishes_noniterable_and_cardinality(
+    tmp_path: Path,
+    iterable: str,
+    *,
+    has_runtime_body_edge: bool,
+) -> None:
+    source = _compiled_source(
+        f"if [item for item in {iterable}]:\n"
+        "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    if has_runtime_body_edge:
+        with pytest.raises(
+            StudyRetentionError,
+            match=r"forbidden direct import.*policy_v2",
+        ):
+            scan_study_dependencies(protocol, repo_root=repo_root)
+    else:
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("operand", "is_truthy"),
+    (("0", True), ("1", False)),
+)
+def test_bound_truth_is_independent_of_iteration_cardinality(
+    tmp_path: Path,
+    operand: str,
+    *,
+    is_truthy: bool,
+) -> None:
+    trace_source = _compiled_source(f"flag = not {operand}\n")
+    trace_namespace: dict[str, object] = {}
+    _execute_source(trace_source, trace_namespace)
+    assert trace_namespace["flag"] is is_truthy
+
+    source = _compiled_source(
+        f"flag = not {operand}\n"
+        "if flag:\n"
+        "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    if is_truthy:
+        with pytest.raises(
+            StudyRetentionError,
+            match=r"forbidden direct import.*policy_v2",
+        ):
+            scan_study_dependencies(protocol, repo_root=repo_root)
+    else:
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
 @pytest.mark.parametrize(
     "source",
     (
@@ -2587,6 +2703,82 @@ def _analyze_source(source: str) -> tuple[ast.Module, object]:
     return tree, analyzer.analyze(tree)
 
 
+@pytest.mark.parametrize(
+    ("source", "expected_truth", "expected_outcomes", "may_iteration_raise"),
+    (
+        ("VALUE = 0\n", retention_module._Truth.FALSE, frozenset(), True),
+        ("VALUE = 1\n", retention_module._Truth.TRUE, frozenset(), True),
+        (
+            "VALUE = ''\n",
+            retention_module._Truth.FALSE,
+            frozenset({"zero"}),
+            False,
+        ),
+        (
+            "VALUE = 'x'\n",
+            retention_module._Truth.TRUE,
+            frozenset({"one"}),
+            False,
+        ),
+        (
+            "VALUE = b'xy'\n",
+            retention_module._Truth.TRUE,
+            frozenset({"many"}),
+            False,
+        ),
+        (
+            "VALUE = []\n",
+            retention_module._Truth.FALSE,
+            frozenset({"zero"}),
+            False,
+        ),
+        (
+            "VALUE = [0]\n",
+            retention_module._Truth.TRUE,
+            frozenset({"one"}),
+            False,
+        ),
+        (
+            "VALUE = (0, 1)\n",
+            retention_module._Truth.TRUE,
+            frozenset({"many"}),
+            False,
+        ),
+        (
+            "VALUE = {1, 1}\n",
+            retention_module._Truth.TRUE,
+            frozenset({"one"}),
+            False,
+        ),
+        (
+            "VALUE = {1: 'first'}\n",
+            retention_module._Truth.TRUE,
+            frozenset({"one"}),
+            False,
+        ),
+        (
+            "VALUE = {1: 'first', 1: 'last'}\n",
+            retention_module._Truth.TRUE,
+            frozenset({"one"}),
+            False,
+        ),
+    ),
+)
+def test_literal_truth_and_iteration_facts_are_independent(
+    source: str,
+    expected_truth: object,
+    expected_outcomes: frozenset[str],
+    *,
+    may_iteration_raise: bool,
+) -> None:
+    _, result = _analyze_source(source)
+    value = result.final_states[0].resolve("VALUE").value
+
+    assert value.truth is expected_truth
+    assert value.iteration_outcomes == expected_outcomes
+    assert value.may_iteration_raise is may_iteration_raise
+
+
 @pytest.mark.parametrize("depth", (1, 2, 4, 8, 16, 32, 64))
 def test_analysis_stats_are_canonical_for_straight_line_dunder_chains(
     depth: int,
@@ -2609,7 +2801,7 @@ def test_analysis_stats_are_canonical_for_straight_line_dunder_chains(
         strict_state_updates=0,
         worklist_pops=0,
         max_updates_per_program_point=0,
-        computed_height_bound=67,
+        computed_height_bound=69,
     )
     assert stats.expression_transfers <= 2 * syntax_nodes
     assert stats.max_updates_per_program_point <= stats.computed_height_bound
@@ -2687,4 +2879,4 @@ def test_computed_height_uses_one_real_program_point_shape() -> None:
         "nested = lambda: (lambda: None)\n"
     )
 
-    assert result.stats.computed_height_bound == 783
+    assert result.stats.computed_height_bound == 807

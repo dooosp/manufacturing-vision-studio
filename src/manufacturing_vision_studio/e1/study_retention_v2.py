@@ -12,7 +12,7 @@ import subprocess
 import time
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -701,11 +701,17 @@ class _ValueFacts:
 @dataclass(frozen=True, slots=True)
 class _AbsValue:
     facts: _ValueFacts = _ValueFacts()
+    truth: _Truth = _Truth.UNKNOWN
     iterable_element: _ValueFacts = _ValueFacts(complete=False)
     contained: _ValueFacts = _ValueFacts()
     iteration_outcomes: frozenset[_IterationOutcome] = frozenset(
         {"zero", "one", "many"}
     )
+    may_iteration_raise: bool = True
+
+    def __post_init__(self) -> None:
+        if self.truth is _Truth.BOTTOM:
+            raise ValueError("reachable abstract value cannot have bottom truth")
 
 
 _UNKNOWN_VALUE = _AbsValue(facts=_ValueFacts(complete=False))
@@ -1139,7 +1145,7 @@ class _StatsBuilder:
 
     def observe_state(self, state: _State) -> None:
         capability_bits = len(getattr(_Capability, "__args__", ()))
-        value_height = 3 * (capability_bits + 2 + 2 + 1) + 3
+        value_height = 3 * (capability_bits + 2 + 2 + 1) + 5
         point_height = (
             1
             + sum(len(frame.bindings) for frame in state.frames)
@@ -1248,11 +1254,15 @@ def _join_values(left: _AbsValue, right: _AbsValue) -> _AbsValue:
         return left
     return _AbsValue(
         facts=_join_value_facts(left.facts, right.facts),
+        truth=left.truth if left.truth is right.truth else _Truth.UNKNOWN,
         iterable_element=_join_value_facts(
             left.iterable_element, right.iterable_element
         ),
         contained=_join_value_facts(left.contained, right.contained),
         iteration_outcomes=left.iteration_outcomes | right.iteration_outcomes,
+        may_iteration_raise=(
+            left.may_iteration_raise or right.may_iteration_raise
+        ),
     )
 
 
@@ -1373,13 +1383,13 @@ def _join_flow(*results: _FlowResult) -> _FlowResult:
 
 
 def _normal_value(value: _AbsValue, state: _State, truth: _Truth) -> _ExprResult:
-    exit = _NormalExit(value, state)
+    if truth is _Truth.BOTTOM:
+        return _ExprResult(None, None, state)
+    exit = _NormalExit(replace(value, truth=truth), state)
     if truth is _Truth.TRUE:
         return _ExprResult(exit, None, None)
     if truth is _Truth.FALSE:
         return _ExprResult(None, exit, None)
-    if truth is _Truth.BOTTOM:
-        return _ExprResult(None, None, state)
     return _ExprResult(exit, exit, None)
 
 
@@ -1412,26 +1422,92 @@ def _literal_value(value: object) -> _AbsValue:
             tuple(_literal_value(item) for item in value), kind="tuple"
         )
     truth = _truth_for_constant(value)
-    return _AbsValue(
-        iteration_outcomes=(
-            frozenset({"zero"})
-            if truth is _Truth.FALSE
-            else frozenset({"one"})
-            if truth is _Truth.TRUE
-            else frozenset({"zero", "one", "many"})
+    if isinstance(value, (str, bytes)):
+        outcomes = _iteration_outcomes_for_length(len(value))
+        return _AbsValue(
+            truth=truth,
+            iterable_element=_ValueFacts(),
+            iteration_outcomes=outcomes,
+            may_iteration_raise=False,
         )
+    return _AbsValue(
+        truth=truth,
+        iteration_outcomes=frozenset(),
+        may_iteration_raise=True,
     )
 
 
 def _truth_for_value(value: _AbsValue) -> _Truth:
-    if value.iteration_outcomes == frozenset({"zero"}):
-        return _Truth.FALSE
-    if "zero" not in value.iteration_outcomes:
-        return _Truth.TRUE
-    return _Truth.UNKNOWN
+    return value.truth
 
 
-def _container_value(values: Sequence[_AbsValue], *, kind: str) -> _AbsValue:
+def _iteration_outcomes_for_length(
+    length: int,
+) -> frozenset[_IterationOutcome]:
+    if length == 0:
+        return frozenset({"zero"})
+    if length == 1:
+        return frozenset({"one"})
+    return frozenset({"many"})
+
+
+def _literal_container_shape(
+    node: ast.List | ast.Tuple | ast.Set | ast.Dict,
+) -> tuple[_Truth, frozenset[_IterationOutcome]]:
+    try:
+        literal = ast.literal_eval(node)
+    except (TypeError, ValueError):
+        literal = None
+    if isinstance(literal, (list, tuple, set, dict)):
+        length = len(literal)
+        return (
+            _Truth.FALSE if length == 0 else _Truth.TRUE,
+            _iteration_outcomes_for_length(length),
+        )
+
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        fixed = sum(not isinstance(element, ast.Starred) for element in node.elts)
+        has_expansion = fixed != len(node.elts)
+        if not has_expansion and not isinstance(node, ast.Set):
+            outcomes = _iteration_outcomes_for_length(fixed)
+        elif not has_expansion and fixed == 0:
+            outcomes = frozenset({"zero"})
+        elif not has_expansion and fixed == 1:
+            outcomes = frozenset({"one"})
+        elif fixed == 0:
+            outcomes = frozenset({"zero", "one", "many"})
+        elif fixed == 1 or isinstance(node, ast.Set):
+            outcomes = frozenset({"one", "many"})
+        else:
+            outcomes = frozenset({"many"})
+    else:
+        fixed = sum(key is not None for key in node.keys)
+        has_expansion = fixed != len(node.keys)
+        if not has_expansion and fixed == 0:
+            outcomes = frozenset({"zero"})
+        elif not has_expansion and fixed == 1:
+            outcomes = frozenset({"one"})
+        elif fixed == 0:
+            outcomes = frozenset({"zero", "one", "many"})
+        else:
+            outcomes = frozenset({"one", "many"})
+    truth = (
+        _Truth.FALSE
+        if outcomes == frozenset({"zero"})
+        else _Truth.TRUE
+        if "zero" not in outcomes
+        else _Truth.UNKNOWN
+    )
+    return truth, outcomes
+
+
+def _container_value(
+    values: Sequence[_AbsValue],
+    *,
+    kind: str,
+    truth: _Truth | None = None,
+    iteration_outcomes: frozenset[_IterationOutcome] | None = None,
+) -> _AbsValue:
     if values:
         element = _flatten_facts(values[0])
         for value in values[1:]:
@@ -1441,19 +1517,21 @@ def _container_value(values: Sequence[_AbsValue], *, kind: str) -> _AbsValue:
         element = _ValueFacts(complete=False)
         contained = _ValueFacts()
     length = len(values)
-    outcomes: frozenset[_IterationOutcome]
-    if length == 0:
-        outcomes = frozenset({"zero"})
-    elif length == 1:
-        outcomes = frozenset({"one"})
-    else:
-        outcomes = frozenset({"many"})
+    outcomes = (
+        _iteration_outcomes_for_length(length)
+        if iteration_outcomes is None
+        else iteration_outcomes
+    )
     if kind == "dict":
         element = _ValueFacts(complete=False)
     return _AbsValue(
+        truth=(_Truth.FALSE if length == 0 else _Truth.TRUE)
+        if truth is None
+        else truth,
         iterable_element=element,
         contained=contained,
         iteration_outcomes=outcomes,
+        may_iteration_raise=False,
     )
 
 
@@ -1786,7 +1864,7 @@ class _SourceFlowAnalyzer:
 
     def _precomputed_height_bound(self, tree: ast.Module) -> int:
         capability_bits = len(getattr(_Capability, "__args__", ()))
-        value_height = 3 * (capability_bits + 2 + 2 + 1) + 3
+        value_height = 3 * (capability_bits + 2 + 2 + 1) + 5
         declarations = self._scope_declarations(tree.body)
         module_global_names = {
             name
@@ -2142,10 +2220,10 @@ class _SourceFlowAnalyzer:
                 return _ExprResult(
                     None
                     if operand.falsy is None
-                    else _NormalExit(operand.falsy.value, operand.falsy.state),
+                    else _NormalExit(_literal_value(True), operand.falsy.state),
                     None
                     if operand.truthy is None
-                    else _NormalExit(operand.truthy.value, operand.truthy.state),
+                    else _NormalExit(_literal_value(False), operand.truthy.state),
                     operand.raises,
                     operand.deferred,
                     operand.facts,
@@ -2171,7 +2249,13 @@ class _SourceFlowAnalyzer:
             return self._transfer_generator_expression(node, state, context)
         if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
             sequence = self._transfer_expression_sequence(node.elts, state, context)
-            return self._sequence_as_container(sequence, type(node).__name__.lower())
+            truth, outcomes = _literal_container_shape(node)
+            return self._sequence_as_container(
+                sequence,
+                type(node).__name__.lower(),
+                truth=truth,
+                iteration_outcomes=outcomes,
+            )
         if isinstance(node, ast.Dict):
             expressions = tuple(
                 child
@@ -2180,7 +2264,13 @@ class _SourceFlowAnalyzer:
                 if child is not None
             )
             sequence = self._transfer_expression_sequence(expressions, state, context)
-            return self._sequence_as_container(sequence, "dict")
+            truth, outcomes = _literal_container_shape(node)
+            return self._sequence_as_container(
+                sequence,
+                "dict",
+                truth=truth,
+                iteration_outcomes=outcomes,
+            )
         if isinstance(node, ast.BinOp):
             result = self._transfer_generic_operands(
                 (node.left, node.right), state, context
@@ -2238,11 +2328,14 @@ class _SourceFlowAnalyzer:
                 facts,
                 self._closure_error(node, "runtime importlib loader symbol access"),
             )
-        truth = (
-            _Truth.FALSE
-            if self._is_type_checking_value(value)
-            else _truth_for_value(value)
-        )
+        if self._is_type_checking_value(value):
+            return _ExprResult(
+                None,
+                _NormalExit(value, state),
+                state if maybe_unbound else None,
+                facts=facts,
+            )
+        truth = _truth_for_value(value)
         return self._expr_from_parts(
             value,
             state,
@@ -2284,10 +2377,17 @@ class _SourceFlowAnalyzer:
             tuple[_AbsValue, ...], _State, _State | None, _DeferredEffects, _PolicyFacts
         ],
         kind: str,
+        *,
+        truth: _Truth,
+        iteration_outcomes: frozenset[_IterationOutcome],
     ) -> _ExprResult:
         values, state, raises, deferred, facts = sequence
-        value = _container_value(values, kind=kind)
-        truth = _Truth.FALSE if not values else _Truth.TRUE
+        value = _container_value(
+            values,
+            kind=kind,
+            truth=truth,
+            iteration_outcomes=iteration_outcomes,
+        )
         return self._expr_from_parts(
             value,
             state,
@@ -3030,6 +3130,19 @@ class _SourceFlowAnalyzer:
         outer_state = outer.post_state
         if outer_state is None:
             return outer
+        outer_outcomes = outer.value.iteration_outcomes
+        raises = _join_states(
+            outer.raises,
+            outer_state if outer.value.may_iteration_raise else None,
+        )
+        if not outer_outcomes:
+            return _ExprResult(
+                None,
+                None,
+                raises,
+                outer.deferred,
+                outer.facts,
+            )
         declarations = self._comprehension_declarations(generators)
         frame = _Frame.create(
             scope_id=_source_location(self.source_module, node),
@@ -3043,8 +3156,6 @@ class _SourceFlowAnalyzer:
         may_be_empty = "zero" in outer.value.iteration_outcomes
         deferred = outer.deferred
         facts = outer.facts
-        raises = outer.raises
-        outer_outcomes = outer.value.iteration_outcomes
         if "zero" in outer_outcomes:
             exits.append(base.pop())
         if outer_outcomes.intersection({"one", "many"}):
@@ -3112,14 +3223,28 @@ class _SourceFlowAnalyzer:
                             self._closure_error(node, "source dataflow did not converge"),
                         )
                         break
-        post = _join_states(*exits) or state
-        value = _container_value(values, kind=type(node).__name__.lower())
+        post = _join_states(*exits)
+        if post is None:
+            return _ExprResult(None, None, raises, deferred, facts)
         truth = (
             _Truth.FALSE
             if not values
             else _Truth.UNKNOWN
             if may_be_empty
             else _Truth.TRUE
+        )
+        result_outcomes: frozenset[_IterationOutcome]
+        if truth is _Truth.FALSE:
+            result_outcomes = frozenset({"zero"})
+        elif truth is _Truth.TRUE:
+            result_outcomes = frozenset({"one", "many"})
+        else:
+            result_outcomes = frozenset({"zero", "one", "many"})
+        value = _container_value(
+            values,
+            kind=type(node).__name__.lower(),
+            truth=truth,
+            iteration_outcomes=result_outcomes,
         )
         return self._expr_from_parts(
             value,
@@ -3184,6 +3309,11 @@ class _SourceFlowAnalyzer:
             facts = _join_policy(facts, next_iterable.facts)
             next_state = next_iterable.post_state
             nested_values: list[_AbsValue] = []
+            if (
+                next_state is not None
+                and next_iterable.value.may_iteration_raise
+            ):
+                raises = _join_states(raises, next_state)
             if next_state is not None and next_iterable.value.iteration_outcomes.intersection(
                 {"one", "many"}
             ):
@@ -3234,6 +3364,18 @@ class _SourceFlowAnalyzer:
         post = outer.post_state
         if post is None:
             return outer
+        raises = _join_states(
+            outer.raises,
+            post if outer.value.may_iteration_raise else None,
+        )
+        if not outer.value.iteration_outcomes:
+            return _ExprResult(
+                None,
+                None,
+                raises,
+                outer.deferred,
+                outer.facts,
+            )
         frame = _Frame.create(
             scope_id=_source_location(self.source_module, node),
             kind="comprehension",
@@ -3249,9 +3391,11 @@ class _SourceFlowAnalyzer:
             operation="assign",
         )
         generator_value = _AbsValue(
+            truth=_Truth.TRUE,
             iterable_element=_ValueFacts(complete=False),
             contained=_ValueFacts(complete=False),
             iteration_outcomes=frozenset({"zero", "one", "many"}),
+            may_iteration_raise=False,
         )
         body = _DeferredBody(
             "generator",
@@ -3264,7 +3408,7 @@ class _SourceFlowAnalyzer:
             generator_value,
             post,
             _Truth.TRUE,
-            raises=outer.raises,
+            raises=raises,
             deferred=_join_deferred(
                 outer.deferred, effects, _DeferredEffects(bodies=(body,))
             ),
@@ -4333,12 +4477,17 @@ class _SourceFlowAnalyzer:
                 facts=iterable.facts,
             )
         outcomes = iterable.value.iteration_outcomes
+        may_iteration_raise = iterable.value.may_iteration_raise
         if isinstance(node, ast.AsyncFor):
             outcomes = frozenset({"zero", "one", "many"})
+            may_iteration_raise = True
         exhaustion: _State | None = post if "zero" in outcomes else None
         breaks: _State | None = None
         returns: _State | None = None
-        raises = iterable.raises
+        raises = _join_states(
+            iterable.raises,
+            post if may_iteration_raise else None,
+        )
         deferred = iterable.deferred
         facts = iterable.facts
         if outcomes.intersection({"one", "many"}):
@@ -4847,7 +4996,7 @@ class _SourceFlowAnalyzer:
             elif isinstance(statement, ast.For):
                 if (
                     not isinstance(statement.target, ast.Name)
-                    or not cls._literal_expression_is_nonraising(statement.iter)
+                    or not cls._literal_iteration_is_nonraising(statement.iter)
                 ):
                     return None
                 blocks = (statement.body, statement.orelse)
@@ -4885,6 +5034,15 @@ class _SourceFlowAnalyzer:
     def _literal_expression_is_nonraising(node: ast.expr) -> bool:
         try:
             ast.literal_eval(node)
+        except (TypeError, ValueError):
+            return False
+        return True
+
+    @staticmethod
+    def _literal_iteration_is_nonraising(node: ast.expr) -> bool:
+        try:
+            value = ast.literal_eval(node)
+            iter(value)
         except (TypeError, ValueError):
             return False
         return True
