@@ -1601,6 +1601,34 @@ def test_real_cli_namespace_reflection_bindings_are_rejected(
         scan_study_dependencies(protocol, repo_root=repo_root)
 
 
+@pytest.mark.parametrize(
+    "name",
+    ("fields", "is_dataclass", "getattr", "isinstance", "type", "_json_value"),
+)
+def test_cli_dataclass_exception_rejects_local_shadow_at_protected_call(
+    tmp_path: Path,
+    name: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol, preserve_real_cli=True)
+    path = repo_root / CLI_PATH
+    source = path.read_text()
+    original = "if value is None or isinstance(value, (bool, int, float, str)):"
+    replacement = (
+        f"if ({name} := len) and "
+        "(value is None or isinstance(value, (bool, int, float, str))):"
+    )
+    changed = source.replace(original, replacement, 1)
+    assert changed != source
+    path.write_text(_compiled_source(changed))
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: namespace-reflection",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
 _COMPLETED_MODULE_REBIND_KINDS = (
     "assignment",
     "annotated-assignment",
@@ -1698,10 +1726,19 @@ def _completed_module_rebind_source(name: str, kind: str) -> str:
         "__dir__",
     ),
 )
+@pytest.mark.parametrize(
+    "relative",
+    (
+        Path("src/manufacturing_vision_studio/__init__.py"),
+        Path("src/manufacturing_vision_studio/e1/__init__.py"),
+    ),
+    ids=("root", "e1"),
+)
 @pytest.mark.parametrize("kind", _COMPLETED_MODULE_REBIND_KINDS)
 def test_pep562_exception_rejects_completed_module_binding_mutations(
     tmp_path: Path,
     name: str,
+    relative: Path,
     kind: str,
 ) -> None:
     protocol = load_study_protocol_v2()
@@ -1709,7 +1746,7 @@ def test_pep562_exception_rejects_completed_module_binding_mutations(
     source = _compiled_source(_completed_module_rebind_source(name, kind))
     _append(
         repo_root,
-        Path("src/manufacturing_vision_studio/__init__.py"),
+        relative,
         "\n" + source,
     )
 

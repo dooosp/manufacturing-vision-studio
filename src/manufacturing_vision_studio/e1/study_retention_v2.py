@@ -1880,6 +1880,35 @@ class _SourceFlowAnalyzer:
             return _PolicyFacts()
         return _PolicyFacts(pending_exact_uses=(site,))
 
+    def _exact_use_identity_error(
+        self,
+        node: ast.Name,
+        value: _AbsValue,
+        maybe_unbound: bool,
+        site: _ExactCallSite | None,
+    ) -> _PolicyFacts:
+        if site is None:
+            return _PolicyFacts()
+        expected = dict(site.required_bindings).get(node.id)
+        identity = value.facts.identity
+        if (
+            expected is None
+            or (
+                not maybe_unbound
+                and value.facts.complete
+                and identity.state == "exact"
+                and identity.identity == expected
+            )
+        ):
+            return _PolicyFacts()
+        detail = f"resolved binding mismatch at exact {site.role} use: {node.id}"
+        if self.source_module in _PROJECTED_PACKAGE_ROOTS:
+            return self._closure_error(
+                node,
+                f"initializer capability structure: {detail}",
+            )
+        return self._policy_error("namespace-reflection", node, detail)
+
     @staticmethod
     def _has_completed_identity(
         state: _State,
@@ -2418,6 +2447,10 @@ class _SourceFlowAnalyzer:
         facts = _PolicyFacts()
         exact_site = self._exact_call_site(node)
         facts = _join_policy(facts, self._pending_exact_use(exact_site))
+        facts = _join_policy(
+            facts,
+            self._exact_use_identity_error(node, value, maybe_unbound, exact_site),
+        )
         if node.id == "__import__" and context.mode != "type-only":
             facts = self._policy_error(
                 "dynamic-import", node, "runtime __import__ symbol access"
@@ -4203,18 +4236,9 @@ class _SourceFlowAnalyzer:
             facts = _join_policy(facts, result.facts)
             deferred = _join_deferred(deferred, result.deferred)
         location = _source_location(self.source_module, node)
-        definition_state = current.pop() if current.frames[-1].kind == "class" else current
         kind: _DeferredKind = (
             "async-function" if isinstance(node, ast.AsyncFunctionDef) else "function"
         )
-        body = _DeferredBody(
-            kind,
-            location,
-            definition_state.frames[-1].scope_id,
-            definition_state,
-            node,
-        )
-        deferred = _join_deferred(deferred, _DeferredEffects(bodies=(body,)))
         function_value = _value_with_capabilities(
             identity=_ResolvedIdentity(
                 "function", self.source_module, node.name, location
@@ -4230,6 +4254,15 @@ class _SourceFlowAnalyzer:
         current, effect, binding_facts = self._bind_target(
             synthetic, function_value, current, context, operation="assign"
         )
+        definition_state = current.pop() if current.frames[-1].kind == "class" else current
+        body = _DeferredBody(
+            kind,
+            location,
+            definition_state.frames[-1].scope_id,
+            definition_state,
+            node,
+        )
+        deferred = _join_deferred(deferred, _DeferredEffects(bodies=(body,)))
         return _FlowResult(
             current,
             raises=raises,
@@ -6249,13 +6282,25 @@ def _validate_cli_json_policy(
             )
         )
     )
+    is_dataclass_call = cast(ast.Call, guard.values[0])
+    isinstance_call = cast(ast.Call, guard.values[1].operand)
+    fields_call = cast(ast.Call, generator.iter)
+    exact_names = (
+        cast(ast.Name, is_dataclass_call.func),
+        cast(ast.Name, isinstance_call.func),
+        cast(ast.Name, isinstance_call.args[1]),
+        cast(ast.Name, fields_call.func),
+        cast(ast.Name, recursive_call.func),
+        cast(ast.Name, reflected.func),
+    )
     return _InitializerPolicy(
-        (
+        tuple(
             _ExactCallSite(
                 "cli-dataclass-getattr",
-                _source_location(source_module, reflected.func),
+                _source_location(source_module, node),
                 required_bindings,
-            ),
+            )
+            for node in exact_names
         ),
         (),
     )
