@@ -1510,46 +1510,255 @@ def test_ordered_expression_effects_keep_safe_sources_allowed(
     scan_study_dependencies(protocol, repo_root=repo_root)
 
 
+@pytest.mark.parametrize(
+    ("control_id", "source"),
+    (
+        (
+            "direct-sys-stdout",
+            "import sys\nSAFE = sys.stdout\n",
+        ),
+        (
+            "from-sys-stdout",
+            "from sys import stdout\nSAFE = stdout\n",
+        ),
+        (
+            "wrappers-and-comprehension-target",
+            "import sys\n"
+            "SAFE_LAMBDA = lambda value=sys.stdout: value\n"
+            "SAFE_LIST = [sys.stdout]\n"
+            "SAFE_SET = {sys.stdout}\n"
+            "SAFE_DICT = {'output': sys.stdout}\n"
+            "SAFE_GEN = (value for value in (sys.stdout,))\n"
+            "SAFE_COMP = [value for value in (sys.stdout,)]\n",
+        ),
+        (
+            "executed-walrus",
+            "import sys as carrier\n"
+            "SAFE = (carrier := carrier.stdout)\n"
+            "WRITE = getattr(carrier, 'write')\n",
+        ),
+        (
+            "literal-getattr-hasattr",
+            "import sys\n"
+            "WRITE = getattr(sys.stdout, 'write')\n"
+            "HAS_WRITE = hasattr(sys.stdout, 'write')\n",
+        ),
+        (
+            "regex-sensitive-strings",
+            "import re\n"
+            "PATTERN = re.compile('import_module|__import__|sys[.]modules')\n"
+            "WORDS = ('exec', 'eval', 'compile', 'globals')\n",
+        ),
+    ),
+)
+def test_mandatory_safe_source_controls_remain_allowed(
+    tmp_path: Path,
+    control_id: str,
+    source: str,
+) -> None:
+    del control_id
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
 def _nested_expression(family: str, depth: int) -> str:
     expression = "object()"
-    for _ in range(depth):
-        if family == "dunder":
+    for index in range(depth):
+        if family == "dunder-call":
             expression = f"({expression}).__getattribute__('x')"
-        elif family == "boolop":
-            expression = f"(False or {expression})"
+        elif family == "alternating-boolop":
+            expression = (
+                f"({expression} and True)"
+                if index % 2
+                else f"(False or {expression})"
+            )
         elif family == "ifexp":
             expression = f"({expression} if True else object())"
-        elif family == "lambda":
-            expression = f"(lambda value={expression}: value)"
+        elif family == "lambda-default-body":
+            expression = (
+                f"(lambda value={expression}: "
+                "(value if True else object()))"
+            )
+        elif family == "list-comprehension":
+            expression = f"[item for item in ({expression},)]"
+        elif family == "set-comprehension":
+            expression = f"{{item for item in ({expression},)}}"
+        elif family == "dict-comprehension":
+            expression = f"{{item: item for item in ({expression},)}}"
+        elif family == "false-filter":
+            expression = f"[item for item in ({expression},) if False]"
+        elif family == "later-nested-generators":
+            expression = (
+                f"[later for item in ({expression},) "
+                "for later in (item,)]"
+            )
         elif family == "genexpr":
             expression = f"(value for value in ({expression},))"
-        elif family == "comprehension":
-            expression = f"[value for value in ({expression},)]"
-        elif family == "container":
-            expression = f"[{expression}]"
+        elif family == "wrapper-container":
+            expression = (
+                f"[{expression}]",
+                f"({expression},)",
+                f"{{{expression}}}",
+                f"{{'value': {expression}}}",
+            )[index % 4]
+        elif family == "match-guard":
+            expression = (
+                f"({expression} and True)"
+                if index % 2
+                else f"(False or {expression})"
+            )
         else:
             raise AssertionError(f"unknown fixture family: {family}")
+    if family == "match-guard":
+        return (
+            "VALUE = None\n"
+            "match object():\n"
+            f"    case captured if {expression}:\n"
+            "        VALUE = captured\n"
+        )
     return f"VALUE = {expression}\n"
+
+
+def _statement_complexity_source(family: str, depth: int) -> str:
+    if family == "try-except-finally":
+        unit = (
+            "try:\n"
+            "    VALUE = object()\n"
+            "except Exception:\n"
+            "    VALUE = object()\n"
+            "finally:\n"
+            "    VALUE = object()\n"
+        )
+        return "VALUE = None\n" + unit * depth
+    if family == "except-star":
+        unit = (
+            "try:\n"
+            "    raise ExceptionGroup('group', [ValueError()])\n"
+            "except* ValueError:\n"
+            "    VALUE = object()\n"
+        )
+        return "VALUE = None\n" + unit * depth
+    if family == "for":
+        unit = "for item in (0,):\n    VALUE = object()\n"
+        return "VALUE = None\n" + unit * depth
+    if family == "async-for":
+        body = "".join(
+            "    async for item in source:\n"
+            "        VALUE = object()\n"
+            for _ in range(depth)
+        )
+        return "async def probe(source: object) -> None:\n" + body
+    if family == "diamond-joins":
+        diamonds = "".join(
+            "if object():\n"
+            "    alias = str\n"
+            "else:\n"
+            "    alias = bytes\n"
+            for _ in range(depth)
+        )
+        return (
+            "alias = len\n"
+            + diamonds
+            + "def deferred() -> object:\n"
+            "    return alias\n"
+            "alias = tuple\n"
+        )
+    raise AssertionError(f"unknown fixture family: {family}")
+
+
+def _assert_canonical_complexity_bounds(
+    tree: ast.Module,
+    stats: retention_module._AnalysisStats,
+    *,
+    maximum_bindings: int,
+    maximum_frames: int,
+    straight_line: bool,
+) -> None:
+    height = max(1, 1 + 67 * maximum_bindings + maximum_frames)
+
+    assert stats.computed_height_bound == height
+    assert stats.max_updates_per_program_point <= height
+    assert stats.worklist_pops <= stats.program_points * (height + 1)
+    assert stats.transfer_steps <= stats.program_points * (height + 1)
+    if straight_line:
+        syntax_nodes = len(tuple(ast.walk(tree)))
+        assert stats.expression_transfers <= 2 * syntax_nodes
+        assert stats.transfer_steps <= 2 * syntax_nodes
 
 
 @pytest.mark.parametrize("depth", (1, 2, 4, 8, 16, 32, 64))
 @pytest.mark.parametrize(
-    "family",
-    ("dunder", "boolop", "ifexp", "lambda", "genexpr", "comprehension", "container"),
+    ("family", "maximum_bindings", "maximum_frames"),
+    (
+        ("dunder-call", 1, 1),
+        ("alternating-boolop", 1, 1),
+        ("ifexp", 1, 1),
+        ("lambda-default-body", 2, 2),
+        ("list-comprehension", 2, 2),
+        ("set-comprehension", 2, 2),
+        ("dict-comprehension", 2, 2),
+        ("false-filter", 2, 2),
+        ("later-nested-generators", 3, 2),
+        ("genexpr", 2, 2),
+        ("wrapper-container", 1, 1),
+        ("match-guard", 2, 1),
+    ),
 )
-def test_transfer_is_single_pass_for_structural_fixture_families(
-    tmp_path: Path,
+def test_structural_expression_families_obey_the_canonical_complexity_bound(
     family: str,
+    maximum_bindings: int,
+    maximum_frames: int,
     depth: int,
 ) -> None:
-    """Task 1 records stable baseline acceptance; Task 5 adds canonical counters."""
+    tree, result = _analyze_source(_nested_expression(family, depth))
+    stats = result.stats
 
-    source = _compiled_source(_nested_expression(family, depth))
-    protocol = load_study_protocol_v2()
-    repo_root = _complete_repo(tmp_path, protocol)
-    _append(repo_root, RUNNER_PATH, "\n" + source)
+    assert isinstance(stats, retention_module._AnalysisStats)
+    _assert_canonical_complexity_bounds(
+        tree,
+        stats,
+        maximum_bindings=maximum_bindings,
+        maximum_frames=maximum_frames,
+        straight_line=True,
+    )
+    if family == "match-guard":
+        assert stats.pattern_transfers > 0
 
-    scan_study_dependencies(protocol, repo_root=repo_root)
+
+@pytest.mark.parametrize("depth", (1, 2, 4, 8, 16, 32, 64))
+@pytest.mark.parametrize(
+    ("family", "maximum_bindings", "maximum_frames"),
+    (
+        ("try-except-finally", 1, 1),
+        ("except-star", 1, 1),
+        ("for", 2, 1),
+        ("async-for", 4, 2),
+        ("diamond-joins", 2, 2),
+    ),
+)
+def test_statement_and_join_families_obey_the_canonical_complexity_bound(
+    family: str,
+    maximum_bindings: int,
+    maximum_frames: int,
+    depth: int,
+) -> None:
+    tree, result = _analyze_source(_statement_complexity_source(family, depth))
+    stats = result.stats
+
+    assert isinstance(stats, retention_module._AnalysisStats)
+    _assert_canonical_complexity_bounds(
+        tree,
+        stats,
+        maximum_bindings=maximum_bindings,
+        maximum_frames=maximum_frames,
+        straight_line=False,
+    )
+    assert stats.statement_transfers > 0
+    if family in {"for", "async-for", "diamond-joins"}:
+        assert stats.worklist_pops > 0
 
 
 @pytest.mark.parametrize(
