@@ -2241,9 +2241,12 @@ class _SourceFlowAnalyzer:
             and active.retained_for_suffix
         ):
             previous = self._point_outputs.get(point)
-            self._point_outputs[point] = (
-                output if previous is None else previous.join(output)
-            )
+            if previous is None:
+                self._point_outputs[point] = output
+            else:
+                self._point_outputs[point], _ = self._stats.merge_program_point(
+                    point, previous, output
+                )
             self._point_output_skeletons.setdefault(
                 point, self._state_skeleton(output)
             )
@@ -2436,8 +2439,7 @@ class _SourceFlowAnalyzer:
             return self._expr_from_parts(_SAFE_VALUE, state, _Truth.UNKNOWN)
         resolution_index = state._resolution_index(node.id)
         if resolution_index is None:
-            value = self._builtin_value(node.id)
-            maybe_unbound = False
+            value, maybe_unbound = self._resolved_value(state, node.id)
         else:
             slot = dict(state.frames[resolution_index].bindings)[node.id]
             if not slot.may_be_bound:
@@ -3538,7 +3540,7 @@ class _SourceFlowAnalyzer:
             iterable_element=_ValueFacts(complete=False),
             contained=_ValueFacts(complete=False),
             iteration_outcomes=frozenset({"zero", "one", "many"}),
-            may_iteration_raise=False,
+            may_iteration_raise=True,
         )
         body = _DeferredBody(
             "generator",
@@ -4076,9 +4078,33 @@ class _SourceFlowAnalyzer:
             )
         base = _resolve_import_from_base(self.source_module, node.module, node.level)
         if base is None:
+            if (
+                context.mode != "type-only"
+                and any(alias.name == "*" for alias in node.names)
+            ):
+                facts = _join_policy(
+                    facts,
+                    self._closure_error(node, "unresolved wildcard import source"),
+                )
             return _FlowResult(current, facts=facts)
         for alias in node.names:
             if alias.name == "*":
+                target = _nearest_known_module(base, self.known_modules)
+                if (
+                    context.mode != "type-only"
+                    and _is_package_target(base)
+                    and target != base
+                ):
+                    facts = _join_policy(
+                        facts,
+                        self._closure_error(
+                            node, f"unresolved wildcard package import: {base}"
+                        ),
+                    )
+                elif target is not None:
+                    facts = _join_policy(
+                        facts, self._reference_fact(target, context)
+                    )
                 frames = list(current.frames)
                 frames[-1] = frames[-1].with_wildcard()
                 current = _State(tuple(frames))

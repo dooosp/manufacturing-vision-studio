@@ -420,6 +420,55 @@ def test_retained_direct_import_must_equal_the_module_allowlist(tmp_path: Path) 
         scan_study_dependencies(protocol, repo_root=repo_root)
 
 
+@pytest.mark.parametrize(
+    ("source", "error"),
+    (
+        (
+            "from manufacturing_vision_studio.adapters import *\n",
+            r"direct import allowlist mismatch.*study_runner_v2.*adapters",
+        ),
+        (
+            "from manufacturing_vision_studio.not_real import *\n",
+            "unresolved wildcard package import",
+        ),
+    ),
+)
+def test_wildcard_import_records_its_source_or_fails_closed(
+    tmp_path: Path,
+    source: str,
+    error: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    with pytest.raises(StudyRetentionError, match=error):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_wildcard_shadowed_name_does_not_fall_back_to_builtin(
+    tmp_path: Path,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, FEATURE_MAPPING_PATH, "\nimport sys\nlen = sys\n")
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\n"
+        + _compiled_source(
+            "from manufacturing_vision_studio.e1.feature_mapping import *\n"
+            "REGISTRY = len.modules\n"
+        ),
+    )
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: import-registry",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
 def test_protected_scope_reference_is_rejected(tmp_path: Path) -> None:
     protocol = load_study_protocol_v2()
     repo_root = _complete_repo(tmp_path, protocol)
@@ -2850,6 +2899,38 @@ def test_noniterable_for_reaches_type_error_handler(tmp_path: Path) -> None:
         scan_study_dependencies(protocol, repo_root=repo_root)
 
 
+def test_generator_iteration_exception_reaches_surrounding_handler(
+    tmp_path: Path,
+) -> None:
+    trace_source = _compiled_source(
+        "trace = []\n"
+        "loader = (item for _ in (0,) for item in 0)\n"
+        "try:\n"
+        "    for _ in loader:\n"
+        "        pass\n"
+        "except TypeError:\n"
+        "    trace.append('handled')\n"
+    )
+    trace_namespace: dict[str, object] = {}
+    _execute_source(trace_source, trace_namespace)
+    assert trace_namespace["trace"] == ["handled"]
+
+    source = _compiled_source(
+        "loader = (item for _ in (0,) for item in 0)\n"
+        "try:\n"
+        "    for _ in loader:\n"
+        "        pass\n"
+        "except TypeError:\n"
+        "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(StudyRetentionError, match=r"forbidden direct import.*policy_v2"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
 @pytest.mark.parametrize(
     ("iterable", "has_runtime_body_edge"),
     (("1", False), ("()", False), ("(0,)", True)),
@@ -3290,6 +3371,28 @@ def test_analysis_stats_count_diamond_joins_and_reverse_suffix_work() -> None:
     assert stats.state_join_attempts > 0
     assert stats.strict_state_updates > 0
     assert stats.worklist_pops >= 5
+    assert stats.max_updates_per_program_point <= stats.computed_height_bound
+    assert stats.worklist_pops <= stats.program_points * (
+        stats.computed_height_bound + 1
+    )
+    assert stats.transfer_steps <= stats.program_points * (
+        stats.computed_height_bound + 1
+    )
+
+
+def test_retained_loop_point_growth_uses_canonical_update_counters() -> None:
+    _, result = _analyze_source(
+        "for _ in (0, 1):\n"
+        "    deferred = lambda: None\n"
+    )
+    stats = result.stats
+
+    assert isinstance(stats, retention_module._AnalysisStats)
+    assert stats.program_points == 11
+    assert stats.state_join_attempts == 6
+    assert stats.strict_state_updates == 2
+    assert stats.max_updates_per_program_point == 1
+    assert stats.computed_height_bound == 137
     assert stats.max_updates_per_program_point <= stats.computed_height_bound
     assert stats.worklist_pops <= stats.program_points * (
         stats.computed_height_bound + 1
