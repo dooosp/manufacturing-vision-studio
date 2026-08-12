@@ -446,6 +446,29 @@ def test_wildcard_import_records_its_source_or_fails_closed(
         scan_study_dependencies(protocol, repo_root=repo_root)
 
 
+def test_type_checking_unresolved_project_wildcard_fails_closed(
+    tmp_path: Path,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\n"
+        + _compiled_source(
+            "from typing import TYPE_CHECKING\n"
+            "if TYPE_CHECKING:\n"
+            "    from manufacturing_vision_studio.not_real import *\n"
+        ),
+    )
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="unresolved wildcard package import",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
 def test_wildcard_shadowed_name_does_not_fall_back_to_builtin(
     tmp_path: Path,
 ) -> None:
@@ -466,6 +489,41 @@ def test_wildcard_shadowed_name_does_not_fall_back_to_builtin(
         StudyRetentionError,
         match="source capability rejected: import-registry",
     ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_wildcard_shadow_preserves_sensitive_builtin_capability(
+    tmp_path: Path,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\n"
+        + _compiled_source(
+            "from manufacturing_vision_studio.e1.feature_mapping import *\n"
+            "RESULT = eval('1 + 1')\n"
+        ),
+    )
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: executable-code",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_unresolved_project_import_fails_closed(tmp_path: Path) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\n" + _compiled_source("import manufacturing_vision_studio.not_real\n"),
+    )
+
+    with pytest.raises(StudyRetentionError, match="unresolved project import"):
         scan_study_dependencies(protocol, repo_root=repo_root)
 
 
@@ -3132,6 +3190,25 @@ def test_exact_explicit_raise_keeps_disjoint_handler_policy_only(tmp_path: Path)
     scan_study_dependencies(protocol, repo_root=repo_root)
 
 
+def test_explicit_raise_reaches_superclass_handler(tmp_path: Path) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\n"
+        + _compiled_source(
+            "try:\n"
+            "    raise ValueError\n"
+            "except Exception:\n"
+            "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n"
+        ),
+    )
+
+    with pytest.raises(StudyRetentionError, match=r"forbidden direct import.*policy_v2"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
 def test_except_star_later_handler_receives_prior_raised_handler_state(
     tmp_path: Path,
 ) -> None:
@@ -3377,6 +3454,28 @@ def test_analysis_stats_count_diamond_joins_and_reverse_suffix_work() -> None:
     )
     assert stats.transfer_steps <= stats.program_points * (
         stats.computed_height_bound + 1
+    )
+
+
+def test_branch_state_join_uses_canonical_program_point_counters() -> None:
+    _, result = _analyze_source(
+        "if object():\n"
+        "    alias = str\n"
+        "else:\n"
+        "    alias = bytes\n"
+    )
+
+    assert result.stats == retention_module._AnalysisStats(
+        program_points=7,
+        cfg_edges=8,
+        expression_transfers=4,
+        statement_transfers=3,
+        pattern_transfers=0,
+        state_join_attempts=1,
+        strict_state_updates=1,
+        worklist_pops=0,
+        max_updates_per_program_point=1,
+        computed_height_bound=69,
     )
 
 

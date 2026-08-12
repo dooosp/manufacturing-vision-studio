@@ -246,6 +246,22 @@ _PROTECTED_SCOPES = frozenset({"SMOKE", "CALIBRATION", "RELEASE_TEST"})
 _PROJECTED_PACKAGE_ROOTS = frozenset(
     {"manufacturing_vision_studio", "manufacturing_vision_studio.e1"}
 )
+_PROVABLE_BUILTIN_EXCEPTION_SUPERTYPES: Mapping[str, frozenset[str]] = (
+    MappingProxyType(
+        {
+            "BaseException": frozenset({"BaseException"}),
+            "Exception": frozenset({"BaseException", "Exception"}),
+            "LookupError": frozenset(
+                {"BaseException", "Exception", "LookupError"}
+            ),
+            "RuntimeError": frozenset(
+                {"BaseException", "Exception", "RuntimeError"}
+            ),
+            "TypeError": frozenset({"BaseException", "Exception", "TypeError"}),
+            "ValueError": frozenset({"BaseException", "Exception", "ValueError"}),
+        }
+    )
+)
 _RETAIN = (
     "development diagnostic matrix",
     "split guards",
@@ -2151,7 +2167,7 @@ class _SourceFlowAnalyzer:
             return slot.value, slot.may_be_unbound
         if not any(frame.wildcard_shadowed for frame in state.frames):
             return self._builtin_value(name), False
-        return _UNKNOWN_VALUE, True
+        return _join_values(_UNKNOWN_VALUE, self._builtin_value(name)), True
 
     def _program_point(
         self, kind: str, node: ast.AST, context: _TransferContext
@@ -2784,6 +2800,16 @@ class _SourceFlowAnalyzer:
                 ),
             )
             value = _value_with_capabilities("executable-code", complete=False)
+        elif "executable-code" in capabilities:
+            facts = _join_policy(
+                facts,
+                self._policy_error(
+                    "executable-code",
+                    node,
+                    "runtime executable code through incomplete callable",
+                ),
+            )
+            value = _value_with_capabilities("executable-code", complete=False)
         if "import-loader" in capabilities:
             legacy_detail: str | None = None
             if "dynamic-loader-module" in capabilities:
@@ -2810,7 +2836,7 @@ class _SourceFlowAnalyzer:
             "vars",
             "globals",
             "locals",
-        }:
+        } and exact_site is None:
             facts = _join_policy(
                 facts,
                 self._policy_error(
@@ -4035,7 +4061,14 @@ class _SourceFlowAnalyzer:
                     self._closure_error(node, f"runtime importlib import: {alias.name}"),
                 )
             target = _nearest_known_module(alias.name, self.known_modules)
-            if target is not None:
+            if _is_package_target(alias.name) and target != alias.name:
+                facts = _join_policy(
+                    facts,
+                    self._closure_error(
+                        node, f"unresolved project import: {alias.name}"
+                    ),
+                )
+            elif target is not None:
                 facts = _join_policy(facts, self._reference_fact(target, context))
             bound_name = alias.asname or alias.name.split(".", 1)[0]
             imported_module = alias.name if alias.asname else alias.name.split(".", 1)[0]
@@ -4078,10 +4111,7 @@ class _SourceFlowAnalyzer:
             )
         base = _resolve_import_from_base(self.source_module, node.module, node.level)
         if base is None:
-            if (
-                context.mode != "type-only"
-                and any(alias.name == "*" for alias in node.names)
-            ):
+            if any(alias.name == "*" for alias in node.names):
                 facts = _join_policy(
                     facts,
                     self._closure_error(node, "unresolved wildcard import source"),
@@ -4091,8 +4121,7 @@ class _SourceFlowAnalyzer:
             if alias.name == "*":
                 target = _nearest_known_module(base, self.known_modules)
                 if (
-                    context.mode != "type-only"
-                    and _is_package_target(base)
+                    _is_package_target(base)
                     and target != base
                 ):
                     facts = _join_policy(
@@ -4202,7 +4231,18 @@ class _SourceFlowAnalyzer:
                 )
             else:
                 branches.append(self._transfer_statements(statements, exit.state, context))
-        joined = _join_flow(*branches)
+        point = self._program_point("statement", node, context)
+        joined = _FlowResult(
+            self._join_program_point(
+                point, *(branch.normal for branch in branches)
+            ),
+            _join_states(*(branch.breaks for branch in branches)),
+            _join_states(*(branch.continues for branch in branches)),
+            _join_states(*(branch.returns for branch in branches)),
+            _join_states(*(branch.raises for branch in branches)),
+            _join_deferred(*(branch.deferred for branch in branches)),
+            _join_policy(*(branch.facts for branch in branches)),
+        )
         return _FlowResult(
             joined.normal,
             joined.breaks,
@@ -4959,7 +4999,7 @@ class _SourceFlowAnalyzer:
         ordered_input = handler_input
         for handler in node.handlers:
             can_match = isinstance(node, ast.TryStar) or self._handler_can_match(
-                handler, known_raise_names
+                handler, known_raise_names, ordered_input
             )
             if ordered_input is None or not can_match:
                 inspected = self._transfer_statements(
@@ -5118,24 +5158,52 @@ class _SourceFlowAnalyzer:
             output = _join_flow(output, preserved, replacements)
         return output
 
-    @classmethod
     def _handler_can_match(
-        cls,
+        self,
         handler: ast.ExceptHandler,
         possible: frozenset[str] | None,
+        state: _State | None,
     ) -> bool:
-        if possible is None or handler.type is None:
+        if possible is None or handler.type is None or state is None:
             return True
-        names: set[str] = set()
         candidates = (
             handler.type.elts if isinstance(handler.type, ast.Tuple) else (handler.type,)
         )
+        caught_names: list[str] = []
         for candidate in candidates:
-            if isinstance(candidate, ast.Name):
-                names.add(candidate.id)
-            elif isinstance(candidate, ast.Attribute):
-                names.add(candidate.attr)
-        return bool(possible.intersection(names))
+            if not isinstance(candidate, ast.Name):
+                return True
+            if self._provable_builtin_exception_supertypes(
+                state, candidate.id
+            ) is None:
+                return True
+            caught_names.append(candidate.id)
+        for raised_name in possible:
+            supertypes = self._provable_builtin_exception_supertypes(
+                state, raised_name
+            )
+            if supertypes is None:
+                return True
+            if any(caught_name in supertypes for caught_name in caught_names):
+                return True
+        return False
+
+    def _provable_builtin_exception_supertypes(
+        self, state: _State, name: str
+    ) -> frozenset[str] | None:
+        supertypes = _PROVABLE_BUILTIN_EXCEPTION_SUPERTYPES.get(name)
+        if supertypes is None:
+            return None
+        value, may_be_unbound = self._resolved_value(state, name)
+        if (
+            may_be_unbound
+            or not value.facts.complete
+            or value.facts.identity.state != "exact"
+            or value.facts.identity.identity
+            != _ResolvedIdentity("builtin", "builtins", name)
+        ):
+            return None
+        return supertypes
 
     @classmethod
     def _possible_raise_names(
