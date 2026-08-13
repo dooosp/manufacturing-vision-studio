@@ -3311,6 +3311,1044 @@ def test_python312_type_alias_never_falls_through_source_flow(
         scan_study_dependencies(protocol, repo_root=repo_root)
 
 
+@pytest.mark.parametrize(
+    ("surface", "source"),
+    (
+        pytest.param(
+            "bare-eval",
+            "RESULT = eval('1 + 1')\n",
+            id="bare-eval",
+        ),
+        pytest.param(
+            "bare-exec",
+            "RESULT = exec('value = 1')\n",
+            id="bare-exec",
+        ),
+        pytest.param(
+            "bare-compile",
+            "RESULT = compile('1 + 1', '<fixture>', 'eval')\n",
+            id="bare-compile",
+        ),
+        pytest.param(
+            "attribute-eval",
+            "import builtins\nRESULT = builtins.eval('1 + 1')\n",
+            id="attribute-eval",
+        ),
+        pytest.param(
+            "attribute-exec",
+            "import builtins\nRESULT = builtins.exec('value = 1')\n",
+            id="attribute-exec",
+        ),
+        pytest.param(
+            "attribute-compile",
+            "import builtins\n"
+            "RESULT = builtins.compile('1 + 1', '<fixture>', 'eval')\n",
+            id="attribute-compile",
+        ),
+        pytest.param(
+            "literal-getattr-eval",
+            "import builtins\nRESULT = getattr(builtins, 'eval')('1 + 1')\n",
+            id="literal-getattr-eval",
+        ),
+        pytest.param(
+            "literal-getattr-exec",
+            "import builtins\nRESULT = getattr(builtins, 'exec')('value = 1')\n",
+            id="literal-getattr-exec",
+        ),
+        pytest.param(
+            "literal-getattr-compile",
+            "import builtins\n"
+            "RESULT = getattr(builtins, 'compile')('1 + 1', '<fixture>', 'eval')\n",
+            id="literal-getattr-compile",
+        ),
+        pytest.param(
+            "from-import-eval",
+            "from builtins import eval as executable\n"
+            "RESULT = executable('1 + 1')\n",
+            id="from-import-eval",
+        ),
+        pytest.param(
+            "from-import-exec",
+            "from builtins import exec as executable\n"
+            "RESULT = executable('value = 1')\n",
+            id="from-import-exec",
+        ),
+        pytest.param(
+            "from-import-compile",
+            "from builtins import compile as executable\n"
+            "RESULT = executable('1 + 1', '<fixture>', 'eval')\n",
+            id="from-import-compile",
+        ),
+    ),
+)
+def test_executable_code_capability_survives_builtin_acquisition(
+    tmp_path: Path,
+    surface: str,
+    source: str,
+) -> None:
+    del surface
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: executable-code",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import builtins\nRESULT = vars(builtins)['eval']('1 + 1')\n",
+        "import builtins\nRESULT = builtins.__dict__['exec']('value = 1')\n",
+        "import builtins\n"
+        "RESULT = vars(builtins)['compile']('1 + 1', '<fixture>', 'eval')\n",
+    ),
+    ids=("vars-eval", "dict-exec", "vars-compile"),
+)
+def test_executable_code_capability_survives_builtin_mapping_subscript(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: executable-code",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import builtins\n"
+        "name = 'eval'\n"
+        "RESULT = vars(builtins)[name]('1 + 1')\n",
+        "import builtins\n"
+        "name = 'exec'\n"
+        "RESULT = builtins.__dict__[name]('value = 1')\n",
+        "import builtins\n"
+        "name = 'compile'\n"
+        "RESULT = vars(builtins)[name]('1 + 1', '<fixture>', 'eval')\n",
+    ),
+    ids=("eval", "exec", "compile"),
+)
+def test_executable_code_capability_survives_dynamic_builtin_mapping_subscript(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: executable-code",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import builtins\nRESULT = vars(builtins).get('eval')('1 + 1')\n",
+        "import builtins\n"
+        "RESULT = builtins.__dict__.get('exec')('value = 1')\n",
+        "import builtins\n"
+        "RESULT = vars(builtins).get('compile')"
+        "('1 + 1', '<fixture>', 'eval')\n",
+        "import builtins\n"
+        "lookup = vars(builtins).get\n"
+        "RESULT = lookup('eval')('1 + 1')\n",
+        "import builtins\n"
+        "name = 'exec'\n"
+        "RESULT = builtins.__dict__.get(name)('value = 1')\n",
+        "import builtins\n"
+        "lookup = vars(builtins).get\n"
+        "if object():\n"
+        "    lookup = len\n"
+        "RESULT = lookup('eval')('1 + 1')\n",
+    ),
+    ids=(
+        "eval",
+        "exec",
+        "compile",
+        "aliased-eval",
+        "dynamic-exec",
+        "joined-eval",
+    ),
+)
+def test_executable_code_capability_survives_builtin_mapping_get(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: executable-code",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("source", "category"),
+    (
+        (
+            "import builtins\n"
+            "RESULT = vars(builtins).get('__import__')('fractions')\n",
+            "dynamic-import",
+        ),
+        (
+            "import builtins\nRESULT = builtins.__dict__.get('globals')()\n",
+            "namespace-reflection",
+        ),
+    ),
+    ids=("import-loader", "namespace-reflection"),
+)
+def test_builtin_mapping_get_preserves_existing_sensitive_categories(
+    tmp_path: Path,
+    source: str,
+    category: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    with pytest.raises(
+        StudyRetentionError,
+        match=rf"source capability rejected: {category}",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import builtins\nSAFE = builtins.len((1, 2))\n",
+        "import builtins\nSAFE = getattr(builtins, 'len')((1, 2))\n",
+    ),
+    ids=("attribute", "literal-getattr"),
+)
+def test_harmless_builtins_attribute_acquisition_remains_allowed(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import builtins\nSAFE = vars(builtins)['len']((1, 2))\n",
+        "import builtins\nSAFE = builtins.__dict__['len']((1, 2))\n",
+    ),
+    ids=("vars", "dict"),
+)
+def test_harmless_builtins_mapping_subscript_remains_allowed(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import builtins\nSAFE = vars(builtins).get('len')((1, 2))\n",
+        "import builtins\nSAFE = builtins.__dict__.get('len')((1, 2))\n",
+        "mapping = {'len': len}\nSAFE = mapping.get('len')((1, 2))\n",
+    ),
+    ids=("vars", "builtins-dict", "generic-dict"),
+)
+def test_harmless_literal_mapping_get_remains_allowed(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("case_id", "source", "category"),
+    (
+        (
+            "implicit-module-eval",
+            "RESULT = __builtins__.eval('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "implicit-dict-eval",
+            "RESULT = __builtins__['eval']('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "getattr-builtins-dict",
+            "import builtins\n"
+            "mapping = getattr(builtins, '__dict__')\n"
+            "RESULT = mapping['eval']('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "module-getattribute",
+            "import builtins\n"
+            "RESULT = builtins.__getattribute__('eval')('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "from-import-eval",
+            "from builtins import eval as execute\n"
+            "RESULT = execute('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "from-import-import",
+            "from builtins import __import__ as load\n"
+            "RESULT = load('fractions')\n",
+            "dynamic-import",
+        ),
+        (
+            "from-import-globals",
+            "from builtins import globals as reflect\n"
+            "RESULT = reflect()\n",
+            "namespace-reflection",
+        ),
+        (
+            "reflected-get",
+            "import builtins\n"
+            "lookup = getattr(vars(builtins), 'get')\n"
+            "RESULT = lookup('eval')('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "direct-getitem",
+            "import builtins\n"
+            "RESULT = vars(builtins).__getitem__('eval')('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "reflected-getitem",
+            "import builtins\n"
+            "lookup = getattr(vars(builtins), '__getitem__')\n"
+            "RESULT = lookup('eval')('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "aliased-getitem",
+            "import builtins\n"
+            "lookup = vars(builtins).__getitem__\n"
+            "RESULT = lookup('eval')('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "joined-getitem",
+            "import builtins\n"
+            "lookup = vars(builtins).__getitem__\n"
+            "if object():\n"
+            "    lookup = len\n"
+            "RESULT = lookup('eval')('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "reflected-dynamic-get",
+            "import builtins\n"
+            "name = 'eval'\n"
+            "lookup = getattr(vars(builtins), 'get')\n"
+            "RESULT = lookup(name)('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "pop",
+            "import builtins\n"
+            "RESULT = vars(builtins).pop('eval')('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "setdefault",
+            "import builtins\n"
+            "RESULT = vars(builtins).setdefault('len', len)\n",
+            "executable-code",
+        ),
+        (
+            "popitem",
+            "import builtins\nRESULT = vars(builtins).popitem()\n",
+            "executable-code",
+        ),
+        (
+            "values",
+            "import builtins\nRESULT = vars(builtins).values()\n",
+            "executable-code",
+        ),
+        (
+            "items",
+            "import builtins\nRESULT = vars(builtins).items()\n",
+            "executable-code",
+        ),
+        (
+            "copy",
+            "import builtins\n"
+            "RESULT = vars(builtins).copy()['eval']('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "dict-unpack",
+            "import builtins\n"
+            "mapping = {**vars(builtins)}\n"
+            "RESULT = mapping['eval']('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "union-left",
+            "import builtins\n"
+            "mapping = vars(builtins) | {}\n"
+            "RESULT = mapping['eval']('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "union-right",
+            "import builtins\n"
+            "mapping = {} | vars(builtins)\n"
+            "RESULT = mapping['eval']('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "dict-wrapper",
+            "import builtins\n"
+            "mapping = vars(builtins)\n"
+            "wrapper = {'mapping': mapping}\n"
+            "RESULT = wrapper['mapping']['eval']('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "tuple-alias",
+            "import builtins\n"
+            "mapping = vars(builtins)\n"
+            "alias = (mapping,)[0]\n"
+            "RESULT = alias['eval']('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "ior-alias",
+            "import builtins\n"
+            "mapping = {}\n"
+            "alias = mapping\n"
+            "mapping |= vars(builtins)\n"
+            "RESULT = alias['eval']('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "update-crossing",
+            "import builtins\n"
+            "mapping = {}\n"
+            "alias = mapping\n"
+            "mapping.update(vars(builtins))\n"
+            "RESULT = alias['eval']('1 + 1')\n",
+            "executable-code",
+        ),
+    ),
+)
+def test_builtins_origin_mapping_missing_families_fail_closed(
+    tmp_path: Path,
+    case_id: str,
+    source: str,
+    category: str,
+) -> None:
+    del case_id
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    with pytest.raises(
+        StudyRetentionError,
+        match=rf"source capability rejected: {category}",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("case_id", "source"),
+    (
+        (
+            "literal-getitem-len",
+            "import builtins\n"
+            "mapping = vars(builtins)\n"
+            "FIRST = mapping.__getitem__('len')((1, 2))\n"
+            "SECOND = getattr(mapping, '__getitem__')('len')((1, 2))\n",
+        ),
+        (
+            "copy-len",
+            "import builtins\n"
+            "SAFE = vars(builtins).copy()['len']((1, 2))\n",
+        ),
+        (
+            "generic-dict-selections",
+            "mapping = {'len': len}\n"
+            "FIRST = mapping['len']((1, 2))\n"
+            "SECOND = mapping.get('len')((1, 2))\n"
+            "THIRD = mapping.__getitem__('len')((1, 2))\n",
+        ),
+        (
+            "key-only-operations",
+            "import builtins\n"
+            "mapping = vars(builtins)\n"
+            "KEYS = mapping.keys()\n"
+            "PRESENT = 'len' in mapping\n"
+            "SIZE = len(mapping)\n"
+            "for KEY in mapping:\n"
+            "    break\n",
+        ),
+    ),
+)
+def test_builtins_origin_mapping_harmless_controls_remain_allowed(
+    tmp_path: Path,
+    case_id: str,
+    source: str,
+) -> None:
+    del case_id
+    compiled = _compiled_source(source)
+    _execute_source(compiled, {})
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + compiled)
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import builtins\n"
+        "import sys\n"
+        "carrier = vars(builtins).get('definitely_missing', sys)\n"
+        "REGISTRY = carrier.modules\n",
+        "import builtins\n"
+        "import sys\n"
+        "lookup = getattr(vars(builtins), 'get')\n"
+        "carrier = lookup('definitely_missing', sys)\n"
+        "REGISTRY = carrier.modules\n",
+    ),
+    ids=("direct", "reflected"),
+)
+def test_builtins_mapping_get_missing_literal_preserves_sensitive_default(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: import-registry",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("case_id", "source"),
+    (
+        (
+            "missing-harmless-default",
+            "import builtins\n"
+            "SAFE = vars(builtins).get('definitely_missing', len)((1, 2))\n",
+        ),
+        (
+            "existing-len-ignores-default",
+            "import builtins\n"
+            "import sys\n"
+            "SAFE = vars(builtins).get('len', sys)((1, 2))\n",
+        ),
+    ),
+)
+def test_builtins_mapping_get_literal_default_controls_remain_allowed(
+    tmp_path: Path,
+    case_id: str,
+    source: str,
+) -> None:
+    del case_id
+    compiled = _compiled_source(source)
+    namespace: dict[str, object] = {}
+    _execute_source(compiled, namespace)
+    assert namespace["SAFE"] == 2
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + compiled)
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("case_id", "source", "category"),
+    (
+        (
+            "direct-get-call-eval",
+            "import builtins\n"
+            "RESULT = vars(builtins).get.__call__('eval')('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "direct-getitem-call-eval",
+            "import builtins\n"
+            "RESULT = vars(builtins).__getitem__.__call__('eval')('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "reflected-get-call-eval",
+            "import builtins\n"
+            "lookup = getattr(vars(builtins), 'get').__call__\n"
+            "RESULT = lookup('eval')('1 + 1')\n",
+            "executable-code",
+        ),
+        (
+            "reflected-get-call-import",
+            "import builtins\n"
+            "lookup = getattr(vars(builtins), 'get').__call__\n"
+            "RESULT = lookup('__import__')('fractions')\n",
+            "dynamic-import",
+        ),
+        (
+            "reflected-get-call-globals",
+            "import builtins\n"
+            "lookup = getattr(vars(builtins), 'get').__call__\n"
+            "RESULT = lookup('globals')()\n",
+            "namespace-reflection",
+        ),
+        (
+            "arbitrary-method-reflection",
+            "import builtins\n"
+            "REFLECTED = vars(builtins).get.__func__\n",
+            "executable-code",
+        ),
+    ),
+)
+def test_builtins_mapping_method_carrier_reflection_fails_closed(
+    tmp_path: Path,
+    case_id: str,
+    source: str,
+    category: str,
+) -> None:
+    del case_id
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    with pytest.raises(
+        StudyRetentionError,
+        match=rf"source capability rejected: {category}",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "from manufacturing_vision_studio.not_real import marker\n",
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    from manufacturing_vision_studio.not_real import marker\n",
+    ),
+    ids=("eager", "type-checking"),
+)
+def test_named_import_from_nonexistent_project_module_fails_closed(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    with pytest.raises(StudyRetentionError, match="unresolved project import"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_raise_expression_evaluation_keeps_type_error_handler_reachable(
+    tmp_path: Path,
+) -> None:
+    trace_source = _compiled_source(
+        "trace = []\n"
+        "try:\n"
+        "    raise ValueError(*(item for item in 0))\n"
+        "except TypeError:\n"
+        "    trace.append('handled')\n"
+    )
+    trace_namespace: dict[str, object] = {}
+    _execute_source(trace_source, trace_namespace)
+    assert trace_namespace["trace"] == ["handled"]
+
+    source = _compiled_source(
+        "try:\n"
+        "    raise ValueError(*(item for item in 0))\n"
+        "except TypeError:\n"
+        "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match=r"forbidden direct import.*policy_v2",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("setup", "raise_statement"),
+    (
+        ("", "raise KeyError()\n"),
+        (
+            "class CustomError(Exception):\n"
+            "    pass\n",
+            "raise CustomError()\n",
+        ),
+        (
+            "class CustomError(Exception):\n"
+            "    pass\n"
+            "ValueError = CustomError\n",
+            "raise ValueError()\n",
+        ),
+        (
+            "class Errors:\n"
+            "    ValueError = ValueError\n",
+            "raise Errors.ValueError()\n",
+        ),
+    ),
+    ids=("unlisted", "custom", "shadowed", "attributed"),
+)
+def test_nonprovable_exception_relationship_keeps_handler_reachable(
+    tmp_path: Path,
+    setup: str,
+    raise_statement: str,
+) -> None:
+    indented_raise = textwrap.indent(raise_statement, "    ")
+    source = _compiled_source(
+        setup
+        + "try:\n"
+        + indented_raise
+        + "except TypeError:\n"
+        "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match=r"forbidden direct import.*policy_v2",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    ("for", "async-for", "eager-comprehension"),
+)
+def test_later_iterator_exception_receives_backedge_state(
+    tmp_path: Path,
+    case_id: str,
+) -> None:
+    if case_id == "async-for":
+        iterator_definition = (
+            "class LaterIterator:\n"
+            "    def __init__(self):\n"
+            "        self.step = 0\n"
+            "    def __aiter__(self):\n"
+            "        return self\n"
+            "    async def __anext__(self):\n"
+            "        if self.step:\n"
+            "            raise RuntimeError('later')\n"
+            "        self.step = 1\n"
+            "        return 0\n"
+        )
+        trace_source = _compiled_source(
+            "import asyncio\n"
+            + iterator_definition
+            + "async def observed():\n"
+            "    trace = []\n"
+            "    carrier = 'before'\n"
+            "    try:\n"
+            "        async for _ in LaterIterator():\n"
+            "            carrier = 'body'\n"
+            "            trace.append(carrier)\n"
+            "    except RuntimeError:\n"
+            "        trace.append(f'handled:{carrier}')\n"
+            "    return trace\n"
+            "trace = asyncio.run(observed())\n"
+        )
+        scanner_source = _compiled_source(
+            "import sys\n"
+            + iterator_definition
+            + "async def observed() -> None:\n"
+            "    carrier = sys.stdout\n"
+            "    try:\n"
+            "        async for _ in LaterIterator():\n"
+            "            carrier = sys\n"
+            "    except RuntimeError:\n"
+            "        REGISTRY = carrier.modules\n"
+        )
+        expected_trace = ["body", "handled:body"]
+    else:
+        iterator_definition = (
+            "class LaterIterator:\n"
+            "    def __init__(self):\n"
+            "        self.step = 0\n"
+            "    def __iter__(self):\n"
+            "        return self\n"
+            "    def __next__(self):\n"
+            "        if self.step:\n"
+            "            raise RuntimeError('later')\n"
+            "        self.step = 1\n"
+            "        return 0\n"
+        )
+        if case_id == "for":
+            trace_source = _compiled_source(
+                iterator_definition
+                + "trace = []\n"
+                "carrier = 'before'\n"
+                "try:\n"
+                "    for _ in LaterIterator():\n"
+                "        carrier = 'body'\n"
+                "        trace.append(carrier)\n"
+                "except RuntimeError:\n"
+                "    trace.append(f'handled:{carrier}')\n"
+            )
+            scanner_source = _compiled_source(
+                "import sys\n"
+                + iterator_definition
+                + "carrier = sys.stdout\n"
+                "try:\n"
+                "    for _ in LaterIterator():\n"
+                "        carrier = sys\n"
+                "except RuntimeError:\n"
+                "    REGISTRY = carrier.modules\n"
+            )
+            expected_trace = ["body", "handled:body"]
+        else:
+            trace_source = _compiled_source(
+                iterator_definition
+                + "trace = []\n"
+                "carrier = 'before'\n"
+                "try:\n"
+                "    RESULT = [(carrier := 'body') for _ in LaterIterator()]\n"
+                "except RuntimeError:\n"
+                "    trace.append(f'handled:{carrier}')\n"
+            )
+            scanner_source = _compiled_source(
+                "import sys\n"
+                + iterator_definition
+                + "carrier = sys.stdout\n"
+                "try:\n"
+                "    RESULT = [(carrier := sys) for _ in LaterIterator()]\n"
+                "except RuntimeError:\n"
+                "    REGISTRY = carrier.modules\n"
+            )
+            expected_trace = ["handled:body"]
+
+    trace_namespace: dict[str, object] = {}
+    _execute_source(trace_source, trace_namespace)
+    assert trace_namespace["trace"] == expected_trace
+
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + scanner_source)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: import-registry",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_non_normal_class_body_does_not_resurrect_normal_state(
+    tmp_path: Path,
+) -> None:
+    trace_source = _compiled_source(
+        "import sys\n"
+        "carrier = sys\n"
+        "try:\n"
+        "    class Broken:\n"
+        "        global carrier\n"
+        "        carrier = None\n"
+        "        raise ValueError('class body')\n"
+        "except ValueError:\n"
+        "    pass\n"
+        "trace = [carrier is None, 'Broken' in globals()]\n"
+    )
+    trace_namespace: dict[str, object] = {}
+    _execute_source(trace_source, trace_namespace)
+    assert trace_namespace["trace"] == [True, False]
+
+    source = _compiled_source(
+        "import sys\n"
+        "carrier = sys\n"
+        "try:\n"
+        "    class Broken:\n"
+        "        global carrier\n"
+        "        carrier = None\n"
+        "        raise ValueError('class body')\n"
+        "except ValueError:\n"
+        "    pass\n"
+        "REGISTRY = carrier.modules\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_raising_with_context_does_not_enter_body_or_resurrect_state(
+    tmp_path: Path,
+) -> None:
+    trace_source = _compiled_source(
+        "import sys\n"
+        "carrier = sys\n"
+        "trace = []\n"
+        "try:\n"
+        "    with missing:\n"
+        "        trace.append('body')\n"
+        "except NameError:\n"
+        "    carrier = carrier.stdout\n"
+        "missing = object()\n"
+        "trace.append(carrier is sys.stdout)\n"
+    )
+    trace_namespace: dict[str, object] = {}
+    _execute_source(trace_source, trace_namespace)
+    assert trace_namespace["trace"] == [True]
+
+    source = _compiled_source(
+        "import sys\n"
+        "carrier = sys\n"
+        "try:\n"
+        "    with missing:\n"
+        "        pass\n"
+        "except NameError:\n"
+        "    carrier = carrier.stdout\n"
+        "missing = object()\n"
+        "REGISTRY = carrier.modules\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_raising_async_with_context_does_not_enter_body_or_resurrect_state(
+    tmp_path: Path,
+) -> None:
+    trace_source = _compiled_source(
+        "import asyncio\n"
+        "import sys\n"
+        "async def observed():\n"
+        "    carrier = sys\n"
+        "    trace = []\n"
+        "    try:\n"
+        "        async with missing:\n"
+        "            trace.append('body')\n"
+        "    except NameError:\n"
+        "        carrier = carrier.stdout\n"
+        "    missing = object()\n"
+        "    trace.append(carrier is sys.stdout)\n"
+        "    return trace\n"
+        "trace = asyncio.run(observed())\n"
+    )
+    trace_namespace: dict[str, object] = {}
+    _execute_source(trace_source, trace_namespace)
+    assert trace_namespace["trace"] == [True]
+
+    source = _compiled_source(
+        "import sys\n"
+        "async def observed() -> None:\n"
+        "    carrier = sys\n"
+        "    try:\n"
+        "        async with missing:\n"
+        "            pass\n"
+        "    except NameError:\n"
+        "        carrier = carrier.stdout\n"
+        "    missing = object()\n"
+        "    REGISTRY = carrier.modules\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_non_normal_expression_sequence_does_not_resurrect_state(
+    tmp_path: Path,
+) -> None:
+    trace_source = _compiled_source(
+        "import sys\n"
+        "carrier = sys\n"
+        "try:\n"
+        "    VALUE = (missing, 0)\n"
+        "except NameError:\n"
+        "    carrier = carrier.stdout\n"
+        "missing = object()\n"
+        "trace = [carrier is sys.stdout]\n"
+    )
+    trace_namespace: dict[str, object] = {}
+    _execute_source(trace_source, trace_namespace)
+    assert trace_namespace["trace"] == [True]
+
+    source = _compiled_source(
+        "import sys\n"
+        "carrier = sys\n"
+        "try:\n"
+        "    VALUE = (missing, 0)\n"
+        "except NameError:\n"
+        "    carrier = carrier.stdout\n"
+        "missing = object()\n"
+        "REGISTRY = carrier.modules\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_unreachable_expression_suffix_remains_policy_inspected(
+    tmp_path: Path,
+) -> None:
+    source = _compiled_source(
+        "try:\n"
+        "    VALUE = (missing, eval('1 + 1'))\n"
+        "except NameError:\n"
+        "    pass\n"
+        "missing = object()\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: executable-code",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
 def _analyze_source(source: str) -> tuple[ast.Module, object]:
     tree = ast.parse(_compiled_source(source))
     analyzer = retention_module._SourceFlowAnalyzer(

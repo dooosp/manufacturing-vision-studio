@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import builtins as _python_builtins
 import os
 import pwd
 import re
@@ -1736,7 +1737,13 @@ _StatementTransfer = Callable[
 ]
 _PatternTransfer = Callable[
     ["_SourceFlowAnalyzer", ast.pattern, _AbsValue, _State, _TransferContext],
-    tuple[_State, _State | None, _PolicyFacts, _DeferredEffects, _State | None],
+    tuple[
+        _State | None,
+        _State | None,
+        _PolicyFacts,
+        _DeferredEffects,
+        _State | None,
+    ],
 ]
 
 
@@ -1783,7 +1790,13 @@ def _instrument_pattern_transfer(
         value: _AbsValue,
         state: _State,
         context: _TransferContext,
-    ) -> tuple[_State, _State | None, _PolicyFacts, _DeferredEffects, _State | None]:
+    ) -> tuple[
+        _State | None,
+        _State | None,
+        _PolicyFacts,
+        _DeferredEffects,
+        _State | None,
+    ]:
         point = analyzer._begin_transfer("pattern", pattern, state, context)
         result = method(analyzer, pattern, value, state, context)
         analyzer._finish_transfer(point, result)
@@ -2151,6 +2164,8 @@ class _SourceFlowAnalyzer:
         return _ScopeDeclarations(frozenset(names), frozenset(), frozenset())
 
     def _builtin_value(self, name: str) -> _AbsValue:
+        if name in {"__builtins__", "__dict__"}:
+            return self._builtins_mapping_value()
         identity = _ResolvedIdentity("builtin", "builtins", name)
         capabilities: tuple[_Capability, ...] = ()
         if name == "__import__":
@@ -2160,6 +2175,109 @@ class _SourceFlowAnalyzer:
         elif name in {"getattr", "vars", "globals", "locals"}:
             capabilities = ("namespace-reflection",)
         return _value_with_capabilities(*capabilities, identity=identity)
+
+    @staticmethod
+    def _has_builtins_origin(value: _AbsValue) -> bool:
+        return "builtins-namespace" in _flatten_facts(value).may_capabilities
+
+    @staticmethod
+    def _is_builtins_mapping(value: _AbsValue) -> bool:
+        return {
+            "builtins-namespace",
+            "namespace-mapping",
+        }.issubset(value.facts.may_capabilities)
+
+    @staticmethod
+    def _builtins_mapping_value() -> _AbsValue:
+        return _value_with_capabilities(
+            "builtins-namespace", "namespace-mapping"
+        )
+
+    @staticmethod
+    def _builtins_method_value(name: str, *, mapping: bool) -> _AbsValue:
+        capabilities: tuple[_Capability, ...] = (
+            ("builtins-namespace", "namespace-mapping")
+            if mapping
+            else ("builtins-namespace",)
+        )
+        owner = "namespace-mapping" if mapping else "namespace"
+        return _value_with_capabilities(
+            *capabilities,
+            identity=_ResolvedIdentity(
+                "literal", "builtins", f"{owner}.{name}"
+            ),
+        )
+
+    @staticmethod
+    def _builtins_method_name(value: _AbsValue) -> str | None:
+        identity = value.facts.identity.identity
+        if (
+            not value.facts.complete
+            or value.facts.identity.state != "exact"
+            or identity is None
+            or identity.kind != "literal"
+            or identity.owner != "builtins"
+        ):
+            return None
+        owner, separator, name = identity.name.partition(".")
+        if separator and owner in {"namespace", "namespace-mapping"}:
+            return name
+        return None
+
+    def _select_builtins_member(
+        self, node: ast.AST, name: str
+    ) -> tuple[_AbsValue, _PolicyFacts]:
+        value = self._builtin_value(name)
+        if name == "__import__":
+            return value, self._policy_error(
+                "dynamic-import", node, "runtime __import__ symbol access"
+            )
+        return value, _PolicyFacts()
+
+    def _builtins_attribute_value(
+        self, node: ast.AST, receiver: _AbsValue, attribute: str
+    ) -> tuple[_AbsValue | None, _PolicyFacts]:
+        if not self._has_builtins_origin(receiver):
+            return None, _PolicyFacts()
+        if self._builtins_method_name(receiver) is not None:
+            if attribute == "__call__":
+                return receiver, _PolicyFacts()
+            return _value_with_capabilities(
+                "executable-code", complete=False
+            ), self._policy_error(
+                "executable-code",
+                node,
+                "reflective builtins mapping method access",
+            )
+        if "builtins-namespace" not in receiver.facts.may_capabilities:
+            return _derived_value(receiver, complete=False), _PolicyFacts()
+        if attribute == "__dict__":
+            return self._builtins_mapping_value(), _PolicyFacts()
+        if self._is_builtins_mapping(receiver) and attribute in {
+            "get",
+            "__getitem__",
+            "copy",
+            "pop",
+            "setdefault",
+            "popitem",
+            "values",
+            "items",
+            "clear",
+            "update",
+            "keys",
+            "__iter__",
+            "__reversed__",
+            "__len__",
+            "__contains__",
+        }:
+            return self._builtins_method_value(
+                attribute, mapping=True
+            ), _PolicyFacts()
+        if attribute == "__getattribute__":
+            return self._builtins_method_value(
+                attribute, mapping=self._is_builtins_mapping(receiver)
+            ), _PolicyFacts()
+        return self._select_builtins_member(node, attribute)
 
     def _resolved_value(self, state: _State, name: str) -> tuple[_AbsValue, bool]:
         slot = state.resolve(name)
@@ -2213,7 +2331,7 @@ class _SourceFlowAnalyzer:
         result: _ExprResult
         | _FlowResult
         | tuple[
-            _State,
+            _State | None,
             _State | None,
             _PolicyFacts,
             _DeferredEffects,
@@ -2414,17 +2532,74 @@ class _SourceFlowAnalyzer:
             )
             sequence = self._transfer_expression_sequence(expressions, state, context)
             truth, outcomes = _literal_container_shape(node)
-            return self._sequence_as_container(
+            result = self._sequence_as_container(
                 sequence,
                 "dict",
                 truth=truth,
                 iteration_outcomes=outcomes,
             )
-        if isinstance(node, ast.BinOp):
-            result = self._transfer_generic_operands(
-                (node.left, node.right), state, context
+            values = sequence[0]
+            value_index = 0
+            builtins_unpack = False
+            for key in node.keys:
+                if key is None:
+                    builtins_unpack = builtins_unpack or self._has_builtins_origin(
+                        values[value_index]
+                    )
+                    value_index += 1
+                else:
+                    value_index += 2
+            post = result.post_state
+            if not builtins_unpack or post is None:
+                return result
+            mapping = replace(
+                self._builtins_mapping_value(),
+                truth=result.value.truth,
+                iteration_outcomes=result.value.iteration_outcomes,
+                may_iteration_raise=result.value.may_iteration_raise,
             )
-            return _result_with(result, raises=result.post_state)
+            return self._expr_from_parts(
+                mapping,
+                post,
+                result.truth,
+                raises=result.raises,
+                deferred=result.deferred,
+                facts=result.facts,
+            )
+        if isinstance(node, ast.BinOp):
+            values, post, raises, deferred, facts = (
+                self._transfer_expression_sequence(
+                    (node.left, node.right), state, context
+                )
+            )
+            if post is None:
+                return _ExprResult(None, None, raises, deferred, facts)
+            builtins_origin = any(
+                self._has_builtins_origin(value) for value in values
+            )
+            value = _UNKNOWN_VALUE
+            if isinstance(node.op, ast.BitOr) and builtins_origin:
+                value = self._builtins_mapping_value()
+            elif builtins_origin:
+                facts = _join_policy(
+                    facts,
+                    self._policy_error(
+                        "executable-code",
+                        node,
+                        "unsupported builtins-origin transform",
+                    ),
+                )
+                value = _value_with_capabilities(
+                    "executable-code", complete=False
+                )
+            return self._expr_from_parts(
+                value,
+                post,
+                _Truth.UNKNOWN,
+                raises=_join_states(raises, post),
+                deferred=deferred,
+                facts=facts,
+            )
         if isinstance(node, ast.Await):
             return self._transfer_expression(node.value, state, context)
         if isinstance(node, ast.Yield):
@@ -2506,32 +2681,52 @@ class _SourceFlowAnalyzer:
         nodes: Sequence[ast.expr],
         state: _State,
         context: _TransferContext,
-    ) -> tuple[tuple[_AbsValue, ...], _State, _State | None, _DeferredEffects, _PolicyFacts]:
+    ) -> tuple[
+        tuple[_AbsValue, ...],
+        _State | None,
+        _State | None,
+        _DeferredEffects,
+        _PolicyFacts,
+    ]:
         values: list[_AbsValue] = []
-        current = state
+        current: _State | None = state
+        unreachable_seed = state
         raises: _State | None = None
         deferred = _DeferredEffects()
         facts = _PolicyFacts()
-        active_context = context
         for node in nodes:
-            result = self._transfer_expression(node, current, active_context)
+            if current is None:
+                inspected = self._transfer_expression(
+                    node,
+                    unreachable_seed,
+                    _TransferContext("unreachable", False, False, False),
+                )
+                values.append(inspected.value)
+                deferred = _join_deferred(deferred, inspected.deferred)
+                facts = _join_policy(facts, inspected.facts)
+                continue
+            result = self._transfer_expression(node, current, context)
             values.append(result.value)
             raises = _join_states(raises, result.raises)
             deferred = _join_deferred(deferred, result.deferred)
             facts = _join_policy(facts, result.facts)
             post = result.post_state
             if post is None:
-                active_context = _TransferContext(
-                    "unreachable", False, False, False
-                )
+                unreachable_seed = result.raises or current
+                current = None
                 continue
             current = post
+            unreachable_seed = post
         return tuple(values), current, raises, deferred, facts
 
     def _sequence_as_container(
         self,
         sequence: tuple[
-            tuple[_AbsValue, ...], _State, _State | None, _DeferredEffects, _PolicyFacts
+            tuple[_AbsValue, ...],
+            _State | None,
+            _State | None,
+            _DeferredEffects,
+            _PolicyFacts,
         ],
         kind: str,
         *,
@@ -2539,6 +2734,8 @@ class _SourceFlowAnalyzer:
         iteration_outcomes: frozenset[_IterationOutcome],
     ) -> _ExprResult:
         values, state, raises, deferred, facts = sequence
+        if state is None:
+            return _ExprResult(None, None, raises, deferred, facts)
         value = _container_value(
             values,
             kind=kind,
@@ -2557,12 +2754,18 @@ class _SourceFlowAnalyzer:
     def _sequence_as_unknown(
         self,
         sequence: tuple[
-            tuple[_AbsValue, ...], _State, _State | None, _DeferredEffects, _PolicyFacts
+            tuple[_AbsValue, ...],
+            _State | None,
+            _State | None,
+            _DeferredEffects,
+            _PolicyFacts,
         ],
         *,
         complete: bool,
     ) -> _ExprResult:
         _, state, raises, deferred, facts = sequence
+        if state is None:
+            return _ExprResult(None, None, raises, deferred, facts)
         return self._expr_from_parts(
             _SAFE_VALUE if complete else _UNKNOWN_VALUE,
             state,
@@ -2645,6 +2848,13 @@ class _SourceFlowAnalyzer:
                 "type-checking-sentinel",
                 identity=_ResolvedIdentity("imported", "typing", "TYPE_CHECKING"),
             )
+        elif self._has_builtins_origin(receiver_value):
+            builtins_value, builtins_facts = self._builtins_attribute_value(
+                node, receiver_value, node.attr
+            )
+            if builtins_value is not None:
+                value = builtins_value
+            facts = _join_policy(facts, builtins_facts)
         elif "sys-module" in capabilities and node.attr == "stdout":
             value = _SAFE_VALUE
         elif node.attr == "modules":
@@ -2664,12 +2874,6 @@ class _SourceFlowAnalyzer:
                 ),
             )
             value = _value_with_capabilities("namespace-reflection", complete=False)
-        elif node.attr == "__dict__" and (
-            "builtins-namespace" in capabilities
-            or (isinstance(node.value, ast.Name)
-            and node.value.id == "__builtins__")
-        ):
-            value = _value_with_capabilities("namespace-mapping")
         elif "import-namespace" in capabilities and node.attr == "import_module":
             value = _value_with_capabilities(
                 "import-loader",
@@ -2707,21 +2911,32 @@ class _SourceFlowAnalyzer:
         values, post, raises, deferred, facts = self._transfer_expression_sequence(
             (node.value, node.slice), state, context
         )
+        if post is None:
+            return _ExprResult(None, None, raises, deferred, facts)
         container_value = values[0]
-        value = _element_value(container_value)
-        if self._string_constant(node.slice) == "__import__" and (
-            "namespace-mapping" in container_value.facts.may_capabilities
-            or "builtins-namespace" in container_value.facts.may_capabilities
-            or (isinstance(node.value, ast.Name)
-            and node.value.id == "__builtins__")
-        ):
+        element = _element_value(container_value)
+        contained = container_value.contained
+        value = _AbsValue(
+            facts=_join_value_facts(element.facts, contained),
+            iterable_element=element.iterable_element,
+            contained=_join_value_facts(
+                element.contained, _as_contained(contained)
+            ),
+        )
+        literal_key = self._string_constant(node.slice)
+        if self._is_builtins_mapping(container_value) and literal_key is not None:
+            value, selection_facts = self._select_builtins_member(
+                node, literal_key
+            )
+            facts = _join_policy(facts, selection_facts)
+        elif self._is_builtins_mapping(container_value):
             facts = _join_policy(
                 facts,
                 self._policy_error(
-                    "dynamic-import", node, "runtime __import__ symbol access"
+                    "executable-code", node, "ambiguous builtins namespace lookup"
                 ),
             )
-            value = _value_with_capabilities("import-loader")
+            value = _value_with_capabilities("executable-code", complete=False)
         return self._expr_from_parts(
             value,
             post,
@@ -2751,10 +2966,13 @@ class _SourceFlowAnalyzer:
             arguments, post, context
         )
         facts = _join_policy(function.facts, facts)
+        deferred = _join_deferred(function.deferred, deferred)
+        raises = _join_states(function.raises, raises)
+        if post is None:
+            return _ExprResult(None, None, raises, deferred, facts)
         exact_site = self._exact_call_site(node.func)
         facts = _join_policy(facts, self._pending_exact_use(exact_site))
-        deferred = _join_deferred(function.deferred, deferred)
-        raises = _join_states(function.raises, raises, post)
+        raises = _join_states(raises, post)
         function_value = function.value
         capabilities = function_value.facts.may_capabilities
         value = _UNKNOWN_VALUE
@@ -2767,15 +2985,87 @@ class _SourceFlowAnalyzer:
             and identity.kind == "builtin"
             else None
         )
-        if exact_builtin == "getattr":
+        builtins_method = self._builtins_method_name(function_value)
+        if builtins_method in {"get", "__getitem__", "__getattribute__"}:
+            valid_arity = (
+                bool(node.args)
+                and not node.keywords
+                and (
+                    len(node.args) <= 2
+                    if builtins_method == "get"
+                    else len(node.args) == 1
+                )
+            )
+            literal_key = (
+                self._string_constant(node.args[0])
+                if valid_arity
+                else None
+            )
+            if literal_key is None:
+                facts = _join_policy(
+                    facts,
+                    self._policy_error(
+                        "executable-code",
+                        node,
+                        "ambiguous builtins namespace lookup",
+                    ),
+                )
+                value = _value_with_capabilities(
+                    "executable-code", complete=False
+                )
+            elif (
+                builtins_method == "get"
+                and literal_key not in vars(_python_builtins)
+            ):
+                value = values[1] if len(values) == 2 else _literal_value(None)
+            else:
+                value, selection_facts = self._select_builtins_member(
+                    node, literal_key
+                )
+                facts = _join_policy(facts, selection_facts)
+        elif builtins_method == "copy" and not node.args and not node.keywords:
+            value = self._builtins_mapping_value()
+        elif builtins_method in {
+            "pop",
+            "setdefault",
+            "popitem",
+            "values",
+            "items",
+            "clear",
+            "update",
+        }:
+            facts = _join_policy(
+                facts,
+                self._policy_error(
+                    "executable-code",
+                    node,
+                    "builtins mapping value exposure or mutation",
+                ),
+            )
+            value = _value_with_capabilities(
+                "executable-code", complete=False
+            )
+        elif builtins_method in {
+            "keys",
+            "__iter__",
+            "__reversed__",
+            "__len__",
+            "__contains__",
+        }:
+            value = _SAFE_VALUE
+        elif exact_builtin == "getattr":
             value, call_facts = self._transfer_getattr_call(
                 node, values, context, exact_site
             )
             facts = _join_policy(facts, call_facts)
         elif exact_builtin in {"vars", "globals", "locals"}:
-            if (exact_builtin == "vars" and values and (
+            if exact_builtin == "vars" and values and (
                 "builtins-namespace" in values[0].facts.may_capabilities
-            )) or (
+            ):
+                value = _value_with_capabilities(
+                    "namespace-mapping", "builtins-namespace"
+                )
+            elif (
                 exact_builtin == "globals"
                 and exact_site is not None
                 and exact_site.role
@@ -2810,6 +3100,18 @@ class _SourceFlowAnalyzer:
                 ),
             )
             value = _value_with_capabilities("executable-code", complete=False)
+        elif self._has_builtins_origin(function_value):
+            facts = _join_policy(
+                facts,
+                self._policy_error(
+                    "executable-code",
+                    node,
+                    "ambiguous builtins-origin operation",
+                ),
+            )
+            value = _value_with_capabilities(
+                "executable-code", complete=False
+            )
         if "import-loader" in capabilities:
             legacy_detail: str | None = None
             if "dynamic-loader-module" in capabilities:
@@ -2874,6 +3176,7 @@ class _SourceFlowAnalyzer:
             crossing = _join_value_facts(crossing, _flatten_facts(argument))
         sensitive_crossing = crossing.may_capabilities.intersection(
             {
+                "builtins-namespace",
                 "import-loader",
                 "import-registry",
                 "namespace-reflection",
@@ -2884,11 +3187,13 @@ class _SourceFlowAnalyzer:
         )
         if (
             sensitive_crossing
-            and exact_builtin not in {"getattr", "vars"}
+            and exact_builtin not in {"getattr", "vars", "len"}
             and exact_site is None
         ):
             category: _PolicyCapability = "namespace-reflection"
-            if "import-loader" in sensitive_crossing:
+            if "builtins-namespace" in sensitive_crossing:
+                category = "executable-code"
+            elif "import-loader" in sensitive_crossing:
                 category = "dynamic-import"
             elif "import-registry" in sensitive_crossing:
                 category = "import-registry"
@@ -2947,6 +3252,12 @@ class _SourceFlowAnalyzer:
             return _UNKNOWN_VALUE, self._policy_error(
                 "namespace-reflection", node, f"sensitive attribute access: {attribute}"
             )
+        if self._has_builtins_origin(receiver):
+            value, facts = self._builtins_attribute_value(
+                node, receiver, attribute
+            )
+            if value is not None:
+                return value, facts
         if "import-namespace" in receiver.facts.may_capabilities and attribute == "import_module":
             return _value_with_capabilities(
                 "import-loader",
@@ -3227,6 +3538,8 @@ class _SourceFlowAnalyzer:
         values, post, raises, deferred, facts = self._transfer_expression_sequence(
             (node.left, *node.comparators), state, context
         )
+        if post is None:
+            return _ExprResult(None, None, raises, deferred, facts)
         truth = _Truth.UNKNOWN
         if len(values) == 2 and len(node.ops) == 1:
             left, right = values
@@ -3273,6 +3586,8 @@ class _SourceFlowAnalyzer:
         _, post, raises, deferred, facts = self._transfer_expression_sequence(
             defaults, state, context
         )
+        if post is None:
+            return _ExprResult(None, None, raises, deferred, facts)
         location = _source_location(self.source_module, node)
         body = _DeferredBody(
             "lambda", location, post.frames[-1].scope_id, post, node
@@ -3346,7 +3661,10 @@ class _SourceFlowAnalyzer:
             deferred = _join_deferred(deferred, step_deferred)
             facts = _join_policy(facts, step_facts)
             if iteration is not None:
-                exits.append(iteration.pop())
+                projected_iteration = iteration.pop()
+                exits.append(projected_iteration)
+                if outer.value.may_iteration_raise:
+                    raises = _join_states(raises, projected_iteration)
             values.extend(produced)
             if "many" in outer_outcomes and iteration is not None:
                 loop_point: _ProgramPoint = (
@@ -3379,6 +3697,8 @@ class _SourceFlowAnalyzer:
                     values.extend(next_values)
                     if next_state is None:
                         break
+                    if outer.value.may_iteration_raise:
+                        raises = _join_states(raises, next_state.pop())
                     header, changed = self._stats.merge_program_point(
                         loop_point, header, next_state
                     )
@@ -3681,11 +4001,18 @@ class _SourceFlowAnalyzer:
                     node, target, value_result.value
                 )
                 current, target_raises, target_deferred, target_facts = self._transfer_store_target(
-                    target, current, context
+                    target, current, context, stored_value=bound_value
                 )
                 raises = _join_states(raises, target_raises)
                 deferred = _join_deferred(deferred, target_deferred)
                 facts = _join_policy(facts, target_facts)
+                if current is None:
+                    return _FlowResult(
+                        None,
+                        raises=raises,
+                        deferred=deferred,
+                        facts=facts,
+                    )
                 current, effect, binding_facts = self._bind_target(
                     target,
                     bound_value,
@@ -3703,21 +4030,50 @@ class _SourceFlowAnalyzer:
                 else context
             )
             annotation = self._transfer_expression(node.annotation, state, annotation_context)
-            current = state if self._future_annotations else annotation.post_state or state
+            current = state if self._future_annotations else annotation.post_state
             raises = None if self._future_annotations else annotation.raises
             deferred = annotation.deferred
             facts = annotation.facts
             value = _SAFE_VALUE
+            if current is None:
+                if node.value is not None:
+                    inspected = self._transfer_expression(
+                        node.value,
+                        annotation.raises or state,
+                        _TransferContext("unreachable", False, False, False),
+                    )
+                    deferred = _join_deferred(deferred, inspected.deferred)
+                    facts = _join_policy(facts, inspected.facts)
+                return _FlowResult(
+                    None,
+                    raises=raises,
+                    deferred=deferred,
+                    facts=facts,
+                )
             if node.value is not None:
                 result = self._transfer_expression(node.value, current, context)
-                current = result.post_state or current
                 value = self._reviewed_literal_value(node, node.target, result.value)
                 raises = _join_states(raises, result.raises)
                 deferred = _join_deferred(deferred, result.deferred)
                 facts = _join_policy(facts, result.facts)
+                current = result.post_state
+                if current is None:
+                    return _FlowResult(
+                        None,
+                        raises=raises,
+                        deferred=deferred,
+                        facts=facts,
+                    )
             current, target_raises, target_deferred, target_facts = self._transfer_store_target(
-                node.target, current, context
+                node.target, current, context, stored_value=value
             )
+            if current is None:
+                return _FlowResult(
+                    None,
+                    raises=_join_states(raises, target_raises),
+                    deferred=_join_deferred(deferred, target_deferred),
+                    facts=_join_policy(facts, target_facts),
+                )
             current, effect, binding_facts = self._bind_target(
                 node.target, value, current, context, operation="assign"
             )
@@ -3729,11 +4085,38 @@ class _SourceFlowAnalyzer:
             )
         if isinstance(node, ast.AugAssign):
             target_result = self._transfer_expression(node.target, state, context)
-            current = target_result.post_state or state
+            current = target_result.post_state
+            if current is None:
+                return _FlowResult(
+                    None,
+                    raises=target_result.raises,
+                    deferred=target_result.deferred,
+                    facts=target_result.facts,
+                )
             value_result = self._transfer_expression(node.value, current, context)
-            current = value_result.post_state or current
+            current = value_result.post_state
+            if current is None:
+                return _FlowResult(
+                    None,
+                    raises=_join_states(target_result.raises, value_result.raises),
+                    deferred=_join_deferred(
+                        target_result.deferred, value_result.deferred
+                    ),
+                    facts=_join_policy(target_result.facts, value_result.facts),
+                )
             prior = target_result.value
             value = _join_values(prior, _UNKNOWN_VALUE)
+            mutation_facts = _PolicyFacts()
+            if isinstance(node.op, ast.BitOr) and (
+                self._has_builtins_origin(prior)
+                or self._has_builtins_origin(value_result.value)
+            ):
+                mutation_facts = self._policy_error(
+                    "executable-code",
+                    node,
+                    "heapless builtins-origin augmented mapping mutation",
+                )
+                value = self._builtins_mapping_value()
             current, effect, binding_facts = self._bind_target(
                 node.target, value, current, context, operation="augment"
             )
@@ -3744,7 +4127,10 @@ class _SourceFlowAnalyzer:
                     target_result.deferred, value_result.deferred, effect
                 ),
                 facts=_join_policy(
-                    target_result.facts, value_result.facts, binding_facts
+                    target_result.facts,
+                    value_result.facts,
+                    mutation_facts,
+                    binding_facts,
                 ),
             )
         if isinstance(node, ast.Delete):
@@ -3907,30 +4293,66 @@ class _SourceFlowAnalyzer:
         )
 
     def _transfer_store_target(
-        self, target: ast.expr, state: _State, context: _TransferContext
-    ) -> tuple[_State, _State | None, _DeferredEffects, _PolicyFacts]:
+        self,
+        target: ast.expr,
+        state: _State,
+        context: _TransferContext,
+        *,
+        stored_value: _AbsValue | None = None,
+    ) -> tuple[_State | None, _State | None, _DeferredEffects, _PolicyFacts]:
         if isinstance(target, ast.Attribute):
             result = self._transfer_expression(target.value, state, context)
+            facts = result.facts
+            if self._has_builtins_origin(result.value) or (
+                stored_value is not None
+                and self._has_builtins_origin(stored_value)
+            ):
+                facts = _join_policy(
+                    facts,
+                    self._policy_error(
+                        "executable-code",
+                        target,
+                        "heapless builtins-origin attribute mutation",
+                    ),
+                )
             return (
-                result.post_state or state,
+                result.post_state,
                 result.raises,
                 result.deferred,
-                result.facts,
+                facts,
             )
         if isinstance(target, ast.Subscript):
             values, post, raises, deferred, facts = self._transfer_expression_sequence(
                 (target.value, target.slice), state, context
             )
-            del values
+            if self._has_builtins_origin(values[0]) or (
+                stored_value is not None
+                and self._has_builtins_origin(stored_value)
+            ):
+                facts = _join_policy(
+                    facts,
+                    self._policy_error(
+                        "executable-code",
+                        target,
+                        "heapless builtins-origin subscript mutation",
+                    ),
+                )
             return post, raises, deferred, facts
         if isinstance(target, ast.Starred):
-            return self._transfer_store_target(target.value, state, context)
+            return self._transfer_store_target(
+                target.value,
+                state,
+                context,
+                stored_value=stored_value,
+            )
         if isinstance(target, (ast.Tuple, ast.List)):
-            current = state
+            current: _State | None = state
             tuple_raises: _State | None = None
             deferred = _DeferredEffects()
             facts = _PolicyFacts()
             for element in target.elts:
+                if current is None:
+                    break
                 (
                     current,
                     element_raises,
@@ -4001,6 +4423,8 @@ class _SourceFlowAnalyzer:
         return state, _DeferredEffects(), _PolicyFacts()
 
     def _import_value(self, module: str, imported_name: str | None = None) -> _AbsValue:
+        if module == "builtins" and imported_name is not None:
+            return self._builtin_value(imported_name)
         capabilities: list[_Capability] = []
         package: str | None = None
         identity: _ResolvedIdentity | None = _ResolvedIdentity(
@@ -4029,9 +4453,7 @@ class _SourceFlowAnalyzer:
             identity = _ResolvedIdentity("imported", module, imported_name)
             if module == "typing" and imported_name == "TYPE_CHECKING":
                 capabilities = ["type-checking-sentinel"]
-            elif (
-                module == "importlib" and imported_name == "import_module"
-            ) or (module == "builtins" and imported_name == "__import__"):
+            elif module == "importlib" and imported_name == "import_module":
                 capabilities = ["import-loader"]
             elif module == "runpy" and imported_name in {"run_module", "run_path"}:
                 capabilities = ["import-loader", "dynamic-loader-module"]
@@ -4116,6 +4538,16 @@ class _SourceFlowAnalyzer:
                     facts,
                     self._closure_error(node, "unresolved wildcard import source"),
                 )
+            return _FlowResult(current, facts=facts)
+        if (
+            not any(alias.name == "*" for alias in node.names)
+            and _is_package_target(base)
+            and base not in self.known_modules
+        ):
+            facts = _join_policy(
+                facts,
+                self._closure_error(node, f"unresolved project import: {base}"),
+            )
             return _FlowResult(current, facts=facts)
         for alias in node.names:
             if alias.name == "*":
@@ -4281,23 +4713,39 @@ class _SourceFlowAnalyzer:
             tuple(expressions), state, context
         )
         del values
+        inspection_state = current or raises or state
         annotation_context = (
             _TransferContext("postponed-annotation", False, False, False)
             if self._future_annotations
             else context
         )
         for annotation in annotations:
-            result = self._transfer_expression(annotation, current, annotation_context)
+            active_state = current or inspection_state
+            active_context = (
+                annotation_context
+                if current is not None
+                else _TransferContext("unreachable", False, False, False)
+            )
+            result = self._transfer_expression(
+                annotation, active_state, active_context
+            )
             facts = _join_policy(facts, result.facts)
             deferred = _join_deferred(deferred, result.deferred)
-            if not self._future_annotations:
-                current = result.post_state or current
+            if current is not None and not self._future_annotations:
                 raises = _join_states(raises, result.raises)
+                current = result.post_state
+                if current is None:
+                    inspection_state = result.raises or active_state
         for expression in self._type_parameter_expressions(node):
             result = self._transfer_expression(
                 expression,
-                current,
-                _TransferContext("lazy-annotation", False, False, False),
+                current or inspection_state,
+                _TransferContext(
+                    "lazy-annotation" if current is not None else "unreachable",
+                    False,
+                    False,
+                    False,
+                ),
             )
             facts = _join_policy(facts, result.facts)
             deferred = _join_deferred(deferred, result.deferred)
@@ -4305,6 +4753,27 @@ class _SourceFlowAnalyzer:
         kind: _DeferredKind = (
             "async-function" if isinstance(node, ast.AsyncFunctionDef) else "function"
         )
+        if current is None:
+            definition_state = (
+                inspection_state.pop()
+                if inspection_state.frames[-1].kind == "class"
+                else inspection_state
+            )
+            body = _DeferredBody(
+                kind,
+                location,
+                definition_state.frames[-1].scope_id,
+                definition_state,
+                node,
+            )
+            return _FlowResult(
+                None,
+                raises=raises,
+                deferred=_join_deferred(
+                    deferred, _DeferredEffects(bodies=(body,))
+                ),
+                facts=facts,
+            )
         function_value = _value_with_capabilities(
             identity=_ResolvedIdentity(
                 "function", self.source_module, node.name, location
@@ -4378,11 +4847,17 @@ class _SourceFlowAnalyzer:
             expressions, state, context
         )
         del values
+        inspection_state = current or raises or state
         for expression in self._type_parameter_expressions(node):
             result = self._transfer_expression(
                 expression,
-                current,
-                _TransferContext("lazy-annotation", False, False, False),
+                inspection_state,
+                _TransferContext(
+                    "lazy-annotation" if current is not None else "unreachable",
+                    False,
+                    False,
+                    False,
+                ),
             )
             facts = _join_policy(facts, result.facts)
             deferred = _join_deferred(deferred, result.deferred)
@@ -4394,12 +4869,31 @@ class _SourceFlowAnalyzer:
             global_names=declarations.global_names,
             nonlocal_names=declarations.nonlocal_names,
         )
+        if current is None:
+            inspected = self._transfer_statements(
+                node.body,
+                inspection_state.push(frame),
+                _TransferContext("unreachable", False, False, False),
+            )
+            return _FlowResult(
+                None,
+                raises=raises,
+                deferred=_join_deferred(deferred, inspected.deferred),
+                facts=_join_policy(facts, inspected.facts),
+            )
         class_flow = self._transfer_statements(node.body, current.push(frame), context)
         facts = _join_policy(facts, class_flow.facts)
         deferred = _join_deferred(deferred, class_flow.deferred)
         class_raises = None if class_flow.raises is None else class_flow.raises.pop()
         raises = _join_states(raises, class_raises)
-        outer = current if class_flow.normal is None else class_flow.normal.pop()
+        if class_flow.normal is None:
+            return _FlowResult(
+                None,
+                raises=raises,
+                deferred=deferred,
+                facts=facts,
+            )
+        outer = class_flow.normal.pop()
         class_value = _value_with_capabilities(
             identity=_ResolvedIdentity(
                 "class",
@@ -4766,6 +5260,8 @@ class _SourceFlowAnalyzer:
                 breaks = _join_states(breaks, body.breaks)
                 backedge = _join_states(body.normal, body.continues)
                 exhaustion = _join_states(exhaustion, backedge)
+                if may_iteration_raise:
+                    raises = _join_states(raises, backedge)
                 if "many" not in outcomes or backedge is None:
                     break
                 header, changed = self._stats.merge_program_point(
@@ -4888,6 +5384,9 @@ class _SourceFlowAnalyzer:
             facts = _join_policy(facts, pattern_facts)
             deferred = _join_deferred(deferred, pattern_deferred)
             raises = _join_states(raises, pattern_raises)
+            if matched is None:
+                remaining = None
+                continue
             if case.guard is not None:
                 guard = self._transfer_expression(case.guard, matched, context)
                 facts = _join_policy(facts, guard.facts)
@@ -4923,7 +5422,13 @@ class _SourceFlowAnalyzer:
         value: _AbsValue,
         state: _State,
         context: _TransferContext,
-    ) -> tuple[_State, _State | None, _PolicyFacts, _DeferredEffects, _State | None]:
+    ) -> tuple[
+        _State | None,
+        _State | None,
+        _PolicyFacts,
+        _DeferredEffects,
+        _State | None,
+    ]:
         expressions: list[ast.expr] = []
         always_matches = isinstance(pattern, (ast.MatchAs, ast.MatchStar)) and (
             not isinstance(pattern, ast.MatchAs) or pattern.pattern is None
@@ -4937,6 +5442,8 @@ class _SourceFlowAnalyzer:
         _, post, raises, deferred, facts = self._transfer_expression_sequence(
             tuple(expressions), state, context
         )
+        if post is None:
+            return None, None, facts, deferred, raises
         bound = post.bind_pattern(pattern, value)
         if always_matches:
             failed = None
@@ -4956,12 +5463,35 @@ class _SourceFlowAnalyzer:
         raises: _State | None = None
         deferred = _DeferredEffects()
         facts = _PolicyFacts()
-        for item in node.items:
+        for index, item in enumerate(node.items):
             result = self._transfer_expression(item.context_expr, current, context)
-            current = result.post_state or current
             raises = _join_states(raises, result.raises)
             deferred = _join_deferred(deferred, result.deferred)
             facts = _join_policy(facts, result.facts)
+            post = result.post_state
+            if post is None:
+                inspection_state = result.raises or current
+                unreachable = _TransferContext(
+                    "unreachable", False, False, False
+                )
+                for remaining in node.items[index + 1 :]:
+                    inspected = self._transfer_expression(
+                        remaining.context_expr, inspection_state, unreachable
+                    )
+                    deferred = _join_deferred(deferred, inspected.deferred)
+                    facts = _join_policy(facts, inspected.facts)
+                inspected_body = self._transfer_statements(
+                    node.body, inspection_state, unreachable
+                )
+                return _FlowResult(
+                    None,
+                    raises=raises,
+                    deferred=_join_deferred(
+                        deferred, inspected_body.deferred
+                    ),
+                    facts=_join_policy(facts, inspected_body.facts),
+                )
+            current = post
             if item.optional_vars is not None:
                 target_value = _derived_value(result.value, complete=False)
                 current, effect, binding_facts = self._bind_target(
@@ -5216,13 +5746,25 @@ class _SourceFlowAnalyzer:
                 if statement.exc is None:
                     return None
                 elif isinstance(statement.exc, ast.Call):
-                    name = _call_name(statement.exc.func)
-                    if name is None:
+                    if (
+                        not isinstance(statement.exc.func, ast.Name)
+                        or statement.exc.keywords
+                        or any(
+                            isinstance(argument, ast.Starred)
+                            or not cls._literal_expression_is_nonraising(argument)
+                            for argument in statement.exc.args
+                        )
+                    ):
                         return None
-                    names.add(name)
+                    names.add(statement.exc.func.id)
                 elif isinstance(statement.exc, ast.Name):
                     names.add(statement.exc.id)
                 else:
+                    return None
+                if (
+                    statement.cause is not None
+                    and not cls._literal_expression_is_nonraising(statement.cause)
+                ):
                     return None
                 continue
             if isinstance(
