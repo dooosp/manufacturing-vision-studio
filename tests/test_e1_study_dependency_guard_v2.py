@@ -3254,6 +3254,186 @@ def test_ordinary_handlers_do_not_receive_prior_handler_effects(
     scan_study_dependencies(protocol, repo_root=repo_root)
 
 
+@pytest.mark.parametrize(
+    "source",
+    (
+        "try:\n"
+        "    raise ValueError\n"
+        "except ValueError:\n"
+        "    pass\n"
+        "except ValueError:\n"
+        "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n",
+        "try:\n"
+        "    if False:\n"
+        "        raise ValueError\n"
+        "    raise TypeError\n"
+        "except Exception:\n"
+        "    pass\n"
+        "except (ValueError, TypeError):\n"
+        "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n",
+    ),
+    ids=("duplicate", "superclass"),
+)
+def test_ordinary_first_matching_handler_consumes_exact_builtin_exceptions(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    trace_source = _compiled_source(
+        source.replace(
+            "from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy",
+            "raise AssertionError('later handler must be dead')",
+        )
+    )
+    _execute_source(trace_source, {})
+
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + _compiled_source(source))
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_ordinary_handler_partition_preserves_unmatched_exact_exception(
+    tmp_path: Path,
+) -> None:
+    source = _compiled_source(
+        "trace = []\n"
+        "try:\n"
+        "    if False:\n"
+        "        raise ValueError\n"
+        "    raise TypeError\n"
+        "except ValueError:\n"
+        "    trace.append('value')\n"
+        "except TypeError:\n"
+        "    trace.append('type')\n"
+    )
+    namespace: dict[str, object] = {}
+    _execute_source(source, namespace)
+    assert namespace["trace"] == ["type"]
+
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\n"
+        + source.replace(
+            "trace.append('type')",
+            "from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy",
+        ),
+    )
+
+    with pytest.raises(StudyRetentionError, match=r"forbidden direct import.*policy_v2"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_ordinary_handler_type_effect_reaches_later_handler(tmp_path: Path) -> None:
+    source = _compiled_source(
+        "trace = []\n"
+        "guard = False\n"
+        "try:\n"
+        "    raise ValueError\n"
+        "except (guard := KeyError):\n"
+        "    trace.append('key')\n"
+        "except ValueError:\n"
+        "    trace.append(guard is KeyError)\n"
+    )
+    namespace: dict[str, object] = {}
+    _execute_source(source, namespace)
+    assert namespace["trace"] == [True]
+
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\n"
+        + source.replace(
+            "trace.append(guard is KeyError)",
+            "if guard:\n"
+            "        from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy",
+        ),
+    )
+
+    with pytest.raises(StudyRetentionError, match=r"forbidden direct import.*policy_v2"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_consumed_ordinary_exception_state_is_not_reintroduced_to_finally(
+    tmp_path: Path,
+) -> None:
+    source = _compiled_source(
+        "from typing import TYPE_CHECKING\n"
+        "guard = TYPE_CHECKING\n"
+        "try:\n"
+        "    guard = True\n"
+        "    raise ValueError\n"
+        "except ValueError:\n"
+        "    guard = False\n"
+        "finally:\n"
+        "    if guard:\n"
+        "        from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n"
+    )
+    namespace: dict[str, object] = {}
+    _execute_source(source, namespace)
+    assert namespace["guard"] is False
+
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("setup", "raise_statement", "later_handler"),
+    (
+        (
+            "class CustomError(Exception):\n"
+            "    pass\n",
+            "raise CustomError\n",
+            "CustomError",
+        ),
+        (
+            "class CustomError(Exception):\n"
+            "    pass\n"
+            "ValueError = CustomError\n",
+            "raise ValueError\n",
+            "ValueError",
+        ),
+        (
+            "class Errors:\n"
+            "    ValueError = ValueError\n",
+            "raise Errors.ValueError\n",
+            "Errors.ValueError",
+        ),
+        ("", "1 / 0\n", "ZeroDivisionError"),
+    ),
+    ids=("custom", "shadowed", "attributed", "uncertain"),
+)
+def test_nonprovable_first_handler_preserves_later_handler_reachability(
+    tmp_path: Path,
+    setup: str,
+    raise_statement: str,
+    later_handler: str,
+) -> None:
+    source = _compiled_source(
+        setup
+        + "try:\n"
+        + textwrap.indent(raise_statement, "    ")
+        + "except TypeError:\n"
+        "    pass\n"
+        f"except {later_handler}:\n"
+        "    from manufacturing_vision_studio.e1.policy_v2 import E1V2Policy\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(StudyRetentionError, match=r"forbidden direct import.*policy_v2"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
 @pytest.mark.parametrize("late_loader", ("globals", "len"))
 def test_generator_body_uses_iteration_time_suffix_bindings(
     tmp_path: Path,
@@ -3893,6 +4073,84 @@ def test_builtins_mapping_get_literal_default_controls_remain_allowed(
     _append(repo_root, RUNNER_PATH, "\n" + compiled)
 
     scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_builtins_mapping_get_starred_default_preserves_expanded_value(
+    tmp_path: Path,
+) -> None:
+    source = _compiled_source(
+        "import builtins\n"
+        "import sys\n"
+        "RESULT = vars(builtins).get('definitely_missing', *(sys,)).modules\n"
+    )
+    namespace: dict[str, object] = {}
+    _execute_source(source, namespace)
+    assert isinstance(namespace["RESULT"], dict)
+    assert "sys" in namespace["RESULT"]
+
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: import-registry",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    "call",
+    (
+        "vars(builtins).get(key='eval')",
+        "vars(builtins).get(*('eval',), **{})",
+    ),
+    ids=("keyword", "starred-and-double-starred"),
+)
+def test_builtins_mapping_helper_ambiguous_call_shapes_fail_closed(
+    tmp_path: Path,
+    call: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\n" + _compiled_source(f"import builtins\nRESULT = {call}\n"),
+    )
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: executable-code",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_call_operands_execute_once_in_python_args_then_keywords_order() -> None:
+    source = _compiled_source(
+        "import builtins\n"
+        "trace = []\n"
+        "def mark(label, value):\n"
+        "    trace.append(label)\n"
+        "    return value\n"
+        "try:\n"
+        "    vars(builtins).get(\n"
+        "        mark('key', 'missing'),\n"
+        "        *mark('star', (None,)),\n"
+        "        named=mark('keyword', None),\n"
+        "        **mark('double-starred', {}),\n"
+        "    )\n"
+        "except TypeError:\n"
+        "    pass\n"
+    )
+    namespace: dict[str, object] = {}
+    _execute_source(source, namespace)
+    assert namespace["trace"] == [
+        "key",
+        "star",
+        "keyword",
+        "double-starred",
+    ]
 
 
 @pytest.mark.parametrize(

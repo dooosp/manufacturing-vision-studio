@@ -2954,6 +2954,34 @@ class _SourceFlowAnalyzer:
             else None
         )
 
+    @staticmethod
+    def _expanded_fixed_call_arguments(
+        node: ast.Call,
+        values: tuple[_AbsValue, ...],
+    ) -> tuple[tuple[ast.expr, ...], tuple[_AbsValue, ...]] | None:
+        if node.keywords:
+            return None
+        expanded_nodes: list[ast.expr] = []
+        expanded_values: list[_AbsValue] = []
+        for argument, value in zip(
+            node.args, values[: len(node.args)], strict=True
+        ):
+            if not isinstance(argument, ast.Starred):
+                expanded_nodes.append(argument)
+                expanded_values.append(value)
+                continue
+            if not isinstance(argument.value, (ast.List, ast.Tuple)) or any(
+                isinstance(element, ast.Starred)
+                for element in argument.value.elts
+            ):
+                return None
+            element_value = _element_value(value)
+            expanded_nodes.extend(argument.value.elts)
+            expanded_values.extend(
+                element_value for _ in argument.value.elts
+            )
+        return tuple(expanded_nodes), tuple(expanded_values)
+
     def _transfer_call(
         self, node: ast.Call, state: _State, context: _TransferContext
     ) -> _ExprResult:
@@ -2987,17 +3015,22 @@ class _SourceFlowAnalyzer:
         )
         builtins_method = self._builtins_method_name(function_value)
         if builtins_method in {"get", "__getitem__", "__getattribute__"}:
+            expanded_arguments = self._expanded_fixed_call_arguments(
+                node, values
+            )
+            expanded_nodes = (
+                () if expanded_arguments is None else expanded_arguments[0]
+            )
             valid_arity = (
-                bool(node.args)
-                and not node.keywords
+                bool(expanded_nodes)
                 and (
-                    len(node.args) <= 2
+                    len(expanded_nodes) <= 2
                     if builtins_method == "get"
-                    else len(node.args) == 1
+                    else len(expanded_nodes) == 1
                 )
             )
             literal_key = (
-                self._string_constant(node.args[0])
+                self._string_constant(expanded_nodes[0])
                 if valid_arity
                 else None
             )
@@ -3017,7 +3050,12 @@ class _SourceFlowAnalyzer:
                 builtins_method == "get"
                 and literal_key not in vars(_python_builtins)
             ):
-                value = values[1] if len(values) == 2 else _literal_value(None)
+                assert expanded_arguments is not None
+                value = (
+                    expanded_arguments[1][1]
+                    if len(expanded_arguments[1]) == 2
+                    else _literal_value(None)
+                )
             else:
                 value, selection_facts = self._select_builtins_member(
                     node, literal_key
@@ -5525,13 +5563,24 @@ class _SourceFlowAnalyzer:
         handler_outputs: list[_FlowResult] = []
         handler_facts = _PolicyFacts()
         handler_deferred = _DeferredEffects()
+        handler_resolution_raises: _State | None = None
         known_raise_names = self._possible_raise_names(node.body)
         ordered_input = handler_input
+        ordered_raise_names = known_raise_names
         for handler in node.handlers:
-            can_match = isinstance(node, ast.TryStar) or self._handler_can_match(
-                handler, known_raise_names, ordered_input
-            )
-            if ordered_input is None or not can_match:
+            if ordered_input is None:
+                if isinstance(node, ast.Try) and handler.type is not None:
+                    inspected_type = self._transfer_expression(
+                        handler.type,
+                        state,
+                        _TransferContext("unreachable", False, False, False),
+                    )
+                    handler_facts = _join_policy(
+                        handler_facts, inspected_type.facts
+                    )
+                    handler_deferred = _join_deferred(
+                        handler_deferred, inspected_type.deferred
+                    )
                 inspected = self._transfer_statements(
                     handler.body,
                     state,
@@ -5548,10 +5597,64 @@ class _SourceFlowAnalyzer:
             type_raises: _State | None = None
             if handler.type is not None:
                 type_result = self._transfer_expression(handler.type, current, context)
-                current = type_result.post_state or current
+                type_post = type_result.post_state
                 type_facts = type_result.facts
                 type_deferred = type_result.deferred
                 type_raises = type_result.raises
+                if type_post is None and isinstance(node, ast.TryStar):
+                    current = ordered_input
+                elif type_post is None:
+                    handler_resolution_raises = _join_states(
+                        handler_resolution_raises, type_raises
+                    )
+                    handler_facts = _join_policy(handler_facts, type_facts)
+                    handler_deferred = _join_deferred(
+                        handler_deferred, type_deferred
+                    )
+                    inspected = self._transfer_statements(
+                        handler.body,
+                        type_raises or ordered_input,
+                        _TransferContext("unreachable", False, False, False),
+                    )
+                    handler_facts = _join_policy(
+                        handler_facts, inspected.facts
+                    )
+                    handler_deferred = _join_deferred(
+                        handler_deferred, inspected.deferred
+                    )
+                    ordered_input = None
+                    ordered_raise_names = frozenset()
+                    continue
+                else:
+                    current = type_post
+            can_match = True
+            remaining_raise_names = ordered_raise_names
+            if isinstance(node, ast.Try):
+                can_match, remaining_raise_names = (
+                    self._partition_handler_raise_names(
+                        handler, ordered_raise_names, current
+                    )
+                )
+            if not can_match:
+                handler_resolution_raises = _join_states(
+                    handler_resolution_raises, type_raises
+                )
+                handler_facts = _join_policy(handler_facts, type_facts)
+                handler_deferred = _join_deferred(
+                    handler_deferred, type_deferred
+                )
+                inspected = self._transfer_statements(
+                    handler.body,
+                    current,
+                    _TransferContext("unreachable", False, False, False),
+                )
+                handler_facts = _join_policy(handler_facts, inspected.facts)
+                handler_deferred = _join_deferred(
+                    handler_deferred, inspected.deferred
+                )
+                ordered_input = current
+                ordered_raise_names = remaining_raise_names
+                continue
             if handler.name is not None:
                 synthetic = ast.Name(
                     id=handler.name,
@@ -5594,6 +5697,11 @@ class _SourceFlowAnalyzer:
                 ordered_input = self._join_program_point(
                     handler_point, ordered_input, ordered_effect
                 )
+            else:
+                ordered_raise_names = remaining_raise_names
+                ordered_input = (
+                    None if remaining_raise_names == frozenset() else current
+                )
         else_result = (
             _FlowResult(body.normal)
             if not node.orelse or body.normal is None
@@ -5606,9 +5714,10 @@ class _SourceFlowAnalyzer:
             _join_states(body.continues, else_result.continues, handlers.continues),
             _join_states(body.returns, else_result.returns, handlers.returns),
             _join_states(
-                body.raises,
+                body.raises if isinstance(node, ast.TryStar) else ordered_input,
                 else_result.raises,
                 handlers.raises,
+                handler_resolution_raises,
             ),
             _join_deferred(
                 body.deferred,
@@ -5688,35 +5797,41 @@ class _SourceFlowAnalyzer:
             output = _join_flow(output, preserved, replacements)
         return output
 
-    def _handler_can_match(
+    def _partition_handler_raise_names(
         self,
         handler: ast.ExceptHandler,
         possible: frozenset[str] | None,
         state: _State | None,
-    ) -> bool:
-        if possible is None or handler.type is None or state is None:
-            return True
+    ) -> tuple[bool, frozenset[str] | None]:
+        if handler.type is None:
+            return True, frozenset()
+        if possible is None or state is None:
+            return True, possible
         candidates = (
             handler.type.elts if isinstance(handler.type, ast.Tuple) else (handler.type,)
         )
         caught_names: list[str] = []
         for candidate in candidates:
             if not isinstance(candidate, ast.Name):
-                return True
+                return True, possible
             if self._provable_builtin_exception_supertypes(
                 state, candidate.id
             ) is None:
-                return True
+                return True, possible
             caught_names.append(candidate.id)
+        remaining: set[str] = set()
+        matched = False
         for raised_name in possible:
             supertypes = self._provable_builtin_exception_supertypes(
                 state, raised_name
             )
             if supertypes is None:
-                return True
+                return True, possible
             if any(caught_name in supertypes for caught_name in caught_names):
-                return True
-        return False
+                matched = True
+            else:
+                remaining.add(raised_name)
+        return matched, frozenset(remaining)
 
     def _provable_builtin_exception_supertypes(
         self, state: _State, name: str
