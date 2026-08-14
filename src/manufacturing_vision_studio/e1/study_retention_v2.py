@@ -1003,6 +1003,31 @@ class _NormalExit:
     state: _State
 
 
+@dataclass(frozen=True, slots=True)
+class _ExceptionalExits:
+    exact: tuple[tuple[_ResolvedIdentity, _State], ...] = ()
+    unknown: _State | None = None
+
+    def __post_init__(self) -> None:
+        identities = tuple(identity for identity, _state in self.exact)
+        if identities != tuple(sorted(set(identities))):
+            raise ValueError("exceptional exit identities must be sorted and unique")
+        if any(
+            identity.kind != "builtin"
+            or identity.owner != "builtins"
+            or identity.name not in _PROVABLE_BUILTIN_EXCEPTION_SUPERTYPES
+            for identity in identities
+        ):
+            raise ValueError("exceptional exit identity is outside the finite universe")
+
+    @property
+    def joined_state(self) -> _State | None:
+        return _join_states(
+            *(state for _identity, state in self.exact),
+            self.unknown,
+        )
+
+
 @dataclass(frozen=True, slots=True, order=True)
 class _ExactCallSite:
     role: _ExactRole
@@ -1022,6 +1047,7 @@ class _PolicyFacts:
 
 _EMPTY_DEFERRED_EFFECTS = _DeferredEffects()
 _EMPTY_POLICY_FACTS = _PolicyFacts()
+_EMPTY_EXCEPTIONAL_EXITS = _ExceptionalExits()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1068,9 +1094,13 @@ class _FlowResult:
     breaks: _State | None = None
     continues: _State | None = None
     returns: _State | None = None
-    raises: _State | None = None
+    exceptions: _ExceptionalExits = _ExceptionalExits()
     deferred: _DeferredEffects = _DeferredEffects()
     facts: _PolicyFacts = _PolicyFacts()
+
+    @property
+    def raises(self) -> _State | None:
+        return self.exceptions.joined_state
 
 
 @dataclass(frozen=True, slots=True)
@@ -1313,6 +1343,48 @@ def _join_states(*states: _State | None) -> _State | None:
     return result
 
 
+def _unknown_exceptions(state: _State | None) -> _ExceptionalExits:
+    if state is None:
+        return _EMPTY_EXCEPTIONAL_EXITS
+    return _ExceptionalExits(unknown=state)
+
+
+def _join_exceptions(*exits: _ExceptionalExits) -> _ExceptionalExits:
+    exact: dict[_ResolvedIdentity, _State] = {}
+    for projection in exits:
+        for identity, state in projection.exact:
+            previous = exact.get(identity)
+            exact[identity] = _join_states(previous, state) or state
+    return _ExceptionalExits(
+        tuple(sorted(exact.items())),
+        _join_states(*(projection.unknown for projection in exits)),
+    )
+
+
+def _replace_exception_states(
+    exits: _ExceptionalExits, state: _State | None
+) -> _ExceptionalExits:
+    if state is None:
+        return _EMPTY_EXCEPTIONAL_EXITS
+    return _ExceptionalExits(
+        tuple((identity, state) for identity, _prior in exits.exact),
+        state if exits.unknown is not None else None,
+    )
+
+
+def _map_exception_states(
+    exits: _ExceptionalExits,
+    transform: Callable[[_State], _State | None],
+) -> _ExceptionalExits:
+    exact: list[tuple[_ResolvedIdentity, _State]] = []
+    for identity, state in exits.exact:
+        transformed = transform(state)
+        if transformed is not None:
+            exact.append((identity, transformed))
+    unknown = None if exits.unknown is None else transform(exits.unknown)
+    return _ExceptionalExits(tuple(exact), unknown)
+
+
 def _join_policy(*facts: _PolicyFacts) -> _PolicyFacts:
     pending: dict[tuple[_ExactRole, _SourceLocation], _ExactCallSite] = {}
     for item in facts:
@@ -1393,7 +1465,7 @@ def _join_flow(*results: _FlowResult) -> _FlowResult:
         breaks=_join_states(*(result.breaks for result in results)),
         continues=_join_states(*(result.continues for result in results)),
         returns=_join_states(*(result.returns for result in results)),
-        raises=_join_states(*(result.raises for result in results)),
+        exceptions=_join_exceptions(*(result.exceptions for result in results)),
         deferred=_join_deferred(*(result.deferred for result in results)),
         facts=_join_policy(*(result.facts for result in results)),
     )
@@ -3014,7 +3086,22 @@ class _SourceFlowAnalyzer:
             else None
         )
         builtins_method = self._builtins_method_name(function_value)
-        if builtins_method in {"get", "__getitem__", "__getattribute__"}:
+        if (
+            builtins_method == "__getattribute__"
+            and self._is_builtins_mapping(function_value)
+        ):
+            facts = _join_policy(
+                facts,
+                self._policy_error(
+                    "executable-code",
+                    node,
+                    "builtins mapping __getattribute__ lookup",
+                ),
+            )
+            value = _value_with_capabilities(
+                "executable-code", complete=False
+            )
+        elif builtins_method in {"get", "__getitem__", "__getattribute__"}:
             expanded_arguments = self._expanded_fixed_call_arguments(
                 node, values
             )
@@ -3954,7 +4041,7 @@ class _SourceFlowAnalyzer:
         breaks: _State | None = None
         continues: _State | None = None
         returns: _State | None = None
-        raises: _State | None = None
+        exceptions = _ExceptionalExits()
         deferred = _DeferredEffects()
         facts = _PolicyFacts()
         unreachable_seed = state
@@ -3999,7 +4086,7 @@ class _SourceFlowAnalyzer:
             breaks = _join_states(breaks, result.breaks)
             continues = _join_states(continues, result.continues)
             returns = _join_states(returns, result.returns)
-            raises = _join_states(raises, result.raises)
+            exceptions = _join_exceptions(exceptions, result.exceptions)
             deferred = _join_deferred(deferred, result.deferred)
             facts = _join_policy(facts, result.facts)
             unreachable_seed = current
@@ -4011,7 +4098,7 @@ class _SourceFlowAnalyzer:
         self._record_cfg_edge(terminal_point, parent_point)
         self._record_suffix_edge(terminal_point, parent_point)
         return _FlowResult(
-            current, breaks, continues, returns, raises, deferred, facts
+            current, breaks, continues, returns, exceptions, deferred, facts
         )
 
     @_instrument_statement_transfer
@@ -4022,7 +4109,7 @@ class _SourceFlowAnalyzer:
             result = self._transfer_expression(node.value, state, context)
             return _FlowResult(
                 result.post_state,
-                raises=result.raises,
+                exceptions=_unknown_exceptions(result.raises),
                 deferred=result.deferred,
                 facts=result.facts,
             )
@@ -4033,7 +4120,12 @@ class _SourceFlowAnalyzer:
             facts = value_result.facts
             raises = value_result.raises
             if current is None:
-                return _FlowResult(None, raises=raises, deferred=deferred, facts=facts)
+                return _FlowResult(
+                    None,
+                    exceptions=_unknown_exceptions(raises),
+                    deferred=deferred,
+                    facts=facts,
+                )
             for target in node.targets:
                 bound_value = self._reviewed_literal_value(
                     node, target, value_result.value
@@ -4047,7 +4139,7 @@ class _SourceFlowAnalyzer:
                 if current is None:
                     return _FlowResult(
                         None,
-                        raises=raises,
+                        exceptions=_unknown_exceptions(raises),
                         deferred=deferred,
                         facts=facts,
                     )
@@ -4060,7 +4152,12 @@ class _SourceFlowAnalyzer:
                 )
                 deferred = _join_deferred(deferred, effect)
                 facts = _join_policy(facts, binding_facts)
-            return _FlowResult(current, raises=raises, deferred=deferred, facts=facts)
+            return _FlowResult(
+                current,
+                exceptions=_unknown_exceptions(raises),
+                deferred=deferred,
+                facts=facts,
+            )
         if isinstance(node, ast.AnnAssign):
             annotation_context = (
                 _TransferContext("postponed-annotation", False, False, False)
@@ -4084,7 +4181,7 @@ class _SourceFlowAnalyzer:
                     facts = _join_policy(facts, inspected.facts)
                 return _FlowResult(
                     None,
-                    raises=raises,
+                    exceptions=_unknown_exceptions(raises),
                     deferred=deferred,
                     facts=facts,
                 )
@@ -4098,7 +4195,7 @@ class _SourceFlowAnalyzer:
                 if current is None:
                     return _FlowResult(
                         None,
-                        raises=raises,
+                        exceptions=_unknown_exceptions(raises),
                         deferred=deferred,
                         facts=facts,
                     )
@@ -4108,7 +4205,9 @@ class _SourceFlowAnalyzer:
             if current is None:
                 return _FlowResult(
                     None,
-                    raises=_join_states(raises, target_raises),
+                    exceptions=_unknown_exceptions(
+                        _join_states(raises, target_raises)
+                    ),
                     deferred=_join_deferred(deferred, target_deferred),
                     facts=_join_policy(facts, target_facts),
                 )
@@ -4117,7 +4216,9 @@ class _SourceFlowAnalyzer:
             )
             return _FlowResult(
                 current,
-                raises=_join_states(raises, target_raises),
+                exceptions=_unknown_exceptions(
+                    _join_states(raises, target_raises)
+                ),
                 deferred=_join_deferred(deferred, target_deferred, effect),
                 facts=_join_policy(facts, target_facts, binding_facts),
             )
@@ -4127,7 +4228,7 @@ class _SourceFlowAnalyzer:
             if current is None:
                 return _FlowResult(
                     None,
-                    raises=target_result.raises,
+                    exceptions=_unknown_exceptions(target_result.raises),
                     deferred=target_result.deferred,
                     facts=target_result.facts,
                 )
@@ -4136,7 +4237,9 @@ class _SourceFlowAnalyzer:
             if current is None:
                 return _FlowResult(
                     None,
-                    raises=_join_states(target_result.raises, value_result.raises),
+                    exceptions=_unknown_exceptions(
+                        _join_states(target_result.raises, value_result.raises)
+                    ),
                     deferred=_join_deferred(
                         target_result.deferred, value_result.deferred
                     ),
@@ -4160,7 +4263,9 @@ class _SourceFlowAnalyzer:
             )
             return _FlowResult(
                 current,
-                raises=_join_states(target_result.raises, value_result.raises),
+                exceptions=_unknown_exceptions(
+                    _join_states(target_result.raises, value_result.raises)
+                ),
                 deferred=_join_deferred(
                     target_result.deferred, value_result.deferred, effect
                 ),
@@ -4188,7 +4293,10 @@ class _SourceFlowAnalyzer:
                 deferred = _join_deferred(deferred, effect)
                 facts = _join_policy(facts, delete_facts)
             return _FlowResult(
-                current, raises=delete_raises, deferred=deferred, facts=facts
+                current,
+                exceptions=_unknown_exceptions(delete_raises),
+                deferred=deferred,
+                facts=facts,
             )
         if isinstance(node, ast.Import):
             return self._transfer_import(node, state, context)
@@ -4201,7 +4309,7 @@ class _SourceFlowAnalyzer:
             return _FlowResult(
                 None,
                 returns=result.post_state,
-                raises=result.raises,
+                exceptions=_unknown_exceptions(result.raises),
                 deferred=result.deferred,
                 facts=result.facts,
             )
@@ -4212,10 +4320,33 @@ class _SourceFlowAnalyzer:
             values, post, raises, deferred, facts = self._transfer_expression_sequence(
                 expressions, state, context
             )
-            del values
+            exceptions = _unknown_exceptions(raises)
+            if node.exc is None:
+                exceptions = _join_exceptions(
+                    exceptions, _unknown_exceptions(post)
+                )
+            elif post is not None:
+                identity = values[0].facts.identity.identity
+                if (
+                    values[0].facts.complete
+                    and values[0].facts.identity.state == "exact"
+                    and identity is not None
+                    and identity.kind == "builtin"
+                    and identity.owner == "builtins"
+                    and identity.name
+                    in _PROVABLE_BUILTIN_EXCEPTION_SUPERTYPES
+                ):
+                    exceptions = _join_exceptions(
+                        exceptions,
+                        _ExceptionalExits(((identity, post),)),
+                    )
+                else:
+                    exceptions = _join_exceptions(
+                        exceptions, _unknown_exceptions(post)
+                    )
             return _FlowResult(
                 None,
-                raises=_join_states(raises, post),
+                exceptions=exceptions,
                 deferred=deferred,
                 facts=facts,
             )
@@ -4247,15 +4378,23 @@ class _SourceFlowAnalyzer:
                 message = self._transfer_expression(node.msg, result.falsy.state, context)
                 return _FlowResult(
                     None if result.truthy is None else result.truthy.state,
-                    raises=_join_states(result.raises, result.falsy.state, message.raises),
+                    exceptions=_unknown_exceptions(
+                        _join_states(
+                            result.raises,
+                            result.falsy.state,
+                            message.raises,
+                        )
+                    ),
                     deferred=_join_deferred(result.deferred, message.deferred),
                     facts=_join_policy(result.facts, message.facts),
                 )
             return _FlowResult(
                 None if result.truthy is None else result.truthy.state,
-                raises=_join_states(
-                    result.raises,
-                    None if result.falsy is None else result.falsy.state,
+                exceptions=_unknown_exceptions(
+                    _join_states(
+                        result.raises,
+                        None if result.falsy is None else result.falsy.state,
+                    )
                 ),
                 deferred=result.deferred,
                 facts=result.facts,
@@ -4682,7 +4821,10 @@ class _SourceFlowAnalyzer:
                 normal.breaks,
                 normal.continues,
                 normal.returns,
-                _join_states(condition.raises, normal.raises),
+                _join_exceptions(
+                    _unknown_exceptions(condition.raises),
+                    normal.exceptions,
+                ),
                 _join_deferred(condition.deferred, inspected.deferred, normal.deferred),
                 _join_policy(condition.facts, inspected.facts, normal.facts),
             )
@@ -4709,7 +4851,7 @@ class _SourceFlowAnalyzer:
             _join_states(*(branch.breaks for branch in branches)),
             _join_states(*(branch.continues for branch in branches)),
             _join_states(*(branch.returns for branch in branches)),
-            _join_states(*(branch.raises for branch in branches)),
+            _join_exceptions(*(branch.exceptions for branch in branches)),
             _join_deferred(*(branch.deferred for branch in branches)),
             _join_policy(*(branch.facts for branch in branches)),
         )
@@ -4718,7 +4860,10 @@ class _SourceFlowAnalyzer:
             joined.breaks,
             joined.continues,
             joined.returns,
-            _join_states(condition.raises, joined.raises),
+            _join_exceptions(
+                _unknown_exceptions(condition.raises),
+                joined.exceptions,
+            ),
             _join_deferred(condition.deferred, joined.deferred),
             _join_policy(condition.facts, joined.facts),
         )
@@ -4806,7 +4951,7 @@ class _SourceFlowAnalyzer:
             )
             return _FlowResult(
                 None,
-                raises=raises,
+                exceptions=_unknown_exceptions(raises),
                 deferred=_join_deferred(
                     deferred, _DeferredEffects(bodies=(body,))
                 ),
@@ -4838,7 +4983,7 @@ class _SourceFlowAnalyzer:
         deferred = _join_deferred(deferred, _DeferredEffects(bodies=(body,)))
         return _FlowResult(
             current,
-            raises=raises,
+            exceptions=_unknown_exceptions(raises),
             deferred=_join_deferred(deferred, effect),
             facts=_join_policy(facts, binding_facts),
         )
@@ -4915,19 +5060,23 @@ class _SourceFlowAnalyzer:
             )
             return _FlowResult(
                 None,
-                raises=raises,
+                exceptions=_unknown_exceptions(raises),
                 deferred=_join_deferred(deferred, inspected.deferred),
                 facts=_join_policy(facts, inspected.facts),
             )
         class_flow = self._transfer_statements(node.body, current.push(frame), context)
         facts = _join_policy(facts, class_flow.facts)
         deferred = _join_deferred(deferred, class_flow.deferred)
-        class_raises = None if class_flow.raises is None else class_flow.raises.pop()
-        raises = _join_states(raises, class_raises)
+        class_exceptions = _map_exception_states(
+            class_flow.exceptions, lambda exception_state: exception_state.pop()
+        )
+        exceptions = _join_exceptions(
+            _unknown_exceptions(raises), class_exceptions
+        )
         if class_flow.normal is None:
             return _FlowResult(
                 None,
-                raises=raises,
+                exceptions=exceptions,
                 deferred=deferred,
                 facts=facts,
             )
@@ -4952,7 +5101,7 @@ class _SourceFlowAnalyzer:
         )
         return _FlowResult(
             outer,
-            raises=raises,
+            exceptions=exceptions,
             deferred=_join_deferred(deferred, effect),
             facts=_join_policy(facts, binding_facts),
         )
@@ -5156,7 +5305,7 @@ class _SourceFlowAnalyzer:
                 del values, may_skip
                 body_flow = _FlowResult(
                     iteration,
-                    raises=raises,
+                    exceptions=_unknown_exceptions(raises),
                     deferred=body_deferred,
                     facts=body_facts,
                 )
@@ -5205,7 +5354,7 @@ class _SourceFlowAnalyzer:
                     )
                     body_flow = _FlowResult(
                         result.post_state,
-                        raises=result.raises,
+                        exceptions=_unknown_exceptions(result.raises),
                         deferred=result.deferred,
                         facts=result.facts,
                     )
@@ -5253,7 +5402,7 @@ class _SourceFlowAnalyzer:
         if post is None:
             return _FlowResult(
                 None,
-                raises=iterable.raises,
+                exceptions=_unknown_exceptions(iterable.raises),
                 deferred=iterable.deferred,
                 facts=iterable.facts,
             )
@@ -5265,9 +5414,11 @@ class _SourceFlowAnalyzer:
         exhaustion: _State | None = post if "zero" in outcomes else None
         breaks: _State | None = None
         returns: _State | None = None
-        raises = _join_states(
-            iterable.raises,
-            post if may_iteration_raise else None,
+        exceptions = _unknown_exceptions(
+            _join_states(
+                iterable.raises,
+                post if may_iteration_raise else None,
+            )
         )
         deferred = iterable.deferred
         facts = iterable.facts
@@ -5293,13 +5444,15 @@ class _SourceFlowAnalyzer:
                 body = self._transfer_statements(node.body, bound, context)
                 deferred = _join_deferred(deferred, effect, body.deferred)
                 facts = _join_policy(facts, binding_facts, body.facts)
-                raises = _join_states(raises, body.raises)
+                exceptions = _join_exceptions(exceptions, body.exceptions)
                 returns = _join_states(returns, body.returns)
                 breaks = _join_states(breaks, body.breaks)
                 backedge = _join_states(body.normal, body.continues)
                 exhaustion = _join_states(exhaustion, backedge)
                 if may_iteration_raise:
-                    raises = _join_states(raises, backedge)
+                    exceptions = _join_exceptions(
+                        exceptions, _unknown_exceptions(backedge)
+                    )
                 if "many" not in outcomes or backedge is None:
                     break
                 header, changed = self._stats.merge_program_point(
@@ -5325,7 +5478,9 @@ class _SourceFlowAnalyzer:
         return _FlowResult(
             normal,
             returns=_join_states(returns, else_result.returns),
-            raises=_join_states(raises, else_result.raises),
+            exceptions=_join_exceptions(
+                exceptions, else_result.exceptions
+            ),
             deferred=_join_deferred(deferred, else_result.deferred),
             facts=_join_policy(facts, else_result.facts),
         )
@@ -5337,7 +5492,7 @@ class _SourceFlowAnalyzer:
         exhaustion: _State | None = None
         breaks: _State | None = None
         returns: _State | None = None
-        raises: _State | None = None
+        exceptions = _ExceptionalExits()
         deferred = _DeferredEffects()
         facts = _PolicyFacts()
         loop_point: _ProgramPoint = (
@@ -5349,7 +5504,9 @@ class _SourceFlowAnalyzer:
         while True:
             self._stats.worklist_pops += 1
             condition = self._transfer_expression(node.test, header, context)
-            raises = _join_states(raises, condition.raises)
+            exceptions = _join_exceptions(
+                exceptions, _unknown_exceptions(condition.raises)
+            )
             deferred = _join_deferred(deferred, condition.deferred)
             facts = _join_policy(facts, condition.facts)
             exhaustion = _join_states(
@@ -5361,7 +5518,7 @@ class _SourceFlowAnalyzer:
             body = self._transfer_statements(node.body, condition.truthy.state, context)
             breaks = _join_states(breaks, body.breaks)
             returns = _join_states(returns, body.returns)
-            raises = _join_states(raises, body.raises)
+            exceptions = _join_exceptions(exceptions, body.exceptions)
             deferred = _join_deferred(deferred, body.deferred)
             facts = _join_policy(facts, body.facts)
             backedge = _join_states(body.normal, body.continues)
@@ -5388,7 +5545,9 @@ class _SourceFlowAnalyzer:
         return _FlowResult(
             _join_states(breaks, else_result.normal),
             returns=_join_states(returns, else_result.returns),
-            raises=_join_states(raises, else_result.raises),
+            exceptions=_join_exceptions(
+                exceptions, else_result.exceptions
+            ),
             deferred=_join_deferred(deferred, else_result.deferred),
             facts=_join_policy(facts, else_result.facts),
         )
@@ -5401,7 +5560,7 @@ class _SourceFlowAnalyzer:
         outputs: list[_FlowResult] = []
         facts = subject.facts
         deferred = subject.deferred
-        raises = subject.raises
+        exceptions = _unknown_exceptions(subject.raises)
         for case in node.cases:
             if remaining is None:
                 inspected = self._transfer_statements(
@@ -5421,7 +5580,9 @@ class _SourceFlowAnalyzer:
             ) = self._transfer_pattern(case.pattern, subject.value, remaining, context)
             facts = _join_policy(facts, pattern_facts)
             deferred = _join_deferred(deferred, pattern_deferred)
-            raises = _join_states(raises, pattern_raises)
+            exceptions = _join_exceptions(
+                exceptions, _unknown_exceptions(pattern_raises)
+            )
             if matched is None:
                 remaining = None
                 continue
@@ -5429,7 +5590,9 @@ class _SourceFlowAnalyzer:
                 guard = self._transfer_expression(case.guard, matched, context)
                 facts = _join_policy(facts, guard.facts)
                 deferred = _join_deferred(deferred, guard.deferred)
-                raises = _join_states(raises, guard.raises)
+                exceptions = _join_exceptions(
+                    exceptions, _unknown_exceptions(guard.raises)
+                )
                 remaining = _join_states(
                     no_match,
                     None if guard.falsy is None else guard.falsy.state,
@@ -5448,7 +5611,7 @@ class _SourceFlowAnalyzer:
             joined.breaks,
             joined.continues,
             joined.returns,
-            _join_states(raises, joined.raises),
+            _join_exceptions(exceptions, joined.exceptions),
             _join_deferred(deferred, joined.deferred),
             _join_policy(facts, joined.facts),
         )
@@ -5498,12 +5661,14 @@ class _SourceFlowAnalyzer:
         context: _TransferContext,
     ) -> _FlowResult:
         current = state
-        raises: _State | None = None
+        exceptions = _ExceptionalExits()
         deferred = _DeferredEffects()
         facts = _PolicyFacts()
         for index, item in enumerate(node.items):
             result = self._transfer_expression(item.context_expr, current, context)
-            raises = _join_states(raises, result.raises)
+            exceptions = _join_exceptions(
+                exceptions, _unknown_exceptions(result.raises)
+            )
             deferred = _join_deferred(deferred, result.deferred)
             facts = _join_policy(facts, result.facts)
             post = result.post_state
@@ -5523,7 +5688,7 @@ class _SourceFlowAnalyzer:
                 )
                 return _FlowResult(
                     None,
-                    raises=raises,
+                    exceptions=exceptions,
                     deferred=_join_deferred(
                         deferred, inspected_body.deferred
                     ),
@@ -5547,7 +5712,7 @@ class _SourceFlowAnalyzer:
             body.breaks,
             body.continues,
             body.returns,
-            _join_states(raises, body.raises),
+            _join_exceptions(exceptions, body.exceptions),
             _join_deferred(deferred, body.deferred),
             _join_policy(facts, body.facts),
         )
@@ -5558,18 +5723,26 @@ class _SourceFlowAnalyzer:
         state: _State,
         context: _TransferContext,
     ) -> _FlowResult:
+        if isinstance(node, ast.TryStar):
+            return self._transfer_try_star(node, state, context)
+        return self._transfer_ordinary_try(node, state, context)
+
+    def _transfer_ordinary_try(
+        self,
+        node: ast.Try,
+        state: _State,
+        context: _TransferContext,
+    ) -> _FlowResult:
         body = self._transfer_statements(node.body, state, context)
-        handler_input = body.raises
+        residual = body.exceptions
         handler_outputs: list[_FlowResult] = []
         handler_facts = _PolicyFacts()
         handler_deferred = _DeferredEffects()
-        handler_resolution_raises: _State | None = None
-        known_raise_names = self._possible_raise_names(node.body)
-        ordered_input = handler_input
-        ordered_raise_names = known_raise_names
+        handler_resolution_exceptions = _ExceptionalExits()
         for handler in node.handlers:
-            if ordered_input is None:
-                if isinstance(node, ast.Try) and handler.type is not None:
+            handler_input = residual.joined_state
+            if handler_input is None:
+                if handler.type is not None:
                     inspected_type = self._transfer_expression(
                         handler.type,
                         state,
@@ -5591,29 +5764,30 @@ class _SourceFlowAnalyzer:
                     handler_deferred, inspected.deferred
                 )
                 continue
-            current = ordered_input
+            current = handler_input
             type_facts = _PolicyFacts()
             type_deferred = _DeferredEffects()
-            type_raises: _State | None = None
+            target_facts = _PolicyFacts()
+            target_deferred = _DeferredEffects()
+            matched = residual
+            unmatched = _ExceptionalExits()
             if handler.type is not None:
                 type_result = self._transfer_expression(handler.type, current, context)
                 type_post = type_result.post_state
                 type_facts = type_result.facts
                 type_deferred = type_result.deferred
-                type_raises = type_result.raises
-                if type_post is None and isinstance(node, ast.TryStar):
-                    current = ordered_input
-                elif type_post is None:
-                    handler_resolution_raises = _join_states(
-                        handler_resolution_raises, type_raises
-                    )
-                    handler_facts = _join_policy(handler_facts, type_facts)
-                    handler_deferred = _join_deferred(
-                        handler_deferred, type_deferred
-                    )
+                handler_resolution_exceptions = _join_exceptions(
+                    handler_resolution_exceptions,
+                    _unknown_exceptions(type_result.raises),
+                )
+                handler_facts = _join_policy(handler_facts, type_facts)
+                handler_deferred = _join_deferred(
+                    handler_deferred, type_deferred
+                )
+                if type_post is None:
                     inspected = self._transfer_statements(
                         handler.body,
-                        type_raises or ordered_input,
+                        type_result.raises or handler_input,
                         _TransferContext("unreachable", False, False, False),
                     )
                     handler_facts = _join_policy(
@@ -5622,39 +5796,144 @@ class _SourceFlowAnalyzer:
                     handler_deferred = _join_deferred(
                         handler_deferred, inspected.deferred
                     )
-                    ordered_input = None
-                    ordered_raise_names = frozenset()
+                    residual = _ExceptionalExits()
                     continue
+                current = type_post
+                caught_names = self._provable_handler_exception_names(
+                    handler.type,
+                    handler_input,
+                    type_result,
+                )
+                if caught_names is None:
+                    matched = _replace_exception_states(residual, current)
+                    unmatched = matched
                 else:
-                    current = type_post
-            can_match = True
-            remaining_raise_names = ordered_raise_names
-            if isinstance(node, ast.Try):
-                can_match, remaining_raise_names = (
-                    self._partition_handler_raise_names(
-                        handler, ordered_raise_names, current
+                    matched, unmatched = self._partition_exception_routes(
+                        residual, caught_names
                     )
-                )
-            if not can_match:
-                handler_resolution_raises = _join_states(
-                    handler_resolution_raises, type_raises
-                )
-                handler_facts = _join_policy(handler_facts, type_facts)
-                handler_deferred = _join_deferred(
-                    handler_deferred, type_deferred
-                )
+            else:
+                matched = residual
+                unmatched = _ExceptionalExits()
+            matched_state = matched.joined_state
+            if matched_state is None:
                 inspected = self._transfer_statements(
                     handler.body,
-                    current,
+                    handler_input,
                     _TransferContext("unreachable", False, False, False),
                 )
                 handler_facts = _join_policy(handler_facts, inspected.facts)
                 handler_deferred = _join_deferred(
                     handler_deferred, inspected.deferred
                 )
-                ordered_input = current
-                ordered_raise_names = remaining_raise_names
+                residual = unmatched
                 continue
+            current = matched_state
+            if handler.name is not None:
+                synthetic = ast.Name(
+                    id=handler.name,
+                    ctx=ast.Store(),
+                    lineno=handler.lineno,
+                    col_offset=handler.col_offset,
+                )
+                current, effect, binding_facts = self._bind_target(
+                    synthetic,
+                    _UNKNOWN_VALUE,
+                    current,
+                    context,
+                    operation="assign",
+                )
+                target_deferred = effect
+                target_facts = binding_facts
+            handled = self._transfer_statements(handler.body, current, context)
+            if handler.name is not None:
+                handled = self._cleanup_handler_name(handled, handler.name)
+            handler_point: _ProgramPoint = (
+                "handler",
+                _source_location(self.source_module, handler),
+                context.mode,
+            )
+            self._stats.program_points.add(handler_point)
+            self._join_program_point(
+                handler_point, handled.normal, handled.raises
+            )
+            handled = _FlowResult(
+                handled.normal,
+                handled.breaks,
+                handled.continues,
+                handled.returns,
+                handled.exceptions,
+                _join_deferred(target_deferred, handled.deferred),
+                _join_policy(target_facts, handled.facts),
+            )
+            handler_outputs.append(handled)
+            residual = unmatched
+        else_result = (
+            _FlowResult(body.normal)
+            if not node.orelse or body.normal is None
+            else self._transfer_statements(node.orelse, body.normal, context)
+        )
+        handlers = _join_flow(*handler_outputs) if handler_outputs else _FlowResult(None)
+        pre_finally = _FlowResult(
+            _join_states(else_result.normal, handlers.normal),
+            _join_states(body.breaks, else_result.breaks, handlers.breaks),
+            _join_states(body.continues, else_result.continues, handlers.continues),
+            _join_states(body.returns, else_result.returns, handlers.returns),
+            _join_exceptions(
+                residual,
+                else_result.exceptions,
+                handlers.exceptions,
+                handler_resolution_exceptions,
+            ),
+            _join_deferred(
+                body.deferred,
+                else_result.deferred,
+                handlers.deferred,
+                handler_deferred,
+            ),
+            _join_policy(
+                body.facts,
+                else_result.facts,
+                handlers.facts,
+                handler_facts,
+            ),
+        )
+        if not node.finalbody:
+            return pre_finally
+        return self._apply_finally(node.finalbody, pre_finally, context)
+
+    def _transfer_try_star(
+        self,
+        node: ast.TryStar,
+        state: _State,
+        context: _TransferContext,
+    ) -> _FlowResult:
+        body = self._transfer_statements(node.body, state, context)
+        ordered_input = body.raises
+        handler_outputs: list[_FlowResult] = []
+        handler_facts = _PolicyFacts()
+        handler_deferred = _DeferredEffects()
+        for handler in node.handlers:
+            if ordered_input is None:
+                inspected = self._transfer_statements(
+                    handler.body,
+                    state,
+                    _TransferContext("unreachable", False, False, False),
+                )
+                handler_facts = _join_policy(handler_facts, inspected.facts)
+                handler_deferred = _join_deferred(
+                    handler_deferred, inspected.deferred
+                )
+                continue
+            current = ordered_input
+            type_facts = _PolicyFacts()
+            type_deferred = _DeferredEffects()
+            type_raises: _State | None = None
+            if handler.type is not None:
+                type_result = self._transfer_expression(handler.type, current, context)
+                type_facts = type_result.facts
+                type_deferred = type_result.deferred
+                type_raises = type_result.raises
+                current = type_result.post_state or ordered_input
             if handler.name is not None:
                 synthetic = ast.Name(
                     id=handler.name,
@@ -5688,36 +5967,37 @@ class _SourceFlowAnalyzer:
                 handled.breaks,
                 handled.continues,
                 handled.returns,
-                _join_states(type_raises, handled.raises),
+                _unknown_exceptions(
+                    _join_states(type_raises, handled.raises)
+                ),
                 _join_deferred(type_deferred, handled.deferred),
                 _join_policy(type_facts, handled.facts),
             )
             handler_outputs.append(handled)
-            if isinstance(node, ast.TryStar):
-                ordered_input = self._join_program_point(
-                    handler_point, ordered_input, ordered_effect
-                )
-            else:
-                ordered_raise_names = remaining_raise_names
-                ordered_input = (
-                    None if remaining_raise_names == frozenset() else current
-                )
+            ordered_input = self._join_program_point(
+                handler_point, ordered_input, ordered_effect
+            )
         else_result = (
             _FlowResult(body.normal)
             if not node.orelse or body.normal is None
             else self._transfer_statements(node.orelse, body.normal, context)
         )
-        handlers = _join_flow(*handler_outputs) if handler_outputs else _FlowResult(None)
+        handlers = (
+            _join_flow(*handler_outputs)
+            if handler_outputs
+            else _FlowResult(None)
+        )
         pre_finally = _FlowResult(
             _join_states(else_result.normal, handlers.normal),
             _join_states(body.breaks, else_result.breaks, handlers.breaks),
             _join_states(body.continues, else_result.continues, handlers.continues),
             _join_states(body.returns, else_result.returns, handlers.returns),
-            _join_states(
-                body.raises if isinstance(node, ast.TryStar) else ordered_input,
-                else_result.raises,
-                handlers.raises,
-                handler_resolution_raises,
+            _unknown_exceptions(
+                _join_states(
+                    body.raises,
+                    else_result.raises,
+                    handlers.raises,
+                )
             ),
             _join_deferred(
                 body.deferred,
@@ -5754,7 +6034,10 @@ class _SourceFlowAnalyzer:
             cleanup(flow.breaks),
             cleanup(flow.continues),
             cleanup(flow.returns),
-            cleanup(flow.raises),
+            _map_exception_states(
+                flow.exceptions,
+                lambda exception_state: cleanup(exception_state),
+            ),
             flow.deferred,
             flow.facts,
         )
@@ -5771,7 +6054,6 @@ class _SourceFlowAnalyzer:
             ("break", incoming.breaks),
             ("continue", incoming.continues),
             ("return", incoming.returns),
-            ("raise", incoming.raises),
         ):
             if state is None:
                 continue
@@ -5781,7 +6063,7 @@ class _SourceFlowAnalyzer:
                 final.normal if kind == "break" else None,
                 final.normal if kind == "continue" else None,
                 final.normal if kind == "return" else None,
-                final.normal if kind == "raise" else None,
+                _ExceptionalExits(),
                 final.deferred,
                 final.facts,
             )
@@ -5790,48 +6072,103 @@ class _SourceFlowAnalyzer:
                 final.breaks,
                 final.continues,
                 final.returns,
-                final.raises,
+                final.exceptions,
+                final.deferred,
+                final.facts,
+            )
+            output = _join_flow(output, preserved, replacements)
+        exceptional_input = self._finally_exception_projection(
+            incoming.exceptions
+        )
+        exceptional_state = exceptional_input.joined_state
+        if exceptional_state is not None:
+            final = self._transfer_statements(
+                finalbody, exceptional_state, context
+            )
+            preserved = _FlowResult(
+                None,
+                exceptions=_replace_exception_states(
+                    exceptional_input, final.normal
+                ),
+                deferred=final.deferred,
+                facts=final.facts,
+            )
+            replacements = _FlowResult(
+                None,
+                final.breaks,
+                final.continues,
+                final.returns,
+                final.exceptions,
                 final.deferred,
                 final.facts,
             )
             output = _join_flow(output, preserved, replacements)
         return output
 
-    def _partition_handler_raise_names(
+    @staticmethod
+    def _finally_exception_projection(
+        exits: _ExceptionalExits,
+    ) -> _ExceptionalExits:
+        if len(exits.exact) <= 1:
+            return exits
+        first_state = exits.exact[0][1]
+        if exits.unknown is None and all(
+            state == first_state for _identity, state in exits.exact[1:]
+        ):
+            return exits
+        return _unknown_exceptions(exits.joined_state)
+
+    def _provable_handler_exception_names(
         self,
-        handler: ast.ExceptHandler,
-        possible: frozenset[str] | None,
-        state: _State | None,
-    ) -> tuple[bool, frozenset[str] | None]:
-        if handler.type is None:
-            return True, frozenset()
-        if possible is None or state is None:
-            return True, possible
+        handler_type: ast.expr,
+        state: _State,
+        result: _ExprResult,
+    ) -> frozenset[str] | None:
+        if (
+            result.raises is not None
+            or result.post_state != state
+            or result.deferred != _EMPTY_DEFERRED_EFFECTS
+        ):
+            return None
         candidates = (
-            handler.type.elts if isinstance(handler.type, ast.Tuple) else (handler.type,)
+            handler_type.elts
+            if isinstance(handler_type, ast.Tuple)
+            else (handler_type,)
         )
         caught_names: list[str] = []
         for candidate in candidates:
             if not isinstance(candidate, ast.Name):
-                return True, possible
+                return None
             if self._provable_builtin_exception_supertypes(
                 state, candidate.id
             ) is None:
-                return True, possible
+                return None
             caught_names.append(candidate.id)
-        remaining: set[str] = set()
-        matched = False
-        for raised_name in possible:
-            supertypes = self._provable_builtin_exception_supertypes(
-                state, raised_name
-            )
-            if supertypes is None:
-                return True, possible
-            if any(caught_name in supertypes for caught_name in caught_names):
-                matched = True
+        return frozenset(caught_names)
+
+    @staticmethod
+    def _partition_exception_routes(
+        exits: _ExceptionalExits,
+        caught_names: frozenset[str],
+    ) -> tuple[_ExceptionalExits, _ExceptionalExits]:
+        matched: list[tuple[_ResolvedIdentity, _State]] = []
+        unmatched: list[tuple[_ResolvedIdentity, _State]] = []
+        for identity, state in exits.exact:
+            supertypes = _PROVABLE_BUILTIN_EXCEPTION_SUPERTYPES[identity.name]
+            if caught_names.intersection(supertypes):
+                matched.append((identity, state))
             else:
-                remaining.add(raised_name)
-        return matched, frozenset(remaining)
+                unmatched.append((identity, state))
+        if "BaseException" in caught_names:
+            matched_unknown = exits.unknown
+            unmatched_unknown = None
+        else:
+            matched_unknown = exits.unknown
+            unmatched_unknown = exits.unknown
+        return (
+            _ExceptionalExits(tuple(matched), matched_unknown),
+            _ExceptionalExits(tuple(unmatched), unmatched_unknown),
+        )
 
     def _provable_builtin_exception_supertypes(
         self, state: _State, name: str
@@ -5849,137 +6186,6 @@ class _SourceFlowAnalyzer:
         ):
             return None
         return supertypes
-
-    @classmethod
-    def _possible_raise_names(
-        cls,
-        statements: Sequence[ast.stmt],
-    ) -> frozenset[str] | None:
-        names: set[str] = set()
-        for statement in statements:
-            if isinstance(statement, ast.Raise):
-                if statement.exc is None:
-                    return None
-                elif isinstance(statement.exc, ast.Call):
-                    if (
-                        not isinstance(statement.exc.func, ast.Name)
-                        or statement.exc.keywords
-                        or any(
-                            isinstance(argument, ast.Starred)
-                            or not cls._literal_expression_is_nonraising(argument)
-                            for argument in statement.exc.args
-                        )
-                    ):
-                        return None
-                    names.add(statement.exc.func.id)
-                elif isinstance(statement.exc, ast.Name):
-                    names.add(statement.exc.id)
-                else:
-                    return None
-                if (
-                    statement.cause is not None
-                    and not cls._literal_expression_is_nonraising(statement.cause)
-                ):
-                    return None
-                continue
-            if isinstance(
-                statement,
-                (
-                    ast.Pass,
-                    ast.Global,
-                    ast.Nonlocal,
-                    ast.Break,
-                    ast.Continue,
-                ),
-            ):
-                continue
-            if isinstance(statement, ast.Return):
-                if (
-                    statement.value is not None
-                    and not cls._literal_expression_is_nonraising(statement.value)
-                ):
-                    return None
-                continue
-            if isinstance(statement, ast.Expr):
-                if not cls._literal_expression_is_nonraising(statement.value):
-                    return None
-                continue
-            if isinstance(statement, ast.Assign):
-                if (
-                    not cls._literal_expression_is_nonraising(statement.value)
-                    or not all(isinstance(target, ast.Name) for target in statement.targets)
-                ):
-                    return None
-                continue
-            if isinstance(statement, ast.AnnAssign):
-                if (
-                    not isinstance(statement.target, ast.Name)
-                    or not cls._literal_expression_is_nonraising(statement.annotation)
-                    or (
-                        statement.value is not None
-                        and not cls._literal_expression_is_nonraising(statement.value)
-                    )
-                ):
-                    return None
-                continue
-            blocks: tuple[Sequence[ast.stmt], ...]
-            if isinstance(statement, (ast.If, ast.While)):
-                if not cls._literal_expression_is_nonraising(statement.test):
-                    return None
-                blocks = (statement.body, statement.orelse)
-            elif isinstance(statement, ast.For):
-                if (
-                    not isinstance(statement.target, ast.Name)
-                    or not cls._literal_iteration_is_nonraising(statement.iter)
-                ):
-                    return None
-                blocks = (statement.body, statement.orelse)
-            elif isinstance(statement, (ast.Try, ast.TryStar)):
-                final_names = cls._possible_raise_names(statement.finalbody)
-                final_always_abrupt = bool(statement.finalbody) and all(
-                    isinstance(item, (ast.Raise, ast.Return, ast.Break, ast.Continue))
-                    for item in statement.finalbody
-                )
-                if final_always_abrupt:
-                    if final_names is None:
-                        return None
-                    names.update(final_names)
-                    continue
-                blocks = (
-                    statement.body,
-                    statement.orelse,
-                    statement.finalbody,
-                    *(handler.body for handler in statement.handlers),
-                )
-            else:
-                # Imports, async iteration, context-manager protocols, complex
-                # stores, definitions, pattern matching, and every remaining
-                # statement family may raise an exception whose type cannot be
-                # recovered from syntax alone.
-                return None
-            for block in blocks:
-                nested = cls._possible_raise_names(block)
-                if nested is None:
-                    return None
-                names.update(nested)
-        return frozenset(names)
-
-    @staticmethod
-    def _literal_expression_is_nonraising(node: ast.expr) -> bool:
-        try:
-            ast.literal_eval(node)
-        except (TypeError, ValueError):
-            return False
-        return True
-
-    @staticmethod
-    def _literal_iteration_is_nonraising(node: ast.expr) -> bool:
-        try:
-            value = ast.literal_eval(node)
-            iter(value)
-        except (TypeError, ValueError):
-            return False
-        return True
 
 
 def classify_edge(
