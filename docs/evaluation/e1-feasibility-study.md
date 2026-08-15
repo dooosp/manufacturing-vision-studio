@@ -5,6 +5,16 @@ This study has a fixed command surface and writes only beneath
 on the reviewed study commit. The commands accept no path, mode, seed, or phase
 overrides.
 
+## Declared source dependency closure
+
+The pre-execution dependency check hashes and parses the same bounded bytes and
+verifies declared production-source edges plus prohibited source capabilities.
+It is not a Python sandbox or proof of every possible runtime behavior. Tests
+and fixed validation subprocesses are a separate audited boundary.
+
+`verify` always prints its JSON report. Its process status is nonzero when the
+report says `study_valid: false`; a valid read-only `PENDING` report exits zero.
+
 ## Command order
 
 Run the mutating commands in this order. After every successful mutating
