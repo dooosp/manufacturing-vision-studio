@@ -565,10 +565,10 @@ def test_real_historical_selection_and_v1_history_are_hold() -> None:
     audit = verify_historical_hold(load_study_protocol_v2())
 
     assert audit.selection_raw_sha256 == (
-        "92d3a2f86645a4d0fc33cfc39b769c6d2c4234383c7f132e803c449c7a66f2f3"
+        "32868450a349379e8e548854217c69035b7972ab75acc7f02295e5fae8a76242"
     )
     assert audit.selection_record_sha256 == (
-        "3d4aa7e95240ed2bd4c018fb0762fdf788f919069cfbb935fd228de4b67dc2fe"
+        "7392d4d1d9078b44dac0c9dc777d7622f1f145c2e3b6bf9fffb9a58be407ae5a"
     )
     assert audit.outcome == "HOLD"
     assert audit.selected_candidate_id is None

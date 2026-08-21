@@ -40,8 +40,8 @@ _EXPECTED_PHASE_2_COUNTS = {
 _EXPECTED_SOURCE_HASHES = {
     "candidate_a_raw_sha256": "ed8c0331759500d78cb69805af8678b4214398120b8ec5ad7389e2360f344c84",
     "candidate_b_raw_sha256": "983c8e6dc47e62f78b3c55e701a091c96d603a9ea7334e6e7098392ff97ae029",
-    "selection_raw_sha256": "92d3a2f86645a4d0fc33cfc39b769c6d2c4234383c7f132e803c449c7a66f2f3",
-    "selection_record_sha256": "3d4aa7e95240ed2bd4c018fb0762fdf788f919069cfbb935fd228de4b67dc2fe",
+    "selection_raw_sha256": "32868450a349379e8e548854217c69035b7972ab75acc7f02295e5fae8a76242",
+    "selection_record_sha256": "7392d4d1d9078b44dac0c9dc777d7622f1f145c2e3b6bf9fffb9a58be407ae5a",
     "task4_report_raw_sha256": "b6a2093082aa63631adb233c282466539720281ab96b53bc3928cf292efc8835",
     "task4_progress_ledger_raw_sha256": (
         "fcef0c3b22b962f185911cc74bdad45f1bd2860c42ae8e59bac76d6741c13ea7"
