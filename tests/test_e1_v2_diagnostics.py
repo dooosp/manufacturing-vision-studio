@@ -325,15 +325,18 @@ def test_explicit_replay_verification_reconstructs_every_geometry_field(mutation
     protocol = load_e1_v2_protocol()
     plan = build_scale_diagnostic_matrix(protocol)[0]
     inference, _truth, _truth_bytes = diagnostics._render_diagnostic(plan, protocol)
-    artifact = json.loads(Path("data/e1-v2-development/candidate-a.json").read_text())
-    trace = artifact["diagnostics"][0]["inference_trace"]
-    selection = json.loads(
-        Path("configs/evaluation/e1-v2-candidate-selection.json").read_text()
+    selection = load_candidate_selection(
+        "configs/evaluation/e1-v2-candidate-selection.json"
+    ).as_record()
+    evidence = selection["audit_evidence"]
+    provenance = evidence["provenance"]
+    artifact = diagnostics._decode_embedded_candidate_artifact(
+        provenance["embedded_candidate_artifacts"]["A"],
+        expected_sha256=provenance["candidate_artifact_sha256"]["A"],
     )
+    trace = artifact["diagnostics"][0]["inference_trace"]
     recorded = copy.deepcopy(
-        selection["audit_evidence"]["candidate_evidence"]["A"][
-            "diagnostic_geometry"
-        ][0]
+        evidence["candidate_evidence"]["A"]["diagnostic_geometry"][0]
     )
     if mutation == "compensating_components":
         objective = recorded["replayed_objective_before"]
