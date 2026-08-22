@@ -138,7 +138,31 @@ _EXPECTED_KINDS = {
     **{path: "file" for path in _RETAINED_FILES},
 }
 _ARTIFACT_VERIFICATION_DEPENDENCIES: Mapping[str, tuple[str, ...]] = MappingProxyType(
-    {"report.md": ("decision.json",)}
+    {
+        "retention-audit.json": ("implementation-validation.json",),
+        "phase-1-execution-claim.json": ("retention-audit.json",),
+        "known-transform-diagnostic-108.json": (
+            "retention-audit.json",
+            "phase-1-execution-claim.json",
+        ),
+        "scope-audit.json": (
+            "retention-audit.json",
+            "known-transform-diagnostic-108.json",
+        ),
+        "feature-ownership-oracle.json": (
+            "scope-audit.json",
+            "known-transform-diagnostic-108.json",
+        ),
+        "phase-2-execution-claim.json": ("feature-ownership-oracle.json",),
+        "known-transform-development-120.json": (
+            "retention-audit.json",
+            "known-transform-diagnostic-108.json",
+            "scope-audit.json",
+            "feature-ownership-oracle.json",
+            "phase-2-execution-claim.json",
+        ),
+        "report.md": ("decision.json",),
+    }
 )
 _VALIDATION_OUTPUT_LIMIT_BYTES = 4 * 1024 * 1024
 _ALLOWED_NEXT_ACTIONS = {
@@ -1534,31 +1558,8 @@ class StudyRunner:
             "implementation-validation.json" not in state.verified_json
         ):
             return state
-        store, owned = self._read_store()
         try:
-            store.verify_lexical_root_identity()
-            verify_implementation_validation(
-                self.protocol,
-                store,
-                repo_root=self.repo_root,
-            )
-            evidence_commit: str | None = None
-            if "retention-audit.json" in state.present_paths:
-                retention = verify_retention_audit(
-                    self.protocol,
-                    store,
-                    repo_root=self.repo_root,
-                )
-                evidence_commit = retention.evidence_commit
-            _verify_git_lineage(
-                self.protocol,
-                repo_root=self.repo_root,
-                execution_commit=_state_execution_commit(state),
-                evidence_commit=evidence_commit,
-                require_clean=False,
-                allow_retained_input_copies=True,
-            )
-            store.verify_lexical_root_identity()
+            self._verify_trusted_evidence(state)
             return state
         except StudyRetentionError as exc:
             del exc
@@ -1579,9 +1580,6 @@ class StudyRunner:
                 present_paths=state.present_paths,
                 invalid_paths=state.present_paths,
             )
-        finally:
-            if owned:
-                store.close()
 
     def finalize(self) -> StudyArtifactRecord:
         """Publish one terminal decision, then its deterministic human projection."""
@@ -1594,6 +1592,7 @@ class StudyRunner:
         decision = state.status.terminal_decision
         if decision == "PENDING":
             raise StudyStateError("PENDING study evidence cannot be finalized")
+        self._require_finalization_evidence(state)
 
         existing = state.verified_json.get("decision.json")
         if existing is not None:
@@ -1679,6 +1678,53 @@ class StudyRunner:
         finally:
             if owned:
                 store.close()
+
+    def _verify_trusted_evidence(self, state: VerifiedStudyState) -> None:
+        """Deeply verify the immutable evidence anchors and their Git lineage."""
+
+        store, owned = self._read_store()
+        try:
+            store.verify_lexical_root_identity()
+            validation = verify_implementation_validation(
+                self.protocol,
+                store,
+                repo_root=self.repo_root,
+            )
+            evidence_commit: str | None = None
+            if "retention-audit.json" in state.present_paths:
+                retention = verify_retention_audit(
+                    self.protocol,
+                    store,
+                    repo_root=self.repo_root,
+                )
+                evidence_commit = retention.evidence_commit
+            _verify_git_lineage(
+                self.protocol,
+                repo_root=self.repo_root,
+                execution_commit=validation.execution_commit,
+                evidence_commit=evidence_commit,
+                require_clean=False,
+                allow_retained_input_copies=True,
+            )
+            store.verify_lexical_root_identity()
+        finally:
+            if owned:
+                store.close()
+
+    def _require_finalization_evidence(self, state: VerifiedStudyState) -> None:
+        try:
+            self._verify_trusted_evidence(state)
+        except (
+            StudyArtifactError,
+            StudyRetentionError,
+            StudyStateError,
+            TypeError,
+            ValueError,
+            KeyError,
+        ) as exc:
+            raise StudyStateError(
+                "study finalization evidence verification failed"
+            ) from exc
 
     def validate_implementation(self) -> StudyArtifactRecord:
         """Run and publish the fixed implementation-validation transaction once."""

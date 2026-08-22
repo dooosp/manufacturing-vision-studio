@@ -2323,20 +2323,75 @@ def test_verify_does_not_credit_report_when_decision_json_is_malformed(
     assert report.verify_rate == len(state.verified_paths) / len(state.present_paths)
 
 
+@pytest.mark.parametrize(
+    ("malformed_path", "expected_invalid"),
+    (
+        (
+            "implementation-validation.json",
+            {
+                "implementation-validation.json",
+                "retention-audit.json",
+                "phase-1-execution-claim.json",
+                "known-transform-diagnostic-108.json",
+                "scope-audit.json",
+                "feature-ownership-oracle.json",
+                "phase-2-execution-claim.json",
+                "known-transform-development-120.json",
+                "decision.json",
+                "report.md",
+            },
+        ),
+        (
+            "retention-audit.json",
+            {
+                "retention-audit.json",
+                "phase-1-execution-claim.json",
+                "known-transform-diagnostic-108.json",
+                "scope-audit.json",
+                "feature-ownership-oracle.json",
+                "phase-2-execution-claim.json",
+                "known-transform-development-120.json",
+                "decision.json",
+                "report.md",
+            },
+        ),
+        (
+            "known-transform-diagnostic-108.json",
+            {
+                "known-transform-diagnostic-108.json",
+                "scope-audit.json",
+                "feature-ownership-oracle.json",
+                "phase-2-execution-claim.json",
+                "known-transform-development-120.json",
+                "decision.json",
+                "report.md",
+            },
+        ),
+        (
+            "known-transform-development-120.json",
+            {
+                "known-transform-development-120.json",
+                "decision.json",
+                "report.md",
+            },
+        ),
+    ),
+)
 def test_malformed_upstream_json_invalidates_stale_derived_decision_and_report(
     tmp_path: Path,
+    malformed_path: str,
+    expected_invalid: set[str],
 ) -> None:
     runner = _publish_semantic_packet(tmp_path)
     artifact_root = runner.protocol.artifact_root
     decision_path = artifact_root / "decision.json"
     report_path = artifact_root / "report.md"
-    development_path = artifact_root / "known-transform-development-120.json"
     report_path.write_bytes(
         runner_module._decision_report(
             cast(dict[str, object], json.loads(decision_path.read_bytes()))
         )
     )
-    development_path.write_bytes(b"{")
+    (artifact_root / malformed_path).write_bytes(b"{")
 
     state = runner_module.inspect_state(runner.protocol, repo_root=tmp_path)
     report = runner.verify()
@@ -2344,19 +2399,15 @@ def test_malformed_upstream_json_invalidates_stale_derived_decision_and_report(
     assert state.status.study_valid is False
     assert state.status.terminal_decision == "STUDY_INVALID"
     assert state.status.reasons == ("ARTIFACT_VERIFICATION_FAILED",)
-    assert len(state.invalid_paths) == 3
-    assert set(state.invalid_paths) == {
-        "known-transform-development-120.json",
-        "decision.json",
-        "report.md",
-    }
+    assert len(state.invalid_paths) == len(expected_invalid)
+    assert set(state.invalid_paths) == expected_invalid
     assert len(state.present_paths) == 14
-    assert len(state.verified_paths) == 11
-    assert "known-transform-development-120.json" not in state.verified_paths
+    assert len(state.verified_paths) == 14 - len(expected_invalid)
+    assert malformed_path not in state.verified_paths
     assert "decision.json" not in state.verified_paths
     assert "report.md" not in state.verified_paths
     assert report.verified_paths == state.verified_paths
-    assert report.verify_rate == pytest.approx(11 / 14)
+    assert report.verify_rate == pytest.approx((14 - len(expected_invalid)) / 14)
 
 
 def test_semantic_inspection_accepts_complete_schema_valid_packet(tmp_path: Path) -> None:
@@ -2571,7 +2622,8 @@ def test_status_and_verify_use_read_only_verifiers_without_execution_seams(
     monkeypatch.setattr(
         runner_module,
         "verify_implementation_validation",
-        lambda *args, **kwargs: calls.append("validation") or SimpleNamespace(),
+        lambda *args, **kwargs: calls.append("validation")
+        or SimpleNamespace(execution_commit="e" * 40),
     )
     monkeypatch.setattr(
         runner_module,
@@ -2707,11 +2759,156 @@ def test_finalize_rejects_pending_without_creating_artifacts(tmp_path: Path) -> 
     assert not runner.protocol.artifact_root.exists()
 
 
+def _patch_successful_finalization_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[str]:
+    calls: list[str] = []
+
+    def verify_validation(*args: object, **kwargs: object) -> SimpleNamespace:
+        del args, kwargs
+        calls.append("validation")
+        return SimpleNamespace(execution_commit="f" * 40)
+
+    def verify_retention(*args: object, **kwargs: object) -> SimpleNamespace:
+        del args, kwargs
+        calls.append("retention")
+        return SimpleNamespace(execution_commit="f" * 40, evidence_commit="e" * 40)
+
+    def verify_lineage(*args: object, **kwargs: object) -> str:
+        del args
+        assert kwargs["execution_commit"] == "f" * 40
+        assert kwargs["evidence_commit"] == "e" * 40
+        assert kwargs["require_clean"] is False
+        calls.append("lineage")
+        return "e" * 40
+
+    monkeypatch.setattr(runner_module, "verify_implementation_validation", verify_validation)
+    monkeypatch.setattr(runner_module, "verify_retention_audit", verify_retention)
+    monkeypatch.setattr(runner_module, "_verify_git_lineage", verify_lineage)
+    return calls
+
+
+def test_finalize_rejects_deeply_forged_validation_before_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _publish_semantic_packet(tmp_path, include_decision=False)
+    validation_path = runner.protocol.artifact_root / "implementation-validation.json"
+    document = cast(dict[str, object], json.loads(validation_path.read_bytes()))
+    payload = cast(dict[str, object], document["payload"])
+    commands = cast(list[dict[str, object]], payload["commands"])
+    commands[0]["argv"] = ["uv", "run", "pytest", "tests/forged-validation.py"]
+    validation_path.write_bytes(
+        runner_module._canonical_json_bytes(finalize_study_record(document))
+    )
+    snapshot = RepositorySnapshot(
+        "f" * 40,
+        (),
+        _projection(runner.protocol.implementation_projection_paths()),
+    )
+    monkeypatch.setattr(
+        StudyRunner,
+        "_require_finalization_preflight",
+        lambda *args, **kwargs: snapshot,
+    )
+    monkeypatch.setattr(
+        StudyRunner,
+        "_require_phase_publication_state",
+        lambda *args, **kwargs: None,
+    )
+    deep_calls: list[str] = []
+
+    def reject_validation(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        deep_calls.append("validation")
+        raise runner_module.StudyRetentionError("forged validation evidence")
+
+    monkeypatch.setattr(
+        runner_module,
+        "verify_implementation_validation",
+        reject_validation,
+    )
+
+    with pytest.raises(StudyStateError, match=r"finalization.*evidence"):
+        runner.finalize()
+
+    assert deep_calls == ["validation"]
+    assert not runner.protocol.artifact_root.joinpath("decision.json").exists()
+    assert not runner.protocol.artifact_root.joinpath("report.md").exists()
+
+
+@pytest.mark.parametrize(
+    "terminal_projection",
+    ("new_decision", "missing_report", "idempotent"),
+)
+def test_finalize_rejects_mutated_retained_copy_before_terminal_projection_use(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    terminal_projection: str,
+) -> None:
+    include_decision = terminal_projection != "new_decision"
+    runner = _publish_semantic_packet(tmp_path, include_decision=include_decision)
+    artifact_root = runner.protocol.artifact_root
+    decision_path = artifact_root / "decision.json"
+    report_path = artifact_root / "report.md"
+    if terminal_projection == "idempotent":
+        report_path.write_bytes(
+            runner_module._decision_report(
+                cast(dict[str, object], json.loads(decision_path.read_bytes()))
+            )
+        )
+    expected_decision = decision_path.read_bytes() if decision_path.exists() else None
+    expected_report = report_path.read_bytes() if report_path.exists() else None
+    artifact_root.joinpath("retained-inputs/candidate-a.json").write_bytes(
+        b'{"candidate":"A","outcome":"FORGED"}'
+    )
+    snapshot = RepositorySnapshot(
+        "f" * 40,
+        (),
+        _projection(runner.protocol.implementation_projection_paths()),
+    )
+    monkeypatch.setattr(
+        StudyRunner,
+        "_require_finalization_preflight",
+        lambda *args, **kwargs: snapshot,
+    )
+    monkeypatch.setattr(
+        StudyRunner,
+        "_require_phase_publication_state",
+        lambda *args, **kwargs: None,
+    )
+    deep_calls: list[str] = []
+    monkeypatch.setattr(
+        runner_module,
+        "verify_implementation_validation",
+        lambda *args, **kwargs: deep_calls.append("validation")
+        or SimpleNamespace(execution_commit="f" * 40),
+    )
+
+    def reject_retention(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        assert artifact_root.joinpath("retained-inputs/candidate-a.json").read_bytes().endswith(
+            b'"FORGED"}'
+        )
+        deep_calls.append("retention")
+        raise runner_module.StudyRetentionError("retained input digest changed")
+
+    monkeypatch.setattr(runner_module, "verify_retention_audit", reject_retention)
+
+    with pytest.raises(StudyStateError, match=r"finalization.*evidence"):
+        runner.finalize()
+
+    assert deep_calls == ["validation", "retention"]
+    assert (decision_path.read_bytes() if decision_path.exists() else None) == expected_decision
+    assert (report_path.read_bytes() if report_path.exists() else None) == expected_report
+
+
 def test_finalize_publishes_decision_before_deterministic_report(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runner = _publish_semantic_packet(tmp_path, include_decision=False)
+    deep_calls = _patch_successful_finalization_evidence(monkeypatch)
     snapshot = RepositorySnapshot(
         "f" * 40,
         (),
@@ -2744,6 +2941,14 @@ def test_finalize_publishes_decision_before_deterministic_report(
 
     assert repeated.record_sha256 == published.record_sha256
     assert runner.protocol.artifact_root.joinpath("report.md").read_bytes() == first_report
+    assert deep_calls == [
+        "validation",
+        "retention",
+        "lineage",
+        "validation",
+        "retention",
+        "lineage",
+    ]
 
 
 def test_finalize_seals_semantically_invalid_packet_with_honest_report(
@@ -2757,6 +2962,7 @@ def test_finalize_seals_semantically_invalid_packet_with_honest_report(
     )
     before = runner.verify()
     assert before.status.terminal_decision == "STUDY_INVALID"
+    deep_calls = _patch_successful_finalization_evidence(monkeypatch)
     snapshot = RepositorySnapshot(
         "f" * 40,
         (),
@@ -2843,6 +3049,14 @@ def test_finalize_seals_semantically_invalid_packet_with_honest_report(
 
     assert repeated.record_sha256 == published.record_sha256
     assert len(publications) == publication_count
+    assert deep_calls == [
+        "validation",
+        "retention",
+        "lineage",
+        "validation",
+        "retention",
+        "lineage",
+    ]
 
 
 def test_finalize_seals_orphaned_phase1_claim_with_verified_anchor(
@@ -2850,6 +3064,7 @@ def test_finalize_seals_orphaned_phase1_claim_with_verified_anchor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runner = _publish_semantic_packet(tmp_path, include_decision=False)
+    _patch_successful_finalization_evidence(monkeypatch)
     for relative in (
         "known-transform-diagnostic-108.json",
         "scope-audit.json",
@@ -2904,7 +3119,7 @@ def test_finalize_seals_orphaned_phase1_claim_with_verified_anchor(
 
 @pytest.mark.parametrize(
     "case",
-    ("scope_oracle_orphan", "phase2_orphan", "partial_retention"),
+    ("scope_oracle_orphan", "phase2_orphan"),
 )
 def test_finalize_seals_other_safely_inspectable_relationship_invalid_packets(
     tmp_path: Path,
@@ -2912,6 +3127,7 @@ def test_finalize_seals_other_safely_inspectable_relationship_invalid_packets(
     case: str,
 ) -> None:
     runner = _publish_semantic_packet(tmp_path, include_decision=False)
+    _patch_successful_finalization_evidence(monkeypatch)
     if case == "scope_oracle_orphan":
         for relative in (
             "feature-ownership-oracle.json",
@@ -2921,9 +3137,6 @@ def test_finalize_seals_other_safely_inspectable_relationship_invalid_packets(
             (runner.protocol.artifact_root / relative).unlink()
     elif case == "phase2_orphan":
         (runner.protocol.artifact_root / "known-transform-development-120.json").unlink()
-    else:
-        (runner.protocol.artifact_root / "retained-inputs/candidate-a.json").unlink()
-
     snapshot = RepositorySnapshot(
         "f" * 40,
         (),
