@@ -553,6 +553,89 @@ def test_protected_scope_reference_is_rejected(tmp_path: Path) -> None:
         scan_study_dependencies(protocol, repo_root=repo_root)
 
 
+def test_protected_scope_assignment_alias_is_rejected(tmp_path: Path) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    truth_path = repo_root / "src/manufacturing_vision_studio/e1/study_truth_v2.py"
+    original = truth_path.read_text()
+    modified = original.replace(
+        "plans = self._generator.plan_cases(EvaluationScope.DEVELOPMENT)",
+        "Scope = EvaluationScope\n"
+        "        PROTECTED = Scope.CALIBRATION\n"
+        "        plans = self._generator.plan_cases(EvaluationScope.DEVELOPMENT)",
+    )
+    assert modified != original
+    truth_path.write_text(modified)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match=r"protected scope reference.*CALIBRATION",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_evaluation_scope_import_alias_is_rejected(tmp_path: Path) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    truth_path = repo_root / "src/manufacturing_vision_studio/e1/study_truth_v2.py"
+    original = truth_path.read_text()
+    modified = original.replace(
+        "plans = self._generator.plan_cases(EvaluationScope.DEVELOPMENT)",
+        "from manufacturing_vision_studio.e1.domain_v2 import EvaluationScope as Scope\n"
+        "        PROTECTED = Scope.CALIBRATION\n"
+        "        plans = self._generator.plan_cases(EvaluationScope.DEVELOPMENT)",
+    )
+    assert modified != original
+    truth_path.write_text(modified)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match=r"protected scope reference.*CALIBRATION",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_evaluation_scope_literal_getattr_is_rejected(tmp_path: Path) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    truth_path = repo_root / "src/manufacturing_vision_studio/e1/study_truth_v2.py"
+    original = truth_path.read_text()
+    modified = original.replace(
+        "plans = self._generator.plan_cases(EvaluationScope.DEVELOPMENT)",
+        "PROTECTED = getattr(EvaluationScope, 'CALIBRATION')\n"
+        "        plans = self._generator.plan_cases(EvaluationScope.DEVELOPMENT)",
+    )
+    assert modified != original
+    truth_path.write_text(modified)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match=r"protected scope reference.*CALIBRATION",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_evaluation_scope_computed_getattr_is_rejected(tmp_path: Path) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    truth_path = repo_root / "src/manufacturing_vision_studio/e1/study_truth_v2.py"
+    original = truth_path.read_text()
+    modified = original.replace(
+        "plans = self._generator.plan_cases(EvaluationScope.DEVELOPMENT)",
+        "name = 'CALIBRATION'\n"
+        "        PROTECTED = getattr(EvaluationScope, name)\n"
+        "        plans = self._generator.plan_cases(EvaluationScope.DEVELOPMENT)",
+    )
+    assert modified != original
+    truth_path.write_text(modified)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match=r"protected scope reference.*EvaluationScope",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
 @pytest.mark.parametrize(
     "call_name",
     [
@@ -586,6 +669,48 @@ def test_plan_cases_outside_development_provider_is_rejected(tmp_path: Path) -> 
     )
 
     with pytest.raises(StudyRetentionError, match="plan_cases outside DevelopmentCorpusProvider"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_plan_cases_alias_outside_development_provider_is_rejected(
+    tmp_path: Path,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\ndef forbidden(generator: object) -> object:\n"
+        "    planner = generator.plan_cases\n"
+        "    return planner('development')\n",
+    )
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="plan_cases outside DevelopmentCorpusProvider",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_plan_cases_alias_inside_development_provider_is_rejected(
+    tmp_path: Path,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    truth_path = repo_root / "src/manufacturing_vision_studio/e1/study_truth_v2.py"
+    original = truth_path.read_text()
+    modified = original.replace(
+        "plans = self._generator.plan_cases(EvaluationScope.DEVELOPMENT)",
+        "planner = self._generator.plan_cases\n"
+        "        plans = planner(EvaluationScope.DEVELOPMENT)",
+    )
+    assert modified != original
+    truth_path.write_text(modified)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="plan_cases outside DevelopmentCorpusProvider",
+    ):
         scan_study_dependencies(protocol, repo_root=repo_root)
 
 

@@ -1250,6 +1250,42 @@ def _exact_identity(identity: _ResolvedIdentity) -> _IdentityFact:
     return _IdentityFact("exact", identity)
 
 
+def _evaluation_scope_identity() -> _ResolvedIdentity:
+    return _ResolvedIdentity(
+        "imported",
+        "manufacturing_vision_studio.e1.domain_v2",
+        "EvaluationScope",
+    )
+
+
+def _plan_cases_callable_identity() -> _ResolvedIdentity:
+    return _ResolvedIdentity(
+        "literal",
+        "manufacturing_vision_studio.e1.study_retention_v2",
+        "plan_cases.callable",
+    )
+
+
+def _has_exact_identity(value: _AbsValue, expected: _ResolvedIdentity) -> bool:
+    return (
+        value.facts.complete
+        and value.facts.identity.state == "exact"
+        and value.facts.identity.identity == expected
+    )
+
+
+def _protected_scope_fact(
+    source_module: str,
+    node: ast.AST,
+    member: str,
+) -> _PolicyFacts:
+    return _PolicyFacts(
+        protected=frozenset(
+            {f"{source_module}:{getattr(node, 'lineno', 0)}:EvaluationScope.{member}"}
+        )
+    )
+
+
 def _join_package(left: _PackageFact, right: _PackageFact) -> _PackageFact:
     if left.state == right.state == "none":
         return _PackageFact()
@@ -2869,20 +2905,11 @@ class _SourceFlowAnalyzer:
         facts = receiver.facts
         value = _derived_value(receiver_value, complete=receiver_value.facts.complete)
         if (
-            isinstance(node.value, ast.Name)
-            and node.value.id == "EvaluationScope"
+            _has_exact_identity(receiver_value, _evaluation_scope_identity())
             and node.attr in _PROTECTED_SCOPES
         ):
             facts = _join_policy(
-                facts,
-                _PolicyFacts(
-                    protected=frozenset(
-                        {
-                            f"{self.source_module}:{node.lineno}:"
-                            f"EvaluationScope.{node.attr}"
-                        }
-                    )
-                ),
+                facts, _protected_scope_fact(self.source_module, node, node.attr)
             )
         package_target = (
             receiver_value.facts.package.target
@@ -2968,6 +2995,14 @@ class _SourceFlowAnalyzer:
             value = _value_with_capabilities("import-loader")
         elif "operator-module" in capabilities and node.attr == "attrgetter":
             value = _value_with_capabilities("namespace-reflection")
+        if node.attr == "plan_cases":
+            value = replace(
+                value,
+                facts=replace(
+                    value.facts,
+                    identity=_exact_identity(_plan_cases_callable_identity()),
+                ),
+            )
         return self._expr_from_parts(
             value,
             post,
@@ -3084,6 +3119,11 @@ class _SourceFlowAnalyzer:
             and identity is not None
             and identity.kind == "builtin"
             else None
+        )
+        exact_plan_cases = (
+            function_value.facts.identity.state == "exact"
+            and function_value.facts.identity.identity
+            == _plan_cases_callable_identity()
         )
         builtins_method = self._builtins_method_name(function_value)
         if (
@@ -3271,7 +3311,9 @@ class _SourceFlowAnalyzer:
                 ),
             )
         call_name = _call_name(node.func)
-        if call_name == "plan_cases" and not _is_allowed_development_provider_plan(
+        if (
+            call_name == "plan_cases" or exact_plan_cases
+        ) and not _is_allowed_development_provider_plan(
             self.source_module,
             ("DevelopmentCorpusProvider",),
             node,
@@ -3358,6 +3400,10 @@ class _SourceFlowAnalyzer:
                 "cli-dataclass-getattr",
             }:
                 return _UNKNOWN_VALUE, _PolicyFacts()
+            if _has_exact_identity(receiver, _evaluation_scope_identity()):
+                return _UNKNOWN_VALUE, _protected_scope_fact(
+                    self.source_module, node, "<dynamic>"
+                )
             if "package-object" in receiver.facts.may_capabilities:
                 return _UNKNOWN_VALUE, self._policy_error(
                     "package-object", node, "runtime package-object import"
@@ -3376,6 +3422,13 @@ class _SourceFlowAnalyzer:
         if attribute in {"__globals__", "__subclasses__", "__bases__", "__mro__"}:
             return _UNKNOWN_VALUE, self._policy_error(
                 "namespace-reflection", node, f"sensitive attribute access: {attribute}"
+            )
+        if (
+            _has_exact_identity(receiver, _evaluation_scope_identity())
+            and attribute in _PROTECTED_SCOPES
+        ):
+            return _UNKNOWN_VALUE, _protected_scope_fact(
+                self.source_module, node, attribute
             )
         if self._has_builtins_origin(receiver):
             value, facts = self._builtins_attribute_value(
