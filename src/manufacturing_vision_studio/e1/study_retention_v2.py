@@ -3657,48 +3657,108 @@ class _SourceFlowAnalyzer:
             _join_policy(condition.facts, *(branch.facts for branch in branches)),
         )
 
+    @staticmethod
+    def _is_foldable_identity_literal(node: ast.expr) -> bool:
+        return isinstance(node, ast.Constant) and (
+            node.value is None
+            or node.value is True
+            or node.value is False
+            or node.value is Ellipsis
+        )
+
+    def _compare_pair_truth(
+        self,
+        left_node: ast.expr,
+        right_node: ast.expr,
+        op: ast.cmpop,
+        left: _AbsValue,
+        right: _AbsValue,
+    ) -> _Truth:
+        if isinstance(left_node, ast.Constant) and isinstance(right_node, ast.Constant):
+            try:
+                if isinstance(op, ast.Eq):
+                    return (
+                        _Truth.TRUE
+                        if left_node.value == right_node.value
+                        else _Truth.FALSE
+                    )
+                if isinstance(op, ast.NotEq):
+                    return (
+                        _Truth.TRUE
+                        if left_node.value != right_node.value
+                        else _Truth.FALSE
+                    )
+                if isinstance(op, (ast.Is, ast.IsNot)) and self._is_foldable_identity_literal(
+                    left_node
+                ) and self._is_foldable_identity_literal(right_node):
+                    same = left_node.value is right_node.value
+                    if isinstance(op, ast.Is):
+                        return _Truth.TRUE if same else _Truth.FALSE
+                    return _Truth.FALSE if same else _Truth.TRUE
+            except (TypeError, ValueError):
+                return _Truth.UNKNOWN
+        if isinstance(op, (ast.Is, ast.IsNot)):
+            left_sys = "sys-module" in left.facts.may_capabilities
+            right_sys = "sys-module" in right.facts.may_capabilities
+            if left_sys != right_sys and left.facts.complete and right.facts.complete:
+                return _Truth.FALSE if isinstance(op, ast.Is) else _Truth.TRUE
+        return _Truth.UNKNOWN
+
     def _transfer_compare(
         self, node: ast.Compare, state: _State, context: _TransferContext
     ) -> _ExprResult:
-        values, post, raises, deferred, facts = self._transfer_expression_sequence(
-            (node.left, *node.comparators), state, context
-        )
-        if post is None:
-            return _ExprResult(None, None, raises, deferred, facts)
-        truth = _Truth.UNKNOWN
-        if len(values) == 2 and len(node.ops) == 1:
-            left, right = values
-            if isinstance(node.left, ast.Constant) and isinstance(
-                node.comparators[0], ast.Constant
-            ):
-                try:
-                    if isinstance(node.ops[0], (ast.Is, ast.Eq)):
-                        truth = (
-                            _Truth.TRUE
-                            if node.left.value == node.comparators[0].value
-                            else _Truth.FALSE
-                        )
-                    elif isinstance(node.ops[0], (ast.IsNot, ast.NotEq)):
-                        truth = (
-                            _Truth.TRUE
-                            if node.left.value != node.comparators[0].value
-                            else _Truth.FALSE
-                        )
-                except (TypeError, ValueError):
-                    truth = _Truth.UNKNOWN
-            elif isinstance(node.ops[0], (ast.Is, ast.IsNot)):
-                left_sys = "sys-module" in left.facts.may_capabilities
-                right_sys = "sys-module" in right.facts.may_capabilities
-                if left_sys != right_sys and left.facts.complete and right.facts.complete:
-                    truth = _Truth.FALSE if isinstance(node.ops[0], ast.Is) else _Truth.TRUE
-        return self._expr_from_parts(
-            _SAFE_VALUE,
-            post,
-            truth,
-            raises=raises,
-            deferred=deferred,
-            facts=facts,
-        )
+        left_result = self._transfer_expression(node.left, state, context)
+        active = left_result.post_state
+        active_value = left_result.value
+        truthy: _NormalExit | None = None
+        falsy: _NormalExit | None = None
+        raises = left_result.raises
+        deferred = left_result.deferred
+        facts = left_result.facts
+        unreachable_seed = active if active is not None else left_result.raises or state
+        previous_node = node.left
+
+        for index, (op, comparator) in enumerate(
+            zip(node.ops, node.comparators, strict=True)
+        ):
+            if active is None:
+                inspected = self._transfer_expression(
+                    comparator,
+                    unreachable_seed,
+                    _TransferContext("unreachable", False, False, False),
+                )
+                deferred = _join_deferred(deferred, inspected.deferred)
+                facts = _join_policy(facts, inspected.facts)
+                previous_node = comparator
+                continue
+
+            right_result = self._transfer_expression(comparator, active, context)
+            raises = _join_states(raises, right_result.raises)
+            deferred = _join_deferred(deferred, right_result.deferred)
+            facts = _join_policy(facts, right_result.facts)
+            post = right_result.post_state
+            if post is None:
+                active = None
+                unreachable_seed = right_result.raises or active or unreachable_seed
+                previous_node = comparator
+                continue
+
+            pair = _normal_value(
+                _SAFE_VALUE,
+                post,
+                self._compare_pair_truth(
+                    previous_node, comparator, op, active_value, right_result.value
+                ),
+            )
+            falsy = self._join_normal_exits(falsy, pair.falsy)
+            if index == len(node.ops) - 1:
+                truthy = self._join_normal_exits(truthy, pair.truthy)
+            active = None if pair.truthy is None else pair.truthy.state
+            active_value = right_result.value
+            unreachable_seed = post
+            previous_node = comparator
+
+        return _ExprResult(truthy, falsy, raises, deferred, facts)
 
     def _transfer_lambda(
         self, node: ast.Lambda, state: _State, context: _TransferContext

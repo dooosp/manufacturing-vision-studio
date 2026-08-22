@@ -5064,6 +5064,86 @@ def _analyze_source(source: str) -> tuple[ast.Module, object]:
 
 
 @pytest.mark.parametrize(
+    ("source", "expected_truth"),
+    (
+        ("VALUE = None is None\n", retention_module._Truth.TRUE),
+        ("VALUE = None is not None\n", retention_module._Truth.FALSE),
+        ("VALUE = 1 == 1\n", retention_module._Truth.TRUE),
+        ("VALUE = 1 is 1\n", retention_module._Truth.UNKNOWN),
+    ),
+)
+def test_compare_pair_truth_preserves_python_singleton_semantics(
+    source: str,
+    expected_truth: object,
+) -> None:
+    _, result = _analyze_source(source)
+    value = result.final_states[0].resolve("VALUE").value
+
+    assert value.truth is expected_truth
+
+
+def test_compare_short_circuit_keeps_real_sys_carrier_visible_to_public_scanner(
+    tmp_path: Path,
+) -> None:
+    source = _compiled_source(
+        "import sys as carrier\n"
+        "FLAG = 1 is True is (carrier := carrier.stdout)\n"
+        "REGISTRY = carrier.modules\n"
+    )
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+    assert namespace["FLAG"] is False
+    assert namespace["carrier"] is sys
+
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: import-registry",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_error_categories"),
+    (
+        (
+            "import sys as carrier\n"
+            "VALUE = 0 > 1 < (carrier := carrier.stdout)\n"
+            "REGISTRY = carrier.modules\n",
+            ("import-registry",),
+        ),
+        (
+            "import sys\n"
+            "carrier = sys.stdout\n"
+            "VALUE = 0 < 1 < (1 if (carrier := sys) else 0)\n"
+            "REGISTRY = carrier.modules\n",
+            ("import-registry",),
+        ),
+        (
+            "import sys as carrier\n"
+            "VALUE = 0 > 1 < ((carrier := carrier.stdout) or eval('1+1'))\n"
+            "REGISTRY = carrier.modules\n",
+            ("executable-code", "import-registry"),
+        ),
+    ),
+)
+def test_chained_compare_short_circuit_preserves_state_and_policy(
+    source: str,
+    expected_error_categories: tuple[str, ...],
+) -> None:
+    _, result = _analyze_source(source)
+    carrier = result.final_states[0].resolve("carrier").value
+    errors = "\n".join(sorted(result.facts.closure_errors))
+
+    assert carrier.facts.may_capabilities == frozenset({"sys-module"})
+    for category in expected_error_categories:
+        assert category in errors
+
+
+@pytest.mark.parametrize(
     ("source", "expected_truth", "expected_outcomes", "may_iteration_raise"),
     (
         ("VALUE = 0\n", retention_module._Truth.FALSE, frozenset(), True),
