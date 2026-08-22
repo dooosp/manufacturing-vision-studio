@@ -707,9 +707,13 @@ def test_plan_cases_alias_inside_development_provider_is_rejected(
     assert modified != original
     truth_path.write_text(modified)
 
+    expected = (
+        r"expected one approved plans = "
+        r".*plan_cases\(EvaluationScope\.DEVELOPMENT\) assignment"
+    )
     with pytest.raises(
         StudyRetentionError,
-        match="plan_cases outside DevelopmentCorpusProvider",
+        match=expected,
     ):
         scan_study_dependencies(protocol, repo_root=repo_root)
 
@@ -726,8 +730,236 @@ def test_development_provider_allows_only_its_frozen_generator_call(tmp_path: Pa
     assert modified != original
     truth_path.write_text(modified)
 
+    expected = (
+        r"expected one approved plans = "
+        r".*plan_cases\(EvaluationScope\.DEVELOPMENT\) assignment"
+    )
+    with pytest.raises(StudyRetentionError, match=expected):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_plan_cases_clone_elsewhere_in_study_truth_is_rejected(tmp_path: Path) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        Path("src/manufacturing_vision_studio/e1/study_truth_v2.py"),
+        "\n\ndef clone_development_plan(provider: DevelopmentCorpusProvider) -> object:\n"
+        "    return provider._generator.plan_cases(EvaluationScope.DEVELOPMENT)\n",
+    )
+
     with pytest.raises(StudyRetentionError, match="plan_cases outside DevelopmentCorpusProvider"):
         scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_second_development_plan_cases_call_inside_load_is_rejected(
+    tmp_path: Path,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    truth_path = repo_root / "src/manufacturing_vision_studio/e1/study_truth_v2.py"
+    original = truth_path.read_text()
+    modified = original.replace(
+        "plans = self._generator.plan_cases(EvaluationScope.DEVELOPMENT)",
+        "plans = self._generator.plan_cases(EvaluationScope.DEVELOPMENT)\n"
+        "        shadow = self._generator.plan_cases(EvaluationScope.DEVELOPMENT)",
+    )
+    assert modified != original
+    truth_path.write_text(modified)
+
+    with pytest.raises(StudyRetentionError, match="plan_cases outside DevelopmentCorpusProvider"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_legacy_v1_plan_cases_clone_elsewhere_is_rejected(tmp_path: Path) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        Path("src/manufacturing_vision_studio/e1/study_truth_v2.py"),
+        "\n\ndef clone_legacy_template_plan() -> object:\n"
+        "    v1_generator = E1Generator()\n"
+        "    return v1_generator.plan_cases(DatasetProfile.FULL)\n",
+    )
+
+    with pytest.raises(StudyRetentionError, match="plan_cases outside DevelopmentCorpusProvider"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_second_legacy_v1_plan_cases_call_inside_render_diagnostic_is_rejected(
+    tmp_path: Path,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    truth_path = repo_root / "src/manufacturing_vision_studio/e1/study_truth_v2.py"
+    original = truth_path.read_text()
+    modified = original.replace(
+        "templates = v1_generator.plan_cases(DatasetProfile.FULL)",
+        "shadow = v1_generator.plan_cases(DatasetProfile.FULL)\n"
+        "    templates = v1_generator.plan_cases(DatasetProfile.FULL)",
+    )
+    assert modified != original
+    truth_path.write_text(modified)
+
+    with pytest.raises(StudyRetentionError, match="plan_cases outside DevelopmentCorpusProvider"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("duplicate_source", "expected_detail"),
+    (
+        (
+            "\n\nclass DevelopmentCorpusProvider:\n"
+            "    def load(self) -> object:\n"
+            "        plans = self._generator.plan_cases(EvaluationScope.DEVELOPMENT)\n"
+            "        return plans\n",
+            "expected one top-level DevelopmentCorpusProvider class",
+        ),
+        (
+            "\n\ndef render_diagnostic(\n"
+            "    plan: FrozenDiagnosticPlan,\n"
+            "    study_protocol: StudyProtocolV2,\n"
+            "    e1_protocol: E1V2Protocol,\n"
+            ") -> StudyTruthCase:\n"
+            "    v1_generator = E1Generator()\n"
+            "    templates = v1_generator.plan_cases(DatasetProfile.FULL)\n"
+            "    return templates[0]\n",
+            "expected one top-level render_diagnostic function",
+        ),
+    ),
+)
+def test_duplicate_approved_plan_cases_declarations_fail_closed(
+    tmp_path: Path,
+    duplicate_source: str,
+    expected_detail: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        Path("src/manufacturing_vision_studio/e1/study_truth_v2.py"),
+        duplicate_source,
+    )
+
+    with pytest.raises(StudyRetentionError, match=expected_detail):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("needle", "replacement", "expected_detail"),
+    (
+        (
+            "    def load(self) -> DevelopmentCorpus:\n",
+            "    async def load(self) -> DevelopmentCorpus:\n"
+            "        raise RuntimeError\n\n"
+            "    def load(self) -> DevelopmentCorpus:\n",
+            "expected one top-level DevelopmentCorpusProvider.load method",
+        ),
+        (
+            "def render_diagnostic(\n",
+            "async def render_diagnostic(*args: object) -> object:\n"
+            "    raise RuntimeError\n\n"
+            "def render_diagnostic(\n",
+            "expected one top-level render_diagnostic function",
+        ),
+    ),
+)
+def test_async_duplicate_approved_plan_declarations_fail_closed(
+    tmp_path: Path,
+    needle: str,
+    replacement: str,
+    expected_detail: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    truth_path = repo_root / "src/manufacturing_vision_studio/e1/study_truth_v2.py"
+    original = truth_path.read_text()
+    modified = original.replace(needle, replacement)
+    assert modified != original
+    truth_path.write_text(modified)
+
+    with pytest.raises(StudyRetentionError, match=expected_detail):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("needle", "replacement"),
+    (
+        (
+            "plans = self._generator.plan_cases(EvaluationScope.DEVELOPMENT)",
+            "# harmless line shift\n"
+            "        plans = self._generator.plan_cases(EvaluationScope.DEVELOPMENT)",
+        ),
+        (
+            "templates = v1_generator.plan_cases(DatasetProfile.FULL)",
+            "# harmless line shift\n"
+            "    templates = v1_generator.plan_cases(DatasetProfile.FULL)",
+        ),
+    ),
+)
+def test_exact_approved_plan_cases_sites_allow_harmless_line_shifts(
+    tmp_path: Path,
+    needle: str,
+    replacement: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    truth_path = repo_root / "src/manufacturing_vision_studio/e1/study_truth_v2.py"
+    original = truth_path.read_text()
+    modified = original.replace(needle, replacement)
+    assert modified != original
+    truth_path.write_text(modified)
+
+    report = scan_study_dependencies(protocol, repo_root=repo_root)
+
+    assert report.forbidden_direct_edges == ()
+    assert report.protected_scope_references == ()
+
+
+@pytest.mark.parametrize(
+    "role",
+    (
+        "study-truth-development-plan",
+        "study-truth-legacy-plan",
+    ),
+)
+def test_exact_approved_plan_calls_reject_same_location_clones(role: str) -> None:
+    source_module = "manufacturing_vision_studio.e1.study_truth_v2"
+    truth_path = PROJECT_ROOT / "src/manufacturing_vision_studio/e1/study_truth_v2.py"
+    tree = ast.parse(truth_path.read_bytes(), filename=str(truth_path))
+    policy = retention_module._validate_initializer_policy(
+        source_module,
+        tree,
+        frozenset(),
+    )
+    analyzer = retention_module._SourceFlowAnalyzer(
+        source_module=source_module,
+        known_modules=frozenset(),
+        initializer_policy=policy,
+    )
+    site = next(site for site in policy.exact_call_sites if site.role == role)
+    approved_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and retention_module._source_location(source_module, node) == site.location
+    ]
+    assert len(approved_calls) == 1
+    approved_call = approved_calls[0]
+    cloned_call = ast.copy_location(
+        ast.Call(
+            func=ast.Name(id="cloned_plan_cases", ctx=ast.Load()),
+            args=[],
+            keywords=[],
+        ),
+        approved_call,
+    )
+    assert (
+        retention_module._source_location(source_module, cloned_call) == site.location
+    )
+
+    assert analyzer._exact_call_site(approved_call) == site
+    assert analyzer._exact_call_site(cloned_call) is None
 
 
 def test_performance_root_cannot_reach_freecad_adapter(tmp_path: Path) -> None:

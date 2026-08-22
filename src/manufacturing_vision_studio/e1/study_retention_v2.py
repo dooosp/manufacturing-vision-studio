@@ -655,6 +655,8 @@ _ExactRole = Literal[
     "pep562-cache-globals",
     "pep562-dir-globals",
     "cli-dataclass-getattr",
+    "study-truth-development-plan",
+    "study-truth-legacy-plan",
 ]
 
 
@@ -1033,6 +1035,12 @@ class _ExactCallSite:
     role: _ExactRole
     location: _SourceLocation
     required_bindings: tuple[tuple[str, _ResolvedIdentity], ...]
+    identity_node: ast.AST | None = field(
+        default=None,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1925,8 +1933,15 @@ class _SourceFlowAnalyzer:
         self.known_modules = known_modules
         self.initializer_policy = initializer_policy
         self._exact_sites_by_location = {
-            site.location: site for site in initializer_policy.exact_call_sites
+            site.location: site
+            for site in initializer_policy.exact_call_sites
+            if site.identity_node is None
         }
+        self._exact_identity_sites = tuple(
+            site
+            for site in initializer_policy.exact_call_sites
+            if site.identity_node is not None
+        )
         self._future_annotations = False
         self._stats = _StatsBuilder()
         self._active_transfers: list[_ActiveTransfer] = []
@@ -2007,6 +2022,9 @@ class _SourceFlowAnalyzer:
         return _ModuleFlowResult(final_states, facts, stats)
 
     def _exact_call_site(self, node: ast.AST) -> _ExactCallSite | None:
+        for site in self._exact_identity_sites:
+            if site.identity_node is node:
+                return site
         return self._exact_sites_by_location.get(
             _source_location(self.source_module, node)
         )
@@ -3106,6 +3124,8 @@ class _SourceFlowAnalyzer:
         if post is None:
             return _ExprResult(None, None, raises, deferred, facts)
         exact_site = self._exact_call_site(node.func)
+        if exact_site is None:
+            exact_site = self._exact_call_site(node)
         facts = _join_policy(facts, self._pending_exact_use(exact_site))
         raises = _join_states(raises, post)
         function_value = function.value
@@ -3311,13 +3331,13 @@ class _SourceFlowAnalyzer:
                 ),
             )
         call_name = _call_name(node.func)
-        if (
-            call_name == "plan_cases" or exact_plan_cases
-        ) and not _is_allowed_development_provider_plan(
-            self.source_module,
-            ("DevelopmentCorpusProvider",),
-            node,
-        ) and not _is_allowed_legacy_v1_plan(self.source_module, node):
+        allowed_plan_roles = {
+            "study-truth-development-plan",
+            "study-truth-legacy-plan",
+        }
+        if (call_name == "plan_cases" or exact_plan_cases) and (
+            exact_site is None or exact_site.role not in allowed_plan_roles
+        ):
             facts = _join_policy(
                 facts,
                 _PolicyFacts(
@@ -6976,6 +6996,8 @@ def _validate_initializer_policy(
     tree: ast.Module,
     projected_modules: frozenset[str],
 ) -> _InitializerPolicy:
+    if source_module == "manufacturing_vision_studio.e1.study_truth_v2":
+        return _validate_study_truth_plan_policy(source_module, tree)
     if source_module == "manufacturing_vision_studio.e1.study_cli_v2":
         return _validate_cli_json_policy(source_module, tree)
     if source_module not in _PROJECTED_PACKAGE_ROOTS:
@@ -7230,6 +7252,85 @@ def _validate_initializer_policy(
     )
 
 
+def _validate_study_truth_plan_policy(
+    source_module: str,
+    tree: ast.Module,
+) -> _InitializerPolicy:
+    def fail(detail: str) -> NoReturn:
+        raise StudyRetentionError(
+            f"{source_module}: initializer capability structure: {detail}"
+        )
+
+    development_classes = [
+        statement
+        for statement in tree.body
+        if isinstance(statement, ast.ClassDef)
+        and statement.name == "DevelopmentCorpusProvider"
+    ]
+    if len(development_classes) != 1:
+        fail("expected one top-level DevelopmentCorpusProvider class")
+
+    load_methods = [
+        statement
+        for statement in development_classes[0].body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and statement.name == "load"
+    ]
+    if len(load_methods) != 1 or not isinstance(load_methods[0], ast.FunctionDef):
+        fail("expected one top-level DevelopmentCorpusProvider.load method")
+    load_method = load_methods[0]
+    development_plan = _approved_plan_cases_call(
+        load_method.body,
+        target_name="plans",
+        matcher=_is_development_provider_plan_call,
+    )
+    if development_plan is None:
+        fail(
+            "expected one approved plans = "
+            "self._generator.plan_cases(EvaluationScope.DEVELOPMENT) assignment"
+        )
+
+    legacy_functions = [
+        statement
+        for statement in tree.body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and statement.name == "render_diagnostic"
+    ]
+    if len(legacy_functions) != 1 or not isinstance(
+        legacy_functions[0], ast.FunctionDef
+    ):
+        fail("expected one top-level render_diagnostic function")
+    legacy_function = legacy_functions[0]
+    legacy_plan = _approved_plan_cases_call(
+        legacy_function.body,
+        target_name="templates",
+        matcher=_is_legacy_v1_plan_call,
+    )
+    if legacy_plan is None:
+        fail(
+            "expected one approved templates = "
+            "v1_generator.plan_cases(DatasetProfile.FULL) assignment"
+        )
+
+    return _InitializerPolicy(
+        (
+            _ExactCallSite(
+                "study-truth-development-plan",
+                _source_location(source_module, development_plan),
+                (),
+                identity_node=development_plan,
+            ),
+            _ExactCallSite(
+                "study-truth-legacy-plan",
+                _source_location(source_module, legacy_plan),
+                (),
+                identity_node=legacy_plan,
+            ),
+        ),
+        (),
+    )
+
+
 def _validate_cli_json_policy(
     source_module: str,
     tree: ast.Module,
@@ -7399,6 +7500,64 @@ def _is_two_name_call(
         and _is_name(node.args[0], first, ast.Load)
         and _is_name(node.args[1], second, ast.Load)
         and not node.keywords
+    )
+
+
+def _approved_plan_cases_call(
+    statements: Sequence[ast.stmt],
+    *,
+    target_name: str,
+    matcher: Callable[[ast.Call], bool],
+) -> ast.Call | None:
+    matches: list[ast.Call] = []
+    for statement in statements:
+        if (
+            not isinstance(statement, ast.Assign)
+            or len(statement.targets) != 1
+            or not _is_name(statement.targets[0], target_name, ast.Store)
+            or not isinstance(statement.value, ast.Call)
+            or not matcher(statement.value)
+        ):
+            continue
+        matches.append(statement.value)
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def _is_development_provider_plan_call(node: ast.Call) -> bool:
+    if (
+        not isinstance(node.func, ast.Attribute)
+        or node.func.attr != "plan_cases"
+        or not isinstance(node.func.value, ast.Attribute)
+        or node.func.value.attr != "_generator"
+        or not _is_name(node.func.value.value, "self", ast.Load)
+        or len(node.args) != 1
+        or node.keywords
+    ):
+        return False
+    argument = node.args[0]
+    return (
+        isinstance(argument, ast.Attribute)
+        and _is_name(argument.value, "EvaluationScope", ast.Load)
+        and argument.attr == "DEVELOPMENT"
+    )
+
+
+def _is_legacy_v1_plan_call(node: ast.Call) -> bool:
+    if (
+        not isinstance(node.func, ast.Attribute)
+        or node.func.attr != "plan_cases"
+        or not _is_name(node.func.value, "v1_generator", ast.Load)
+        or len(node.args) != 1
+        or node.keywords
+    ):
+        return False
+    argument = node.args[0]
+    return (
+        isinstance(argument, ast.Attribute)
+        and _is_name(argument.value, "DatasetProfile", ast.Load)
+        and argument.attr == "FULL"
     )
 
 
@@ -7657,52 +7816,6 @@ def _call_name(node: ast.expr) -> str | None:
 def _is_package_target(value: str) -> bool:
     return value == "manufacturing_vision_studio" or value.startswith(
         "manufacturing_vision_studio."
-    )
-
-
-def _is_allowed_development_provider_plan(
-    source_module: str,
-    class_stack: Sequence[str],
-    node: ast.Call,
-) -> bool:
-    if (
-        source_module != "manufacturing_vision_studio.e1.study_truth_v2"
-        or tuple(class_stack) != ("DevelopmentCorpusProvider",)
-        or not isinstance(node.func, ast.Attribute)
-        or not isinstance(node.func.value, ast.Attribute)
-        or not isinstance(node.func.value.value, ast.Name)
-        or node.func.value.value.id != "self"
-        or node.func.value.attr != "_generator"
-        or len(node.args) != 1
-        or node.keywords
-    ):
-        return False
-    argument = node.args[0]
-    return (
-        isinstance(argument, ast.Attribute)
-        and isinstance(argument.value, ast.Name)
-        and argument.value.id == "EvaluationScope"
-        and argument.attr == "DEVELOPMENT"
-    )
-
-
-def _is_allowed_legacy_v1_plan(source_module: str, node: ast.Call) -> bool:
-    if source_module != "manufacturing_vision_studio.e1.study_truth_v2":
-        return False
-    if (
-        not isinstance(node.func, ast.Attribute)
-        or not isinstance(node.func.value, ast.Name)
-        or node.func.value.id != "v1_generator"
-        or len(node.args) != 1
-        or node.keywords
-    ):
-        return False
-    argument = node.args[0]
-    return (
-        isinstance(argument, ast.Attribute)
-        and isinstance(argument.value, ast.Name)
-        and argument.value.id == "DatasetProfile"
-        and argument.attr == "FULL"
     )
 
 
