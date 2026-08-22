@@ -4,6 +4,7 @@ import ast
 import subprocess
 import sys
 import textwrap
+import warnings
 from dataclasses import replace
 from pathlib import Path
 
@@ -97,6 +98,14 @@ def _compiled_source(source: str) -> str:
 def _execute_source(source: str, namespace: dict[str, object]) -> None:
     code = compile(source, "<dependency-guard-runtime-trace>", "exec", dont_inherit=True)
     exec(code, namespace)
+
+
+def _compile_without_emitting_warnings(source: str) -> object:
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", SyntaxWarning)
+        code = compile(source, "<dependency-guard-warning-fixture>", "exec", dont_inherit=True)
+    assert [warning.category for warning in caught] == [SyntaxWarning]
+    return code
 
 
 def test_real_task_7_checkout_has_the_exact_reviewed_dependency_closure() -> None:
@@ -5076,7 +5085,13 @@ def test_compare_pair_truth_preserves_python_singleton_semantics(
     source: str,
     expected_truth: object,
 ) -> None:
-    _, result = _analyze_source(source)
+    tree = ast.parse(source)
+    analyzer = retention_module._SourceFlowAnalyzer(
+        source_module="source_flow_stats_fixture",
+        known_modules=frozenset(),
+        initializer_policy=retention_module._InitializerPolicy((), ()),
+    )
+    result = analyzer.analyze(tree)
     value = result.final_states[0].resolve("VALUE").value
 
     assert value.truth is expected_truth
@@ -5085,13 +5100,14 @@ def test_compare_pair_truth_preserves_python_singleton_semantics(
 def test_compare_short_circuit_keeps_real_sys_carrier_visible_to_public_scanner(
     tmp_path: Path,
 ) -> None:
-    source = _compiled_source(
+    source = (
         "import sys as carrier\n"
         "FLAG = 1 is True is (carrier := carrier.stdout)\n"
         "REGISTRY = carrier.modules\n"
     )
+    code = _compile_without_emitting_warnings(source)
     namespace: dict[str, object] = {}
-    exec(source, namespace)
+    exec(code, namespace)
     assert namespace["FLAG"] is False
     assert namespace["carrier"] is sys
 
