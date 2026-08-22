@@ -351,11 +351,17 @@ def _inspect_open_store(
         except StudyArtifactError:
             invalid_json.append(path)
     if invalid_json:
-        return _invalid_state(
+        invalid = _invalid_state(
             ("ARTIFACT_VERIFICATION_FAILED",),
             present_paths=present,
             invalid_paths=tuple(invalid_json),
             verified_json=verified,
+        )
+        return _verify_invalid_terminal_projection(
+            protocol,
+            store,
+            invalid,
+            present_set,
         )
     relationship_reasons = _relationship_reasons(present_set, retained_present)
     if relationship_reasons:

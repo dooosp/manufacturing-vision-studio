@@ -2323,6 +2323,42 @@ def test_verify_does_not_credit_report_when_decision_json_is_malformed(
     assert report.verify_rate == len(state.verified_paths) / len(state.present_paths)
 
 
+def test_malformed_upstream_json_invalidates_stale_derived_decision_and_report(
+    tmp_path: Path,
+) -> None:
+    runner = _publish_semantic_packet(tmp_path)
+    artifact_root = runner.protocol.artifact_root
+    decision_path = artifact_root / "decision.json"
+    report_path = artifact_root / "report.md"
+    development_path = artifact_root / "known-transform-development-120.json"
+    report_path.write_bytes(
+        runner_module._decision_report(
+            cast(dict[str, object], json.loads(decision_path.read_bytes()))
+        )
+    )
+    development_path.write_bytes(b"{")
+
+    state = runner_module.inspect_state(runner.protocol, repo_root=tmp_path)
+    report = runner.verify()
+
+    assert state.status.study_valid is False
+    assert state.status.terminal_decision == "STUDY_INVALID"
+    assert state.status.reasons == ("ARTIFACT_VERIFICATION_FAILED",)
+    assert len(state.invalid_paths) == 3
+    assert set(state.invalid_paths) == {
+        "known-transform-development-120.json",
+        "decision.json",
+        "report.md",
+    }
+    assert len(state.present_paths) == 14
+    assert len(state.verified_paths) == 11
+    assert "known-transform-development-120.json" not in state.verified_paths
+    assert "decision.json" not in state.verified_paths
+    assert "report.md" not in state.verified_paths
+    assert report.verified_paths == state.verified_paths
+    assert report.verify_rate == pytest.approx(11 / 14)
+
+
 def test_semantic_inspection_accepts_complete_schema_valid_packet(tmp_path: Path) -> None:
     runner = _publish_semantic_packet(tmp_path)
 
