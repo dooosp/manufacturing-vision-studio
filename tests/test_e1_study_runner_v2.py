@@ -2297,8 +2297,38 @@ def _publish_semantic_packet(
     return StudyRunner(protocol, repo_root=tmp_path)
 
 
+def _seal_current_invalid_projection(runner: StudyRunner, *, repo_root: Path) -> None:
+    state = runner_module.inspect_state(runner.protocol, repo_root=repo_root)
+    assert state.status.study_valid is False
+    assert state.status.terminal_decision == "STUDY_INVALID"
+    decision_document = runner_module._decision_document(
+        runner.protocol,
+        state,
+        "STUDY_INVALID",
+    )
+    store = StudyArtifactStore.open_existing(
+        runner.protocol.artifact_root,
+        allowed_root=repo_root,
+    )
+    assert store is not None
+    try:
+        store.publish_json("decision.json", decision_document)
+        decision = store.verify_json_result(
+            "decision.json",
+            expected_record_type="decision",
+        )
+        store.publish_bytes(
+            "report.md",
+            runner_module._decision_report(decision.document),
+            media_type="text/markdown; charset=utf-8",
+        )
+    finally:
+        store.close()
+
+
 def test_verify_does_not_credit_report_when_decision_json_is_malformed(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runner = _publish_semantic_packet(tmp_path)
     decision_path = runner.protocol.artifact_root / "decision.json"
@@ -2309,6 +2339,7 @@ def test_verify_does_not_credit_report_when_decision_json_is_malformed(
         )
     )
     decision_path.write_bytes(b"{")
+    deep_calls = _patch_successful_finalization_evidence(monkeypatch)
 
     state = runner_module.inspect_state(runner.protocol, repo_root=tmp_path)
     report = runner.verify()
@@ -2321,6 +2352,7 @@ def test_verify_does_not_credit_report_when_decision_json_is_malformed(
     assert "report.md" not in state.verified_paths
     assert report.verified_paths == state.verified_paths
     assert report.verify_rate == len(state.verified_paths) / len(state.present_paths)
+    assert deep_calls == ["validation", "retention", "lineage"]
 
 
 @pytest.mark.parametrize(
@@ -2379,6 +2411,7 @@ def test_verify_does_not_credit_report_when_decision_json_is_malformed(
 )
 def test_malformed_upstream_json_invalidates_stale_derived_decision_and_report(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     malformed_path: str,
     expected_invalid: set[str],
 ) -> None:
@@ -2392,6 +2425,7 @@ def test_malformed_upstream_json_invalidates_stale_derived_decision_and_report(
         )
     )
     (artifact_root / malformed_path).write_bytes(b"{")
+    deep_calls = _patch_successful_finalization_evidence(monkeypatch)
 
     state = runner_module.inspect_state(runner.protocol, repo_root=tmp_path)
     report = runner.verify()
@@ -2408,6 +2442,11 @@ def test_malformed_upstream_json_invalidates_stale_derived_decision_and_report(
     assert "report.md" not in state.verified_paths
     assert report.verified_paths == state.verified_paths
     assert report.verify_rate == pytest.approx((14 - len(expected_invalid)) / 14)
+    assert deep_calls == (
+        []
+        if malformed_path == "implementation-validation.json"
+        else ["validation", "retention", "lineage"]
+    )
 
 
 def test_semantic_inspection_accepts_complete_schema_valid_packet(tmp_path: Path) -> None:
@@ -2750,6 +2789,78 @@ def test_status_and_verify_reject_mutated_retained_copy(
         fixture.store.close()
 
 
+@pytest.mark.parametrize(
+    ("invalid_case", "deep_failure", "expected_present", "expected_shallow_verified"),
+    (
+        ("missing_retained_candidate", "retention", 13, 3),
+        ("semantic_invalid_with_mutated_retained_candidate", "retention", 14, 6),
+        ("semantic_invalid_with_bad_lineage", "lineage", 14, 6),
+    ),
+)
+def test_verify_deeply_rejects_validation_anchored_invalid_terminal_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_case: str,
+    deep_failure: str,
+    expected_present: int,
+    expected_shallow_verified: int,
+) -> None:
+    runner = _publish_semantic_packet(
+        tmp_path,
+        tamper_diagnostic_reduction=invalid_case.startswith("semantic_invalid"),
+        include_decision=False,
+    )
+    candidate_a = runner.protocol.artifact_root / "retained-inputs/candidate-a.json"
+    if invalid_case == "missing_retained_candidate":
+        candidate_a.unlink()
+    elif invalid_case == "semantic_invalid_with_mutated_retained_candidate":
+        candidate_a.write_bytes(b'{"candidate":"A","outcome":"FORGED"}')
+    _seal_current_invalid_projection(runner, repo_root=tmp_path)
+
+    shallow = runner_module.inspect_state(runner.protocol, repo_root=tmp_path)
+    assert len(shallow.present_paths) == expected_present
+    assert len(shallow.verified_paths) == expected_shallow_verified
+    assert "decision.json" in shallow.verified_paths
+    assert "report.md" in shallow.verified_paths
+
+    deep_calls: list[str] = []
+
+    def verify_validation(*args: object, **kwargs: object) -> SimpleNamespace:
+        del args, kwargs
+        deep_calls.append("validation")
+        return SimpleNamespace(execution_commit="f" * 40)
+
+    def verify_retention(*args: object, **kwargs: object) -> SimpleNamespace:
+        del args, kwargs
+        deep_calls.append("retention")
+        if deep_failure == "retention":
+            raise runner_module.StudyRetentionError("retained evidence is untrusted")
+        return SimpleNamespace(evidence_commit="e" * 40)
+
+    def verify_lineage(*args: object, **kwargs: object) -> str:
+        del args, kwargs
+        deep_calls.append("lineage")
+        if deep_failure == "lineage":
+            raise StudyStateError("retained evidence lineage changed")
+        return "e" * 40
+
+    monkeypatch.setattr(runner_module, "verify_implementation_validation", verify_validation)
+    monkeypatch.setattr(runner_module, "verify_retention_audit", verify_retention)
+    monkeypatch.setattr(runner_module, "_verify_git_lineage", verify_lineage)
+
+    report = runner.verify()
+
+    expected_calls = ["validation", "retention"]
+    if deep_failure == "lineage":
+        expected_calls.append("lineage")
+    assert deep_calls == expected_calls
+    assert report.verified_paths == ()
+    assert report.verify_rate == 0.0
+    assert report.status.study_valid is False
+    assert report.status.terminal_decision == "STUDY_INVALID"
+    assert report.status.reasons == ("ARTIFACT_VERIFICATION_FAILED",)
+
+
 def test_finalize_rejects_pending_without_creating_artifacts(tmp_path: Path) -> None:
     runner = _runner(tmp_path, root_name="missing-artifacts")
 
@@ -3050,6 +3161,9 @@ def test_finalize_seals_semantically_invalid_packet_with_honest_report(
     assert repeated.record_sha256 == published.record_sha256
     assert len(publications) == publication_count
     assert deep_calls == [
+        "validation",
+        "retention",
+        "lineage",
         "validation",
         "retention",
         "lineage",

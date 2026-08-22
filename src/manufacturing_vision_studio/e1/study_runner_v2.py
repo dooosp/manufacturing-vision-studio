@@ -1554,9 +1554,7 @@ class StudyRunner:
             repo_root=self.repo_root,
             store=self._store,
         )
-        if (not state.status.study_valid) or (
-            "implementation-validation.json" not in state.verified_json
-        ):
+        if "implementation-validation.json" not in state.verified_json:
             return state
         try:
             self._verify_trusted_evidence(state)
