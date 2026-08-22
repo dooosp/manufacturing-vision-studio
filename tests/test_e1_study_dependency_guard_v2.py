@@ -692,6 +692,129 @@ def test_plan_cases_alias_outside_development_provider_is_rejected(
         scan_study_dependencies(protocol, repo_root=repo_root)
 
 
+@pytest.mark.parametrize(
+    ("target_path", "source"),
+    (
+        pytest.param(
+            RUNNER_PATH,
+            "\n\ndef forbidden(generator: object) -> object:\n"
+            "    planner = getattr(generator, 'plan_cases')\n"
+            "    return planner('development')\n",
+            id="development-runner",
+        ),
+        pytest.param(
+            Path("src/manufacturing_vision_studio/e1/study_truth_v2.py"),
+            "\n\ndef forbidden_legacy(v1_generator: object) -> object:\n"
+            "    planner = getattr(v1_generator, 'plan_cases')\n"
+            "    return planner(DatasetProfile.FULL)\n",
+            id="legacy-v1-truth",
+        ),
+    ),
+)
+def test_plan_cases_literal_getattr_alias_is_rejected(
+    tmp_path: Path,
+    target_path: Path,
+    source: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, target_path, source)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="plan_cases outside DevelopmentCorpusProvider",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "resolve = getattr\n"
+        "planner = resolve(generator, 'plan_cases')\n"
+        "return planner('development')",
+        "import builtins\n"
+        "planner = builtins.getattr(generator, 'plan_cases')\n"
+        "return planner('development')",
+        "planner = getattr(generator, 'plan_cases', None)\n"
+        "return planner('development')",
+    ),
+    ids=("builtin-alias", "builtins-member", "three-argument-default"),
+)
+def test_plan_cases_literal_getattr_alias_variants_are_rejected(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    indented_source = source.replace("\n", "\n    ")
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\n\ndef forbidden_literal_getattr(generator: object) -> object:\n"
+        f"    {indented_source}\n",
+    )
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="plan_cases outside DevelopmentCorpusProvider",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("target_path", "source"),
+    (
+        pytest.param(
+            RUNNER_PATH,
+            "\n\ndef forbidden(generator: object) -> object:\n"
+            "    return getattr(generator, 'plan_cases')('development')\n",
+            id="development-runner",
+        ),
+        pytest.param(
+            Path("src/manufacturing_vision_studio/e1/study_truth_v2.py"),
+            "\n\ndef forbidden_legacy(v1_generator: object) -> object:\n"
+            "    return getattr(v1_generator, 'plan_cases')(DatasetProfile.FULL)\n",
+            id="legacy-v1-truth",
+        ),
+    ),
+)
+def test_plan_cases_immediate_literal_getattr_call_is_rejected(
+    tmp_path: Path,
+    target_path: Path,
+    source: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, target_path, source)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="plan_cases outside DevelopmentCorpusProvider",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_plan_cases_dynamic_getattr_alias_remains_fail_closed(
+    tmp_path: Path,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\n\ndef forbidden(generator: object, member: str) -> object:\n"
+        "    planner = getattr(generator, member)\n"
+        "    return planner('development')\n",
+    )
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: namespace-reflection",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
 def test_plan_cases_alias_inside_development_provider_is_rejected(
     tmp_path: Path,
 ) -> None:

@@ -3477,7 +3477,16 @@ class _SourceFlowAnalyzer:
             )
         if "sys-module" in receiver.facts.may_capabilities and attribute == "stdout":
             return _SAFE_VALUE, _PolicyFacts()
-        return _derived_value(receiver, complete=receiver.facts.complete), _PolicyFacts()
+        value = _derived_value(receiver, complete=receiver.facts.complete)
+        if attribute == "plan_cases":
+            value = replace(
+                value,
+                facts=replace(
+                    value.facts,
+                    identity=_exact_identity(_plan_cases_callable_identity()),
+                ),
+            )
+        return value, _PolicyFacts()
 
     def _dynamic_import_call_facts(
         self,
