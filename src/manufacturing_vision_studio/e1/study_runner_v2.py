@@ -457,7 +457,7 @@ def _inspect_open_store(
             terminal_decision = "TRANSFORM_ESTIMATION_LIMITED"
             reasons = ("DEVELOPMENT_MODE_PASSED",)
     if (phase2_claim or phase2_result) and not phase2_prerequisites_met:
-        return _invalid_state(
+        invalid = _invalid_state(
             ("UNAUTHORIZED_PHASE2_ARTIFACT",),
             present_paths=present,
             invalid_paths=tuple(
@@ -469,6 +469,12 @@ def _inspect_open_store(
                 if path in present_set
             ),
             verified_json=verified,
+        )
+        return _verify_invalid_terminal_projection(
+            protocol,
+            store,
+            invalid,
+            present_set,
         )
     if "decision.json" in present_set:
         if terminal_decision == "PENDING" or not _decision_matches_state(

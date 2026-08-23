@@ -2187,6 +2187,7 @@ def _publish_semantic_packet(
     *,
     tamper_diagnostic_reduction: bool = False,
     include_decision: bool = True,
+    oracle_passed: bool = True,
     scope_mutation: Callable[[dict[str, object]], None] | None = None,
 ) -> StudyRunner:
     protocol = replace(load_study_protocol_v2(), artifact_root=tmp_path / "artifacts")
@@ -2283,7 +2284,10 @@ def _publish_semantic_packet(
             expected_record_type="scope_audit",
         )
 
-        oracle_document = minimal_valid_feature_oracle_record(protocol)
+        oracle_document = minimal_valid_feature_oracle_record(
+            protocol,
+            passed=oracle_passed,
+        )
         _bind_result_envelope(
             oracle_document,
             validation,
@@ -2367,8 +2371,12 @@ def _publish_semantic_packet(
     return StudyRunner(protocol, repo_root=tmp_path)
 
 
-def _seal_current_invalid_projection(runner: StudyRunner, *, repo_root: Path) -> None:
-    state = runner_module.inspect_state(runner.protocol, repo_root=repo_root)
+def _seal_invalid_projection(
+    runner: StudyRunner,
+    state: VerifiedStudyState,
+    *,
+    repo_root: Path,
+) -> None:
     assert state.status.study_valid is False
     assert state.status.terminal_decision == "STUDY_INVALID"
     decision_document = runner_module._decision_document(
@@ -2394,6 +2402,11 @@ def _seal_current_invalid_projection(runner: StudyRunner, *, repo_root: Path) ->
         )
     finally:
         store.close()
+
+
+def _seal_current_invalid_projection(runner: StudyRunner, *, repo_root: Path) -> None:
+    state = runner_module.inspect_state(runner.protocol, repo_root=repo_root)
+    _seal_invalid_projection(runner, state, repo_root=repo_root)
 
 
 def test_verify_does_not_credit_report_when_decision_json_is_malformed(
@@ -2933,6 +2946,76 @@ def test_verify_deeply_rejects_validation_anchored_invalid_terminal_evidence(
     assert report.status.study_valid is False
     assert report.status.terminal_decision == "STUDY_INVALID"
     assert report.status.reasons == ("ARTIFACT_VERIFICATION_FAILED",)
+
+
+def test_unauthorized_phase2_rejects_mismatched_invalid_terminal_projection(
+    tmp_path: Path,
+) -> None:
+    runner = _publish_semantic_packet(
+        tmp_path,
+        include_decision=False,
+        oracle_passed=False,
+    )
+
+    actual = runner_module.inspect_state(runner.protocol, repo_root=tmp_path)
+
+    assert actual.status.study_valid is False
+    assert actual.status.terminal_decision == "STUDY_INVALID"
+    assert actual.status.reasons == ("UNAUTHORIZED_PHASE2_ARTIFACT",)
+    expected_phase2_invalid = actual.invalid_paths
+    assert expected_phase2_invalid == (
+        "known-transform-development-120.json",
+        "phase-2-execution-claim.json",
+    )
+
+    forged = replace(actual, invalid_paths=())
+    _seal_invalid_projection(runner, forged, repo_root=tmp_path)
+
+    after = runner_module.inspect_state(runner.protocol, repo_root=tmp_path)
+    expected_invalid = tuple(
+        path
+        for path in after.present_paths
+        if path in {*expected_phase2_invalid, "decision.json", "report.md"}
+    )
+
+    assert after.status.study_valid is False
+    assert after.status.terminal_decision == "STUDY_INVALID"
+    assert after.status.reasons == ("UNAUTHORIZED_PHASE2_ARTIFACT",)
+    assert after.invalid_paths == expected_invalid
+    assert "decision.json" not in after.verified_paths
+    assert "report.md" not in after.verified_paths
+
+
+def test_unauthorized_phase2_accepts_honestly_sealed_invalid_terminal_projection(
+    tmp_path: Path,
+) -> None:
+    runner = _publish_semantic_packet(
+        tmp_path,
+        include_decision=False,
+        oracle_passed=False,
+    )
+
+    actual = runner_module.inspect_state(runner.protocol, repo_root=tmp_path)
+
+    assert actual.status.study_valid is False
+    assert actual.status.terminal_decision == "STUDY_INVALID"
+    assert actual.status.reasons == ("UNAUTHORIZED_PHASE2_ARTIFACT",)
+    expected_phase2_invalid = actual.invalid_paths
+    assert expected_phase2_invalid == (
+        "known-transform-development-120.json",
+        "phase-2-execution-claim.json",
+    )
+
+    _seal_invalid_projection(runner, actual, repo_root=tmp_path)
+
+    after = runner_module.inspect_state(runner.protocol, repo_root=tmp_path)
+
+    assert after.status.study_valid is False
+    assert after.status.terminal_decision == "STUDY_INVALID"
+    assert after.status.reasons == ("UNAUTHORIZED_PHASE2_ARTIFACT",)
+    assert after.invalid_paths == expected_phase2_invalid
+    assert "decision.json" in after.verified_paths
+    assert "report.md" in after.verified_paths
 
 
 def test_finalize_rejects_pending_without_creating_artifacts(tmp_path: Path) -> None:
