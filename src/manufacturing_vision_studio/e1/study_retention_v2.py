@@ -1523,20 +1523,68 @@ def _join_flow(*results: _FlowResult) -> _FlowResult:
     )
 
 
-def _policy_only_expression(result: _ExprResult) -> _ExprResult:
+def _policy_only_deferred_bodies(
+    bodies: tuple[_DeferredBody, ...], capture_state: _State
+) -> tuple[_DeferredBody, ...]:
+    rebased: list[_DeferredBody] = []
+    for body in bodies:
+        prefix_length = 0
+        for captured, reachable in zip(
+            body.definition_state.frames, capture_state.frames, strict=False
+        ):
+            captured_skeleton = (
+                captured.scope_id,
+                captured.kind,
+                tuple(name for name, _slot in captured.bindings),
+                captured.global_names,
+                captured.nonlocal_names,
+            )
+            reachable_skeleton = (
+                reachable.scope_id,
+                reachable.kind,
+                tuple(name for name, _slot in reachable.bindings),
+                reachable.global_names,
+                reachable.nonlocal_names,
+            )
+            if captured_skeleton != reachable_skeleton:
+                break
+            prefix_length += 1
+        definition_state = _State(
+            (
+                *capture_state.frames[:prefix_length],
+                *body.definition_state.frames[prefix_length:],
+            )
+        )
+        rebased.append(replace(body, definition_state=definition_state))
+    return tuple(rebased)
+
+
+def _policy_only_expression(
+    result: _ExprResult, capture_state: _State
+) -> _ExprResult:
     return _ExprResult(
         None,
         None,
         None,
-        _DeferredEffects(bodies=result.deferred.bodies),
+        _DeferredEffects(
+            bodies=_policy_only_deferred_bodies(
+                result.deferred.bodies, capture_state
+            )
+        ),
         result.facts,
     )
 
 
-def _policy_only_statement(result: _FlowResult) -> _FlowResult:
+def _policy_only_statement(
+    result: _FlowResult, capture_state: _State
+) -> _FlowResult:
     return _FlowResult(
         None,
-        deferred=_DeferredEffects(bodies=result.deferred.bodies),
+        deferred=_DeferredEffects(
+            bodies=_policy_only_deferred_bodies(
+                result.deferred.bodies, capture_state
+            )
+        ),
         facts=result.facts,
     )
 
@@ -3754,7 +3802,8 @@ class _SourceFlowAnalyzer:
                             expression,
                             state,
                             _TransferContext("unreachable", False, False, False),
-                        )
+                        ),
+                        state,
                     )
                 )
             else:
@@ -5011,13 +5060,15 @@ class _SourceFlowAnalyzer:
             (condition.falsy, node.orelse),
         ):
             if exit is None:
+                capture_state = condition.post_state or state
                 branches.append(
                     _policy_only_statement(
                         self._transfer_statements(
                             statements,
-                            condition.post_state or state,
+                            capture_state,
                             _TransferContext("unreachable", False, False, False),
-                        )
+                        ),
+                        capture_state,
                     )
                 )
             else:

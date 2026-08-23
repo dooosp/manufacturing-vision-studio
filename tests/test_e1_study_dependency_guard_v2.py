@@ -5690,6 +5690,153 @@ def test_unreachable_branch_still_emits_policy_facts(tmp_path: Path) -> None:
         scan_study_dependencies(protocol, repo_root=repo_root)
 
 
+@pytest.mark.parametrize(
+    ("target_path", "source", "expected_error"),
+    (
+        pytest.param(
+            Path("src/manufacturing_vision_studio/e1/study_truth_v2.py"),
+            "scope_alias = EvaluationScope\n"
+            "if False:\n"
+            "    scope_alias = None\n"
+            "    deferred_capture = lambda: scope_alias.CALIBRATION\n",
+            r"protected scope reference.*CALIBRATION",
+            id="evaluation-scope-if-lambda",
+        ),
+        pytest.param(
+            Path("src/manufacturing_vision_studio/e1/study_truth_v2.py"),
+            "scope_alias = EvaluationScope\n"
+            "if False:\n"
+            "    scope_alias = None\n"
+            "    def deferred_capture() -> object:\n"
+            "        return scope_alias.CALIBRATION\n",
+            r"protected scope reference.*CALIBRATION",
+            id="evaluation-scope-if-function",
+        ),
+        pytest.param(
+            Path("src/manufacturing_vision_studio/e1/study_truth_v2.py"),
+            "scope_alias = EvaluationScope\n"
+            "if False:\n"
+            "    scope_alias = None\n"
+            "    deferred_capture = (scope_alias.CALIBRATION for _ in ())\n",
+            r"protected scope reference.*CALIBRATION",
+            id="evaluation-scope-if-generator",
+        ),
+        pytest.param(
+            Path("src/manufacturing_vision_studio/e1/study_truth_v2.py"),
+            "scope_alias = EvaluationScope\n"
+            "dead = ((scope_alias := None), "
+            "(lambda: scope_alias.CALIBRATION)) if False else None\n",
+            r"protected scope reference.*CALIBRATION",
+            id="evaluation-scope-ifexp-lambda",
+        ),
+        pytest.param(
+            Path("src/manufacturing_vision_studio/e1/study_truth_v2.py"),
+            "scope_alias = EvaluationScope\n"
+            "dead = ((scope_alias := None), "
+            "(scope_alias.CALIBRATION for _ in ())) if False else None\n",
+            r"protected scope reference.*CALIBRATION",
+            id="evaluation-scope-ifexp-generator",
+        ),
+        pytest.param(
+            RUNNER_PATH,
+            "def forbidden_deferred(generator: object) -> None:\n"
+            "    planner = generator.plan_cases\n"
+            "    if False:\n"
+            "        planner = None\n"
+            "        deferred_capture = lambda: planner('development')\n",
+            "plan_cases outside DevelopmentCorpusProvider",
+            id="plan-cases-if-lambda",
+        ),
+        pytest.param(
+            RUNNER_PATH,
+            "def forbidden_deferred(generator: object) -> None:\n"
+            "    planner = generator.plan_cases\n"
+            "    if False:\n"
+            "        planner = None\n"
+            "        def deferred_capture() -> object:\n"
+            "            return planner('development')\n",
+            "plan_cases outside DevelopmentCorpusProvider",
+            id="plan-cases-if-function",
+        ),
+        pytest.param(
+            RUNNER_PATH,
+            "def forbidden_deferred(generator: object) -> None:\n"
+            "    planner = generator.plan_cases\n"
+            "    if False:\n"
+            "        planner = None\n"
+            "        deferred_capture = (planner('development') for _ in ())\n",
+            "plan_cases outside DevelopmentCorpusProvider",
+            id="plan-cases-if-generator",
+        ),
+        pytest.param(
+            RUNNER_PATH,
+            "def forbidden_deferred(generator: object) -> None:\n"
+            "    planner = generator.plan_cases\n"
+            "    dead = ((planner := None), "
+            "(lambda: planner('development'))) if False else None\n",
+            "plan_cases outside DevelopmentCorpusProvider",
+            id="plan-cases-ifexp-lambda",
+        ),
+        pytest.param(
+            RUNNER_PATH,
+            "def forbidden_deferred(generator: object) -> None:\n"
+            "    planner = generator.plan_cases\n"
+            "    dead = ((planner := None), "
+            "(planner('development') for _ in ())) if False else None\n",
+            "plan_cases outside DevelopmentCorpusProvider",
+            id="plan-cases-ifexp-generator",
+        ),
+    ),
+)
+def test_unreachable_branch_rebases_deferred_policy_capture_before_dead_writes(
+    tmp_path: Path,
+    target_path: Path,
+    source: str,
+    expected_error: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, target_path, "\n" + _compiled_source(source))
+
+    with pytest.raises(StudyRetentionError, match=expected_error):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    ("target_path", "source", "expected_error"),
+    (
+        pytest.param(
+            Path("src/manufacturing_vision_studio/e1/study_truth_v2.py"),
+            "scope_alias = EvaluationScope\n"
+            "if False:\n"
+            "    deferred_capture = lambda: scope_alias.CALIBRATION\n",
+            r"protected scope reference.*CALIBRATION",
+            id="evaluation-scope-if-lambda",
+        ),
+        pytest.param(
+            RUNNER_PATH,
+            "def forbidden_deferred(generator: object) -> None:\n"
+            "    planner = generator.plan_cases\n"
+            "    dead = (planner('development') for _ in ()) if False else None\n",
+            "plan_cases outside DevelopmentCorpusProvider",
+            id="plan-cases-ifexp-generator",
+        ),
+    ),
+)
+def test_unreachable_deferred_policy_capture_without_rebinding_remains_exact(
+    tmp_path: Path,
+    target_path: Path,
+    source: str,
+    expected_error: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, target_path, "\n" + _compiled_source(source))
+
+    with pytest.raises(StudyRetentionError, match=expected_error):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
 def test_live_if_statement_preserves_runtime_effects_and_raises() -> None:
     _, result = _analyze_source(
         "try:\n"
