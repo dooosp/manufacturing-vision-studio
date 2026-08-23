@@ -1282,6 +1282,14 @@ def _has_exact_identity(value: _AbsValue, expected: _ResolvedIdentity) -> bool:
     )
 
 
+def _sys_module_identity() -> _ResolvedIdentity:
+    return _ResolvedIdentity("imported", "sys", "<module>")
+
+
+def _has_exact_sys_module(value: _AbsValue) -> bool:
+    return _has_exact_identity(value, _sys_module_identity())
+
+
 def _protected_scope_fact(
     source_module: str,
     node: ast.AST,
@@ -3780,9 +3788,16 @@ class _SourceFlowAnalyzer:
             except (TypeError, ValueError):
                 return _Truth.UNKNOWN
         if isinstance(op, (ast.Is, ast.IsNot)):
-            left_sys = "sys-module" in left.facts.may_capabilities
-            right_sys = "sys-module" in right.facts.may_capabilities
-            if left_sys != right_sys and left.facts.complete and right.facts.complete:
+            exact_sys_mismatch = (
+                _has_exact_sys_module(left)
+                and right.facts.complete
+                and "sys-module" not in right.facts.may_capabilities
+            ) or (
+                _has_exact_sys_module(right)
+                and left.facts.complete
+                and "sys-module" not in left.facts.may_capabilities
+            )
+            if exact_sys_mismatch:
                 return _Truth.FALSE if isinstance(op, ast.Is) else _Truth.TRUE
         return _Truth.UNKNOWN
 

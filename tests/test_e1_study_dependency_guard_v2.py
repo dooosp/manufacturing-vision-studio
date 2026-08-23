@@ -1611,6 +1611,35 @@ def test_real_pep562_initializers_preserve_complete_dependency_closure(
     assert dict(report.direct_import_allowlist) == dict(protocol.direct_import_allowlist())
 
 
+def test_may_sys_identity_fold_cannot_hide_pep562_import_module_rebinding(
+    tmp_path: Path,
+) -> None:
+    rebind_source = _compiled_source(
+        "import sys\n"
+        "class _ForgedModule:\n"
+        "    Thing = 7\n"
+        "def _runtime_false() -> bool:\n"
+        "    return False\n"
+        "_carrier = sys if _runtime_false() else sys.stdout\n"
+        "_comparison = _carrier is sys.stdout is "
+        "(import_module := lambda module_name: _ForgedModule)\n"
+    )
+    original_loader = object()
+    namespace: dict[str, object] = {"import_module": original_loader}
+    _execute_source(rebind_source, namespace)
+    assert namespace["_carrier"] is sys.stdout
+    assert namespace["import_module"] is not original_loader
+
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    relative = Path("src/manufacturing_vision_studio/__init__.py")
+    path = repo_root / relative
+    path.write_text(_compiled_source(path.read_text() + "\n" + rebind_source))
+
+    with pytest.raises(StudyRetentionError, match="initializer capability structure"):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
 @pytest.mark.parametrize(
     ("relative", "old", "new"),
     (
@@ -5550,6 +5579,92 @@ def _analyze_source(source: str) -> tuple[ast.Module, object]:
         initializer_policy=retention_module._InitializerPolicy((), ()),
     )
     return tree, analyzer.analyze(tree)
+
+
+def test_identity_comparison_does_not_treat_may_sys_as_exact_sys() -> None:
+    _, result = _analyze_source(
+        "import sys\n"
+        "def _runtime_false() -> bool:\n"
+        "    return False\n"
+        "carrier = sys if _runtime_false() else sys.stdout\n"
+        "VALUE = carrier is sys.stdout\n"
+    )
+    carrier = result.final_states[0].resolve("carrier").value
+    comparison = result.final_states[0].resolve("VALUE").value
+
+    assert carrier.facts.complete is True
+    assert carrier.facts.may_capabilities == frozenset({"sys-module"})
+    assert carrier.facts.identity.state == "top"
+    assert comparison.truth is retention_module._Truth.UNKNOWN
+
+
+def test_exact_sys_identity_comparison_controls_remain_folded() -> None:
+    analyzer = retention_module._SourceFlowAnalyzer(
+        source_module="sys_identity_comparison_fixture",
+        known_modules=frozenset(),
+        initializer_policy=retention_module._InitializerPolicy((), ()),
+    )
+    exact_sys_identity = retention_module._ResolvedIdentity(
+        "imported", "sys", "<module>"
+    )
+    exact_sys = retention_module._AbsValue(
+        facts=retention_module._ValueFacts(
+            may_capabilities=frozenset({"sys-module"}),
+            identity=retention_module._IdentityFact("exact", exact_sys_identity),
+        )
+    )
+    definitely_non_sys = retention_module._AbsValue()
+    may_sys = retention_module._AbsValue(
+        facts=retention_module._ValueFacts(
+            may_capabilities=frozenset({"sys-module"}),
+        )
+    )
+    incomplete_sys = replace(
+        exact_sys,
+        facts=replace(exact_sys.facts, complete=False),
+    )
+    identity_top_sys = replace(
+        exact_sys,
+        facts=replace(
+            exact_sys.facts,
+            identity=retention_module._IdentityFact("top"),
+        ),
+    )
+    left_node = ast.Name(id="left", ctx=ast.Load())
+    right_node = ast.Name(id="right", ctx=ast.Load())
+
+    def compare(
+        left: object,
+        right: object,
+        operator: ast.cmpop,
+    ) -> object:
+        return analyzer._compare_pair_truth(
+            left_node,
+            right_node,
+            operator,
+            left,
+            right,
+        )
+
+    assert (
+        compare(exact_sys, definitely_non_sys, ast.Is()),
+        compare(definitely_non_sys, exact_sys, ast.Is()),
+        compare(exact_sys, definitely_non_sys, ast.IsNot()),
+        compare(definitely_non_sys, exact_sys, ast.IsNot()),
+        compare(definitely_non_sys, definitely_non_sys, ast.Is()),
+        compare(may_sys, definitely_non_sys, ast.Is()),
+        compare(incomplete_sys, definitely_non_sys, ast.Is()),
+        compare(identity_top_sys, definitely_non_sys, ast.Is()),
+    ) == (
+        retention_module._Truth.FALSE,
+        retention_module._Truth.FALSE,
+        retention_module._Truth.TRUE,
+        retention_module._Truth.TRUE,
+        retention_module._Truth.UNKNOWN,
+        retention_module._Truth.UNKNOWN,
+        retention_module._Truth.UNKNOWN,
+        retention_module._Truth.UNKNOWN,
+    )
 
 
 @pytest.mark.parametrize(
