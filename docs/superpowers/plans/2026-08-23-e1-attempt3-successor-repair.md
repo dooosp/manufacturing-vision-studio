@@ -855,7 +855,8 @@ All eight rows must be `REVIEWED`. Pin `FINAL_CANDIDATE_SHA`, tree, clean status
 hash, and `git diff --check`. Confirm the successor-only range
 `ecec6e128ff560ab0e7b8ec403dca861ce0965ee..FINAL_CANDIDATE_SHA` contains only
 the four documentation paths and the union of task allowlists. Do not apply
-that narrow path assertion to the required 39-commit whole-branch review range.
+that narrow path assertion to the required whole-branch review range
+`8e4b3ff52461c907c728fb2eae6660dafba7c53a..FINAL_HEAD`.
 
 ### Step 2: Run PRE-validation identity audit
 
