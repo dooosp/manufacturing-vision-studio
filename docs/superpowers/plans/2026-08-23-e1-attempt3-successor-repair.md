@@ -113,18 +113,23 @@ Record HEAD, tree, status hash, and relevant file/diff hashes for every sibling
 listed in the design. The original dirty worktree must still be `3ced81c` with:
 
 ```text
-status SHA-256
+git status --porcelain=v1 --untracked-files=all | shasum -a 256
 80ce51d494c8a145d99ec671b778af0248f4ea512f4761e853e76c6737c1182c
 
-diff SHA-256
+git diff | shasum -a 256
 d1395bf9d4036547fd5a2ae26788a8fc27fa74eb81b4803868e457a7183d50c8
 
-working blob
+git diff --binary --full-index | shasum -a 256
+37d09fc9970a9426be57d01ea714a3a5f74af6de6ac46b2ebef81187b3efd3c0
+
+git hash-object configs/evaluation/e1-v2-candidate-selection.json
 fd85188fa27e9a9e8b9ca40be1ee88f43eb1b4e7
 ```
 
-If any protected sibling differs, stop before implementation and report the
-drift. Do not repair the sibling.
+Run those commands from the original dirty worktree; the two diff digests are
+deliberately different representations of the same one-file change. If any
+protected sibling differs under the same recorded command, stop before
+implementation and report the drift. Do not repair the sibling.
 
 ### Step 3: Recompute frozen identity
 
@@ -386,8 +391,10 @@ exact `sys`, definitely non-`sys`, may-`sys`, incomplete, and identity-top.
 ### Step 3: Prove RED
 
 ```bash
-uv run pytest tests/test_e1_study_dependency_guard_v2.py \
-  -k 'may_sys or identity_comparison_does_not_treat' -vv
+uv run pytest \
+  tests/test_e1_study_dependency_guard_v2.py::test_identity_comparison_does_not_treat_may_sys_as_exact_sys \
+  tests/test_e1_study_dependency_guard_v2.py::test_may_sys_identity_fold_cannot_hide_pep562_import_module_rebinding \
+  -vv
 ```
 
 The public failure must demonstrate a reachable protected rebinding hidden by
@@ -403,8 +410,15 @@ uncertain case unknown.
 ### Step 5: Prove GREEN and adjacent controls
 
 ```bash
-uv run pytest tests/test_e1_study_dependency_guard_v2.py \
-  -k 'may_sys or identity_comparison or singleton or chained or pep562' -vv
+uv run pytest \
+  tests/test_e1_study_dependency_guard_v2.py::test_identity_comparison_does_not_treat_may_sys_as_exact_sys \
+  tests/test_e1_study_dependency_guard_v2.py::test_may_sys_identity_fold_cannot_hide_pep562_import_module_rebinding \
+  tests/test_e1_study_dependency_guard_v2.py::test_compare_pair_truth_preserves_python_singleton_semantics \
+  tests/test_e1_study_dependency_guard_v2.py::test_compare_short_circuit_keeps_real_sys_carrier_visible_to_public_scanner \
+  tests/test_e1_study_dependency_guard_v2.py::test_chained_compare_short_circuit_preserves_state_and_policy \
+  tests/test_e1_study_dependency_guard_v2.py::test_real_pep562_initializers_preserve_complete_dependency_closure \
+  tests/test_e1_study_dependency_guard_v2.py::test_exact_initializer_rejects_import_module_rebinding \
+  -vv
 uv run pytest tests/test_e1_study_dependency_guard_v2.py -q
 uv run ruff check src/manufacturing_vision_studio/e1/study_retention_v2.py \
   tests/test_e1_study_dependency_guard_v2.py
@@ -513,8 +527,11 @@ exact call site for approved plan calls.
 
 ### Step 5: Prove mechanical bounds and GREEN
 
-Update only the independently derived expected bounds to 75, 149, and 879.
-Then run:
+Update the independent helper formula in
+`_assert_canonical_complexity_bounds` from the 15-capability coefficient to the
+17-capability coefficient, and update the explicit expected-bound assertions
+in the straight-line dunder, branch join, retained-loop, and one-real-program-
+point tests. The only resulting expected values are 75, 149, and 879. Then run:
 
 ```bash
 uv run pytest tests/test_e1_study_dependency_guard_v2.py \
@@ -554,15 +571,35 @@ Require S3 `REVIEWED` and record HEAD/tree/status.
 
 Add the six named S4 families from the matrix. Parameterize all specified
 owners, members, and direct/reflected/dunder/import-from forms so no form can be
-silently omitted.
+silently omitted. The dynamic-loader family must include both
+`pkgutil.get_loader` and `pkgutil.resolve_name` plus
+`zipimport.zipimporter`. The operator family must include both
+`operator.attrgetter` and `operator.methodcaller`. Add the symmetric positive
+`test_sys_stdout_member_grammar_allows_all_selection_forms`.
 
 ### Step 3: Run RED plus required-positive controls
 
 ```bash
-uv run pytest tests/test_e1_study_dependency_guard_v2.py \
-  -k 'member_grammar or universal_reflection or dunder_plan_cases or nonliteral_dunder' -vv
-uv run pytest tests/test_e1_study_dependency_guard_v2.py \
-  -k 'sys_stdout or harmless or pep562 or cli or approved_plan' -vv
+uv run pytest \
+  tests/test_e1_study_dependency_guard_v2.py::test_sys_registry_member_grammar_rejects_all_selection_forms \
+  tests/test_e1_study_dependency_guard_v2.py::test_dynamic_loader_member_grammar_rejects_direct_reflected_and_imported_forms \
+  tests/test_e1_study_dependency_guard_v2.py::test_operator_reflection_member_grammar_rejects_direct_reflected_and_imported_forms \
+  tests/test_e1_study_dependency_guard_v2.py::test_universal_reflection_member_grammar_rejects_direct_getattr_and_dunder_forms \
+  tests/test_e1_study_dependency_guard_v2.py::test_dunder_plan_cases_selection_retains_protected_provenance \
+  tests/test_e1_study_dependency_guard_v2.py::test_nonliteral_dunder_member_selection_fails_closed \
+  -vv
+uv run pytest \
+  tests/test_e1_study_dependency_guard_v2.py::test_sys_stdout_member_grammar_allows_all_selection_forms \
+  tests/test_e1_study_dependency_guard_v2.py::test_mandatory_safe_source_controls_remain_allowed \
+  tests/test_e1_study_dependency_guard_v2.py::test_real_pep562_initializers_preserve_complete_dependency_closure \
+  tests/test_e1_study_dependency_guard_v2.py::test_pep562_initializer_requires_exact_capability_structure \
+  tests/test_e1_study_dependency_guard_v2.py::test_exact_initializer_rejects_import_module_rebinding \
+  tests/test_e1_study_dependency_guard_v2.py::test_real_cli_namespace_reflection_bindings_are_rejected \
+  tests/test_e1_study_dependency_guard_v2.py::test_cli_dataclass_exception_rejects_local_shadow_at_protected_call \
+  tests/test_e1_study_dependency_guard_v2.py::test_exact_approved_plan_cases_sites_allow_harmless_line_shifts \
+  tests/test_e1_study_dependency_guard_v2.py::test_exact_approved_plan_calls_reject_same_location_clones \
+  tests/test_e1_study_dependency_guard_v2.py::test_real_task_7_checkout_has_the_exact_reviewed_dependency_closure \
+  -vv
 ```
 
 The first command must fail on the intended missing capabilities. The second
@@ -578,8 +615,26 @@ closed for nonliteral bound dunder names. Do not universally deny `__dict__`.
 ### Step 5: Prove GREEN and complete scanner module
 
 ```bash
-uv run pytest tests/test_e1_study_dependency_guard_v2.py \
-  -k 'member_grammar or reflection or dunder or import_from or approved_plan or safe_source or complexity' -vv
+uv run pytest \
+  tests/test_e1_study_dependency_guard_v2.py::test_sys_registry_member_grammar_rejects_all_selection_forms \
+  tests/test_e1_study_dependency_guard_v2.py::test_dynamic_loader_member_grammar_rejects_direct_reflected_and_imported_forms \
+  tests/test_e1_study_dependency_guard_v2.py::test_operator_reflection_member_grammar_rejects_direct_reflected_and_imported_forms \
+  tests/test_e1_study_dependency_guard_v2.py::test_universal_reflection_member_grammar_rejects_direct_getattr_and_dunder_forms \
+  tests/test_e1_study_dependency_guard_v2.py::test_dunder_plan_cases_selection_retains_protected_provenance \
+  tests/test_e1_study_dependency_guard_v2.py::test_nonliteral_dunder_member_selection_fails_closed \
+  -vv
+uv run pytest \
+  tests/test_e1_study_dependency_guard_v2.py::test_sys_stdout_member_grammar_allows_all_selection_forms \
+  tests/test_e1_study_dependency_guard_v2.py::test_mandatory_safe_source_controls_remain_allowed \
+  tests/test_e1_study_dependency_guard_v2.py::test_real_pep562_initializers_preserve_complete_dependency_closure \
+  tests/test_e1_study_dependency_guard_v2.py::test_pep562_initializer_requires_exact_capability_structure \
+  tests/test_e1_study_dependency_guard_v2.py::test_exact_initializer_rejects_import_module_rebinding \
+  tests/test_e1_study_dependency_guard_v2.py::test_real_cli_namespace_reflection_bindings_are_rejected \
+  tests/test_e1_study_dependency_guard_v2.py::test_cli_dataclass_exception_rejects_local_shadow_at_protected_call \
+  tests/test_e1_study_dependency_guard_v2.py::test_exact_approved_plan_cases_sites_allow_harmless_line_shifts \
+  tests/test_e1_study_dependency_guard_v2.py::test_exact_approved_plan_calls_reject_same_location_clones \
+  tests/test_e1_study_dependency_guard_v2.py::test_real_task_7_checkout_has_the_exact_reviewed_dependency_closure \
+  -vv
 uv run pytest tests/test_e1_study_dependency_guard_v2.py -q
 uv run ruff check src/manufacturing_vision_studio/e1/study_retention_v2.py \
   tests/test_e1_study_dependency_guard_v2.py
@@ -705,8 +760,10 @@ one-focused-repair maximum.
 ### Step 1: Require all task reviews and a clean implementation HEAD
 
 All eight rows must be `REVIEWED`. Pin `FINAL_CANDIDATE_SHA`, tree, clean status
-hash, and `git diff --check`. Confirm the cumulative diff contains only the four
-documentation paths and the union of task allowlists.
+hash, and `git diff --check`. Confirm the successor-only range
+`ecec6e128ff560ab0e7b8ec403dca861ce0965ee..FINAL_CANDIDATE_SHA` contains only
+the four documentation paths and the union of task allowlists. Do not apply
+that narrow path assertion to the required 39-commit whole-branch review range.
 
 ### Step 2: Run PRE-validation identity audit
 

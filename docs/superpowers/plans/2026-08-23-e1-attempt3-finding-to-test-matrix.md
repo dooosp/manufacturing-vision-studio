@@ -169,8 +169,15 @@ initializers.
 **Focused command:**
 
 ```bash
-uv run pytest tests/test_e1_study_dependency_guard_v2.py \
-  -k 'may_sys or identity_comparison or singleton or pep562' -vv
+uv run pytest \
+  tests/test_e1_study_dependency_guard_v2.py::test_identity_comparison_does_not_treat_may_sys_as_exact_sys \
+  tests/test_e1_study_dependency_guard_v2.py::test_may_sys_identity_fold_cannot_hide_pep562_import_module_rebinding \
+  tests/test_e1_study_dependency_guard_v2.py::test_compare_pair_truth_preserves_python_singleton_semantics \
+  tests/test_e1_study_dependency_guard_v2.py::test_compare_short_circuit_keeps_real_sys_carrier_visible_to_public_scanner \
+  tests/test_e1_study_dependency_guard_v2.py::test_chained_compare_short_circuit_preserves_state_and_policy \
+  tests/test_e1_study_dependency_guard_v2.py::test_real_pep562_initializers_preserve_complete_dependency_closure \
+  tests/test_e1_study_dependency_guard_v2.py::test_exact_initializer_rejects_import_module_rebinding \
+  -vv
 ```
 
 **Task review range:** `S1_PRE_SHA..S1_HEAD`.
@@ -237,7 +244,10 @@ approved development/legacy plan calls, exact approved development scope, real
 checkout scanner, and mandatory safe sources.
 
 **Expected proof constants:** capability dimension `15 -> 17`; canonical
-height bounds `69 -> 75`, `137 -> 149`, `807 -> 879`.
+height bounds `69 -> 75`, `137 -> 149`, `807 -> 879`. Update both the
+independent `_assert_canonical_complexity_bounds` formula and the explicit
+straight-line dunder, branch-join, retained-loop, and one-real-program-point
+assertions; do not derive expected values by importing a production constant.
 
 **Focused command:**
 
@@ -261,12 +271,20 @@ and import-from each derive capabilities through different incomplete rules.
 - `test_sys_registry_member_grammar_rejects_all_selection_forms` for
   `modules`, `meta_path`, and `path_hooks`;
 - `test_dynamic_loader_member_grammar_rejects_direct_reflected_and_imported_forms`
-  for `pkgutil.resolve_name` and `zipimport.zipimporter`;
-- `test_operator_methodcaller_grammar_rejects_direct_reflected_and_imported_forms`;
+  for both `pkgutil.get_loader` and `pkgutil.resolve_name`, plus
+  `zipimport.zipimporter`;
+- `test_operator_reflection_member_grammar_rejects_direct_reflected_and_imported_forms`
+  for both `operator.attrgetter` and `operator.methodcaller`;
 - `test_universal_reflection_member_grammar_rejects_direct_getattr_and_dunder_forms`
   for `object.__subclasses__` and frame `f_globals`;
 - `test_dunder_plan_cases_selection_retains_protected_provenance`;
 - `test_nonliteral_dunder_member_selection_fails_closed`.
+
+Every applicable negative family is parameterized across direct attribute,
+exact builtin `getattr` (direct, alias, `builtins` member, and default form),
+bound literal `__getattribute__`, and import-from selection. Add
+`test_sys_stdout_member_grammar_allows_all_selection_forms` as the symmetric
+positive matrix for harmless `sys.stdout`.
 
 **Before:** at least one required selection form lacks the sensitive
 capability and can reach a protected source.
@@ -280,11 +298,34 @@ fails closed.
 both approved plan calls, package-resolution behavior, and depth-64 harmless
 dunder complexity.
 
-**Focused command:**
+**Focused negative command:**
 
 ```bash
-uv run pytest tests/test_e1_study_dependency_guard_v2.py \
-  -k 'member_grammar or universal_reflection or dunder_plan_cases or nonliteral_dunder or harmless or approved_plan' -vv
+uv run pytest \
+  tests/test_e1_study_dependency_guard_v2.py::test_sys_registry_member_grammar_rejects_all_selection_forms \
+  tests/test_e1_study_dependency_guard_v2.py::test_dynamic_loader_member_grammar_rejects_direct_reflected_and_imported_forms \
+  tests/test_e1_study_dependency_guard_v2.py::test_operator_reflection_member_grammar_rejects_direct_reflected_and_imported_forms \
+  tests/test_e1_study_dependency_guard_v2.py::test_universal_reflection_member_grammar_rejects_direct_getattr_and_dunder_forms \
+  tests/test_e1_study_dependency_guard_v2.py::test_dunder_plan_cases_selection_retains_protected_provenance \
+  tests/test_e1_study_dependency_guard_v2.py::test_nonliteral_dunder_member_selection_fails_closed \
+  -vv
+```
+
+**Exact positive-control command:**
+
+```bash
+uv run pytest \
+  tests/test_e1_study_dependency_guard_v2.py::test_sys_stdout_member_grammar_allows_all_selection_forms \
+  tests/test_e1_study_dependency_guard_v2.py::test_mandatory_safe_source_controls_remain_allowed \
+  tests/test_e1_study_dependency_guard_v2.py::test_real_pep562_initializers_preserve_complete_dependency_closure \
+  tests/test_e1_study_dependency_guard_v2.py::test_pep562_initializer_requires_exact_capability_structure \
+  tests/test_e1_study_dependency_guard_v2.py::test_exact_initializer_rejects_import_module_rebinding \
+  tests/test_e1_study_dependency_guard_v2.py::test_real_cli_namespace_reflection_bindings_are_rejected \
+  tests/test_e1_study_dependency_guard_v2.py::test_cli_dataclass_exception_rejects_local_shadow_at_protected_call \
+  tests/test_e1_study_dependency_guard_v2.py::test_exact_approved_plan_cases_sites_allow_harmless_line_shifts \
+  tests/test_e1_study_dependency_guard_v2.py::test_exact_approved_plan_calls_reject_same_location_clones \
+  tests/test_e1_study_dependency_guard_v2.py::test_real_task_7_checkout_has_the_exact_reviewed_dependency_closure \
+  -vv
 ```
 
 **Task review range:** `S4_PRE_SHA..S4_HEAD`.

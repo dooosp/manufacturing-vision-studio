@@ -222,7 +222,10 @@ Recompute rather than copy:
 - feasibility config and exact 47-path projection membership/order;
 - before/after feasibility member hashes and aggregate projection hash;
 - zero overlap between changed feasibility members and Candidate Selection;
-- prohibited-path absence and every sibling worktree fingerprint.
+- prohibited-path absence and every sibling worktree fingerprint, using the
+  exact recorded command for each status/diff digest. In particular, keep the
+  original dirty sibling's plain `git diff` digest distinct from its
+  `git diff --binary --full-index` digest.
 
 This review must explicitly distinguish an allowed deterministic feasibility
 projection hash change from a forbidden projection membership/order change or

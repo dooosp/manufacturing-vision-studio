@@ -224,7 +224,10 @@ PEP 562, the CLI dataclass role, and the two approved plan-call roles remain
 exact and are not broadened. `__dict__` is not added to the universal deny set
 because its existing controlled builtins-mapping semantics must remain intact.
 A nonliteral bound `__getattribute__` member fails closed. A harmless literal
-retains existing generic behavior.
+retains existing generic behavior. Required-negative tests cover every member
+in the table, including both `pkgutil.get_loader` and `resolve_name` and both
+`operator.attrgetter` and `methodcaller`, across every applicable selection
+form.
 
 ### I1 — Full-pytest validation deadline
 
@@ -324,7 +327,7 @@ cycle. These sibling states are protection evidence, not repair inputs:
 | Worktree | Expected state |
 | --- | --- |
 | rejected checkpoint `/Users/jangtaeho/manufacturing-vision-studio-e1-review-blocker-repair` | `ecec6e1`, clean |
-| original dirty `/Users/jangtaeho/manufacturing-vision-studio-e1-dataflow-redesign` | `3ced81c`; status hash `80ce51d494c8a145d99ec671b778af0248f4ea512f4761e853e76c6737c1182c`; diff hash `d1395bf9d4036547fd5a2ae26788a8fc27fa74eb81b4803868e457a7183d50c8` |
+| original dirty `/Users/jangtaeho/manufacturing-vision-studio-e1-dataflow-redesign` | `3ced81c`; porcelain-v1 status hash `80ce51d494c8a145d99ec671b778af0248f4ea512f4761e853e76c6737c1182c`; plain `git diff` hash `d1395bf9d4036547fd5a2ae26788a8fc27fa74eb81b4803868e457a7183d50c8`; binary full-index diff hash `37d09fc9970a9426be57d01ea714a3a5f74af6de6ac46b2ebef81187b3efd3c0`; working blob `fd85188fa27e9a9e8b9ca40be1ee88f43eb1b4e7` |
 | current-identity `/Users/jangtaeho/manufacturing-vision-studio-e1-current-identity-repair` | `c689309`, clean |
 | parked QA `/Users/jangtaeho/manufacturing-vision-studio-quality-evidence-change-review-v0.3.0` | `3ced81c`, clean |
 | historical run `/Users/jangtaeho/manufacturing-vision-studio-e1-v2` | `9fd6d0c`, clean |
