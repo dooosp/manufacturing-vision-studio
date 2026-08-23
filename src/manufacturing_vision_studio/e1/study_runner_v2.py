@@ -1609,6 +1609,8 @@ class StudyRunner:
         if existing is not None:
             if "decision.json" in state.invalid_paths:
                 raise StudyStateError("existing terminal decision is invalid")
+            if "report.md" in state.present_paths and "report.md" in state.invalid_paths:
+                raise StudyStateError("existing terminal report is invalid")
             if "report.md" not in state.present_paths:
                 store, owned = self._write_store()
                 try:

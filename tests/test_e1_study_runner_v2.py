@@ -3171,6 +3171,84 @@ def test_finalize_rejects_mutated_retained_copy_before_terminal_projection_use(
     assert (report_path.read_bytes() if report_path.exists() else None) == expected_report
 
 
+def test_finalize_rejects_present_corrupt_report_without_overwriting_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _publish_semantic_packet(tmp_path)
+    artifact_root = runner.protocol.artifact_root
+    decision_path = artifact_root / "decision.json"
+    report_path = artifact_root / "report.md"
+    decision_before = decision_path.read_bytes()
+    report_path.write_bytes(b"corrupt terminal report\n")
+    report_before = report_path.read_bytes()
+    deep_calls = _patch_successful_finalization_evidence(monkeypatch)
+
+    def forbid_publish_bytes(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise AssertionError("corrupt terminal report must not be overwritten")
+
+    monkeypatch.setattr(StudyArtifactStore, "publish_bytes", forbid_publish_bytes)
+
+    with pytest.raises(StudyStateError, match="existing terminal report is invalid"):
+        runner.finalize()
+
+    assert deep_calls == ["validation", "retention", "lineage"]
+    assert decision_path.read_bytes() == decision_before
+    assert report_path.read_bytes() == report_before
+
+
+def test_finalize_repairs_absent_report_for_existing_verified_decision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _publish_semantic_packet(tmp_path)
+    artifact_root = runner.protocol.artifact_root
+    decision_path = artifact_root / "decision.json"
+    report_path = artifact_root / "report.md"
+    assert not report_path.exists()
+    decision_before = decision_path.read_bytes()
+    deep_calls = _patch_successful_finalization_evidence(monkeypatch)
+    publish_calls: list[tuple[str, bytes, str]] = []
+    original_publish_bytes = StudyArtifactStore.publish_bytes
+
+    def capture_publish_bytes(
+        store: StudyArtifactStore,
+        relative_path: str,
+        payload: bytes,
+        *,
+        media_type: str,
+    ) -> StudyArtifactRecord:
+        publish_calls.append((relative_path, payload, media_type))
+        return original_publish_bytes(
+            store,
+            relative_path,
+            payload,
+            media_type=media_type,
+        )
+
+    monkeypatch.setattr(StudyArtifactStore, "publish_bytes", capture_publish_bytes)
+
+    published = runner.finalize()
+    expected_report = runner_module._decision_report(
+        cast(dict[str, object], json.loads(decision_before))
+    )
+    repaired = runner_module.inspect_state(runner.protocol, repo_root=tmp_path)
+
+    assert published.path == "decision.json"
+    assert publish_calls == [
+        ("report.md", expected_report, "text/markdown; charset=utf-8")
+    ]
+    assert decision_path.read_bytes() == decision_before
+    assert report_path.read_bytes() == expected_report
+    assert repaired.status.terminal_decision == "TRANSFORM_ESTIMATION_LIMITED"
+    assert "decision.json" in repaired.verified_paths
+    assert "report.md" in repaired.verified_paths
+    assert "decision.json" not in repaired.invalid_paths
+    assert "report.md" not in repaired.invalid_paths
+    assert deep_calls == ["validation", "retention", "lineage"]
+
+
 def test_finalize_publishes_decision_before_deterministic_report(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
