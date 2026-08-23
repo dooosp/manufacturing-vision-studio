@@ -5617,6 +5617,7 @@ def test_exact_sys_identity_comparison_controls_remain_folded() -> None:
     may_sys = retention_module._AbsValue(
         facts=retention_module._ValueFacts(
             may_capabilities=frozenset({"sys-module"}),
+            identity=retention_module._IdentityFact(),
         )
     )
     incomplete_sys = replace(
@@ -5653,6 +5654,7 @@ def test_exact_sys_identity_comparison_controls_remain_folded() -> None:
         compare(definitely_non_sys, exact_sys, ast.IsNot()),
         compare(definitely_non_sys, definitely_non_sys, ast.Is()),
         compare(may_sys, definitely_non_sys, ast.Is()),
+        compare(may_sys, definitely_non_sys, ast.IsNot()),
         compare(incomplete_sys, definitely_non_sys, ast.Is()),
         compare(identity_top_sys, definitely_non_sys, ast.Is()),
     ) == (
@@ -5660,6 +5662,7 @@ def test_exact_sys_identity_comparison_controls_remain_folded() -> None:
         retention_module._Truth.FALSE,
         retention_module._Truth.TRUE,
         retention_module._Truth.TRUE,
+        retention_module._Truth.UNKNOWN,
         retention_module._Truth.UNKNOWN,
         retention_module._Truth.UNKNOWN,
         retention_module._Truth.UNKNOWN,
