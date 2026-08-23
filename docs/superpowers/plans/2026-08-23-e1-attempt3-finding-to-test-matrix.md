@@ -103,8 +103,10 @@ verified only against the actual state.
 **Focused command:**
 
 ```bash
-uv run pytest tests/test_e1_study_runner_v2.py \
-  -k 'unauthorized_phase2 and (terminal_projection or honestly_sealed)' -vv
+uv run pytest \
+  tests/test_e1_study_runner_v2.py::test_unauthorized_phase2_rejects_mismatched_invalid_terminal_projection \
+  tests/test_e1_study_runner_v2.py::test_unauthorized_phase2_accepts_honestly_sealed_invalid_terminal_projection \
+  -vv
 ```
 
 **Task review range:** `R2_PRE_SHA..R2_HEAD`.
@@ -232,6 +234,9 @@ argument provenance.
 - `test_protected_carrier_never_qualifies_as_exact_approved_plan`;
 - `test_protected_provenance_depth_obeys_canonical_complexity_bound` at depths
   1, 2, 4, 8, 16, 32, and 64.
+- `test_harmless_container_and_unknown_call_carriers_remain_allowed` as the
+  symmetric positive control for `sys.stdout`, harmless list/dict values, and
+  an unknown identity call.
 
 **Before:** a carrier returns an unprotected unknown value and the sink may be
 accepted.
@@ -249,11 +254,33 @@ independent `_assert_canonical_complexity_bounds` formula and the explicit
 straight-line dunder, branch-join, retained-loop, and one-real-program-point
 assertions; do not derive expected values by importing a production constant.
 
-**Focused command:**
+**Focused RED command:**
 
 ```bash
-uv run pytest tests/test_e1_study_dependency_guard_v2.py \
-  -k 'container_subscript_preserves or unknown_call_return_preserves or protected_carrier or protected_provenance_depth or approved_plan' -vv
+uv run pytest \
+  tests/test_e1_study_dependency_guard_v2.py::test_container_subscript_preserves_evaluation_scope_may_provenance \
+  tests/test_e1_study_dependency_guard_v2.py::test_unknown_call_return_preserves_evaluation_scope_may_provenance \
+  tests/test_e1_study_dependency_guard_v2.py::test_container_subscript_preserves_plan_cases_may_provenance \
+  tests/test_e1_study_dependency_guard_v2.py::test_unknown_call_return_preserves_plan_cases_may_provenance \
+  tests/test_e1_study_dependency_guard_v2.py::test_protected_carrier_never_qualifies_as_exact_approved_plan \
+  tests/test_e1_study_dependency_guard_v2.py::test_protected_provenance_depth_obeys_canonical_complexity_bound \
+  -vv
+```
+
+**Exact positive-control command:**
+
+```bash
+uv run pytest \
+  tests/test_e1_study_dependency_guard_v2.py::test_harmless_container_and_unknown_call_carriers_remain_allowed \
+  tests/test_e1_study_dependency_guard_v2.py::test_mandatory_safe_source_controls_remain_allowed \
+  tests/test_e1_study_dependency_guard_v2.py::test_exact_approved_plan_cases_sites_allow_harmless_line_shifts \
+  tests/test_e1_study_dependency_guard_v2.py::test_exact_approved_plan_calls_reject_same_location_clones \
+  tests/test_e1_study_dependency_guard_v2.py::test_real_task_7_checkout_has_the_exact_reviewed_dependency_closure \
+  tests/test_e1_study_dependency_guard_v2.py::test_analysis_stats_are_canonical_for_straight_line_dunder_chains \
+  tests/test_e1_study_dependency_guard_v2.py::test_branch_state_join_uses_canonical_program_point_counters \
+  tests/test_e1_study_dependency_guard_v2.py::test_retained_loop_point_growth_uses_canonical_update_counters \
+  tests/test_e1_study_dependency_guard_v2.py::test_computed_height_uses_one_real_program_point_shape \
+  -vv
 ```
 
 **Task review range:** `S3_PRE_SHA..S3_HEAD`.
@@ -284,7 +311,9 @@ Every applicable negative family is parameterized across direct attribute,
 exact builtin `getattr` (direct, alias, `builtins` member, and default form),
 bound literal `__getattribute__`, and import-from selection. Add
 `test_sys_stdout_member_grammar_allows_all_selection_forms` as the symmetric
-positive matrix for harmless `sys.stdout`.
+positive matrix for harmless `sys.stdout`, and add
+`test_harmless_literal_dunder_member_selection_remains_allowed` for the exact
+generic bound-dunder path.
 
 **Before:** at least one required selection form lacks the sensitive
 capability and can reach a protected source.
@@ -316,12 +345,18 @@ uv run pytest \
 ```bash
 uv run pytest \
   tests/test_e1_study_dependency_guard_v2.py::test_sys_stdout_member_grammar_allows_all_selection_forms \
+  tests/test_e1_study_dependency_guard_v2.py::test_harmless_literal_dunder_member_selection_remains_allowed \
   tests/test_e1_study_dependency_guard_v2.py::test_mandatory_safe_source_controls_remain_allowed \
   tests/test_e1_study_dependency_guard_v2.py::test_real_pep562_initializers_preserve_complete_dependency_closure \
   tests/test_e1_study_dependency_guard_v2.py::test_pep562_initializer_requires_exact_capability_structure \
   tests/test_e1_study_dependency_guard_v2.py::test_exact_initializer_rejects_import_module_rebinding \
   tests/test_e1_study_dependency_guard_v2.py::test_real_cli_namespace_reflection_bindings_are_rejected \
   tests/test_e1_study_dependency_guard_v2.py::test_cli_dataclass_exception_rejects_local_shadow_at_protected_call \
+  tests/test_e1_study_dependency_guard_v2.py::test_harmless_builtins_attribute_acquisition_remains_allowed \
+  tests/test_e1_study_dependency_guard_v2.py::test_harmless_builtins_mapping_subscript_remains_allowed \
+  tests/test_e1_study_dependency_guard_v2.py::test_harmless_literal_mapping_get_remains_allowed \
+  tests/test_e1_study_dependency_guard_v2.py::test_explicit_real_submodule_import_uses_normal_closure \
+  tests/test_e1_study_dependency_guard_v2.py::test_structural_expression_families_obey_the_canonical_complexity_bound \
   tests/test_e1_study_dependency_guard_v2.py::test_exact_approved_plan_cases_sites_allow_harmless_line_shifts \
   tests/test_e1_study_dependency_guard_v2.py::test_exact_approved_plan_calls_reject_same_location_clones \
   tests/test_e1_study_dependency_guard_v2.py::test_real_task_7_checkout_has_the_exact_reviewed_dependency_closure \

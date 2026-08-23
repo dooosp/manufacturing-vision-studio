@@ -227,7 +227,9 @@ A nonliteral bound `__getattribute__` member fails closed. A harmless literal
 retains existing generic behavior. Required-negative tests cover every member
 in the table, including both `pkgutil.get_loader` and `resolve_name` and both
 `operator.attrgetter` and `methodcaller`, across every applicable selection
-form.
+form. Symmetric positive tests cover every `sys.stdout` selection form, a
+harmless literal bound-dunder member, controlled builtins lookups, normal real
+submodule resolution, and depth-64 finite behavior.
 
 ### I1 — Full-pytest validation deadline
 
