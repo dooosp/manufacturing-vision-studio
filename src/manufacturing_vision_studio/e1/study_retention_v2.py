@@ -1523,6 +1523,24 @@ def _join_flow(*results: _FlowResult) -> _FlowResult:
     )
 
 
+def _policy_only_expression(result: _ExprResult) -> _ExprResult:
+    return _ExprResult(
+        None,
+        None,
+        None,
+        _DeferredEffects(bodies=result.deferred.bodies),
+        result.facts,
+    )
+
+
+def _policy_only_statement(result: _FlowResult) -> _FlowResult:
+    return _FlowResult(
+        None,
+        deferred=_DeferredEffects(bodies=result.deferred.bodies),
+        facts=result.facts,
+    )
+
+
 def _normal_value(value: _AbsValue, state: _State, truth: _Truth) -> _ExprResult:
     if truth is _Truth.BOTTOM:
         return _ExprResult(None, None, state)
@@ -3731,10 +3749,12 @@ class _SourceFlowAnalyzer:
         ):
             if exit is None:
                 branches.append(
-                    self._transfer_expression(
-                        expression,
-                        state,
-                        _TransferContext("unreachable", False, False, False),
+                    _policy_only_expression(
+                        self._transfer_expression(
+                            expression,
+                            state,
+                            _TransferContext("unreachable", False, False, False),
+                        )
                     )
                 )
             else:
@@ -4992,10 +5012,12 @@ class _SourceFlowAnalyzer:
         ):
             if exit is None:
                 branches.append(
-                    self._transfer_statements(
-                        statements,
-                        condition.post_state or state,
-                        _TransferContext("unreachable", False, False, False),
+                    _policy_only_statement(
+                        self._transfer_statements(
+                            statements,
+                            condition.post_state or state,
+                            _TransferContext("unreachable", False, False, False),
+                        )
                     )
                 )
             else:

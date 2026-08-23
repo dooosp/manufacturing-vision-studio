@@ -5581,6 +5581,147 @@ def _analyze_source(source: str) -> tuple[ast.Module, object]:
     return tree, analyzer.analyze(tree)
 
 
+def test_unreachable_if_statement_does_not_erase_evaluation_scope_provenance(
+    tmp_path: Path,
+) -> None:
+    source = _compiled_source(
+        "scope_alias = EvaluationScope\n"
+        "if False:\n"
+        "    scope_alias = None\n"
+        "PROTECTED = scope_alias.CALIBRATION\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        Path("src/manufacturing_vision_studio/e1/study_truth_v2.py"),
+        "\n" + source,
+    )
+
+    with pytest.raises(
+        StudyRetentionError,
+        match=r"protected scope reference.*CALIBRATION",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_unreachable_if_expression_does_not_erase_evaluation_scope_provenance(
+    tmp_path: Path,
+) -> None:
+    source = _compiled_source(
+        "scope_alias = EvaluationScope\n"
+        "VALUE = (scope_alias := None) if False else None\n"
+        "PROTECTED = scope_alias.CALIBRATION\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        Path("src/manufacturing_vision_studio/e1/study_truth_v2.py"),
+        "\n" + source,
+    )
+
+    with pytest.raises(
+        StudyRetentionError,
+        match=r"protected scope reference.*CALIBRATION",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_unreachable_if_statement_does_not_erase_plan_cases_provenance(
+    tmp_path: Path,
+) -> None:
+    source = _compiled_source(
+        "def forbidden(generator: object) -> object:\n"
+        "    planner = generator.plan_cases\n"
+        "    if False:\n"
+        "        planner = None\n"
+        "    return planner('development')\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="plan_cases outside DevelopmentCorpusProvider",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_unreachable_if_expression_does_not_erase_plan_cases_provenance(
+    tmp_path: Path,
+) -> None:
+    source = _compiled_source(
+        "def forbidden(generator: object) -> object:\n"
+        "    planner = generator.plan_cases\n"
+        "    try:\n"
+        "        VALUE = missing if False else None\n"
+        "    except NameError:\n"
+        "        planner = None\n"
+        "    missing = object()\n"
+        "    return planner('development')\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="plan_cases outside DevelopmentCorpusProvider",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_unreachable_branch_still_emits_policy_facts(tmp_path: Path) -> None:
+    source = _compiled_source(
+        "if False:\n"
+        "    def forbidden() -> object:\n"
+        "        return eval('1 + 1')\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: executable-code",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_live_if_statement_preserves_runtime_effects_and_raises() -> None:
+    _, result = _analyze_source(
+        "try:\n"
+        "    if True:\n"
+        "        written = 1\n"
+        "        raise RuntimeError\n"
+        "except RuntimeError:\n"
+        "    handled = 1\n"
+    )
+
+    assert len(result.final_states) == 1
+    final_state = result.final_states[0]
+    assert final_state.resolve("written").may_be_bound is True
+    assert final_state.resolve("handled").may_be_bound is True
+
+
+def test_unknown_if_condition_joins_both_runtime_effects() -> None:
+    _, result = _analyze_source(
+        "flag = object()\n"
+        "if flag:\n"
+        "    branch_value = 1\n"
+        "else:\n"
+        "    branch_value = 0\n"
+    )
+
+    assert len(result.final_states) == 1
+    branch_value = result.final_states[0].resolve("branch_value")
+    assert branch_value.may_be_bound is True
+    assert branch_value.may_be_unbound is False
+    assert branch_value.value.truth is retention_module._Truth.UNKNOWN
+
+
 def test_identity_comparison_does_not_treat_may_sys_as_exact_sys() -> None:
     _, result = _analyze_source(
         "import sys\n"
