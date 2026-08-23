@@ -166,7 +166,9 @@ fail closed.
 
 **Controls:** exact forward/reverse `sys` mismatch under `is`, exact mismatch
 under `is not`, singleton comparisons, chained comparisons, and valid PEP 562
-initializers.
+initializers. Add
+`test_exact_sys_identity_comparison_controls_remain_folded` as the explicit
+finite-identity control.
 
 **Focused command:**
 
@@ -174,6 +176,7 @@ initializers.
 uv run pytest \
   tests/test_e1_study_dependency_guard_v2.py::test_identity_comparison_does_not_treat_may_sys_as_exact_sys \
   tests/test_e1_study_dependency_guard_v2.py::test_may_sys_identity_fold_cannot_hide_pep562_import_module_rebinding \
+  tests/test_e1_study_dependency_guard_v2.py::test_exact_sys_identity_comparison_controls_remain_folded \
   tests/test_e1_study_dependency_guard_v2.py::test_compare_pair_truth_preserves_python_singleton_semantics \
   tests/test_e1_study_dependency_guard_v2.py::test_compare_short_circuit_keeps_real_sys_carrier_visible_to_public_scanner \
   tests/test_e1_study_dependency_guard_v2.py::test_chained_compare_short_circuit_preserves_state_and_policy \
@@ -200,6 +203,10 @@ reachable projection.
 - `test_unreachable_if_expression_does_not_erase_plan_cases_provenance`;
 - `test_unreachable_branch_still_emits_policy_facts`.
 
+Add exact positive controls
+`test_live_if_statement_preserves_runtime_effects_and_raises` and
+`test_unknown_if_condition_joins_both_runtime_effects`.
+
 **Before:** dead assignment lowers protected identity to top and can hide a
 later protected sink.
 
@@ -207,11 +214,29 @@ later protected sink.
 raises, exits, and runtime edges do not escape. A live branch still mutates;
 unknown conditions still join both arms.
 
-**Focused command:**
+**Focused RED command:**
 
 ```bash
-uv run pytest tests/test_e1_study_dependency_guard_v2.py \
-  -k 'unreachable_if or unreachable_branch or TYPE_CHECKING' -vv
+uv run pytest \
+  tests/test_e1_study_dependency_guard_v2.py::test_unreachable_if_statement_does_not_erase_evaluation_scope_provenance \
+  tests/test_e1_study_dependency_guard_v2.py::test_unreachable_if_expression_does_not_erase_evaluation_scope_provenance \
+  tests/test_e1_study_dependency_guard_v2.py::test_unreachable_if_statement_does_not_erase_plan_cases_provenance \
+  tests/test_e1_study_dependency_guard_v2.py::test_unreachable_if_expression_does_not_erase_plan_cases_provenance \
+  tests/test_e1_study_dependency_guard_v2.py::test_unreachable_branch_still_emits_policy_facts \
+  -vv
+```
+
+**Exact positive-control command:**
+
+```bash
+uv run pytest \
+  tests/test_e1_study_dependency_guard_v2.py::test_live_if_statement_preserves_runtime_effects_and_raises \
+  tests/test_e1_study_dependency_guard_v2.py::test_unknown_if_condition_joins_both_runtime_effects \
+  tests/test_e1_study_dependency_guard_v2.py::test_unreachable_expression_suffix_remains_policy_inspected \
+  tests/test_e1_study_dependency_guard_v2.py::test_chained_compare_short_circuit_preserves_state_and_policy \
+  tests/test_e1_study_dependency_guard_v2.py::test_type_checking_cycle_between_study_owned_modules_is_allowed \
+  tests/test_e1_study_dependency_guard_v2.py::test_shadowed_type_checking_is_treated_as_runtime_code \
+  -vv
 ```
 
 **Task review range:** `S2_PRE_SHA..S2_HEAD`.
@@ -355,7 +380,12 @@ uv run pytest \
   tests/test_e1_study_dependency_guard_v2.py::test_harmless_builtins_attribute_acquisition_remains_allowed \
   tests/test_e1_study_dependency_guard_v2.py::test_harmless_builtins_mapping_subscript_remains_allowed \
   tests/test_e1_study_dependency_guard_v2.py::test_harmless_literal_mapping_get_remains_allowed \
+  tests/test_e1_study_dependency_guard_v2.py::test_builtins_origin_mapping_harmless_controls_remain_allowed \
+  tests/test_e1_study_dependency_guard_v2.py::test_builtins_mapping_get_literal_default_controls_remain_allowed \
+  tests/test_e1_study_dependency_guard_v2.py::test_package_object_attribute_access_is_rejected_fail_closed \
+  tests/test_e1_study_dependency_guard_v2.py::test_runtime_package_object_import_is_rejected_at_source \
   tests/test_e1_study_dependency_guard_v2.py::test_explicit_real_submodule_import_uses_normal_closure \
+  tests/test_e1_study_dependency_guard_v2.py::test_analysis_stats_are_canonical_for_straight_line_dunder_chains \
   tests/test_e1_study_dependency_guard_v2.py::test_structural_expression_families_obey_the_canonical_complexity_bound \
   tests/test_e1_study_dependency_guard_v2.py::test_exact_approved_plan_cases_sites_allow_harmless_line_shifts \
   tests/test_e1_study_dependency_guard_v2.py::test_exact_approved_plan_calls_reject_same_location_clones \
