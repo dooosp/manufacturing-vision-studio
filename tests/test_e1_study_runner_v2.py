@@ -419,6 +419,76 @@ def test_partial_retained_packet_is_permanently_invalid(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("case_name", "expected_reason"),
+    (
+        ("inventory-invalid", "ARTIFACT_INVENTORY_INVALID"),
+        ("malformed-validation-anchor", "ARTIFACT_VERIFICATION_FAILED"),
+    ),
+)
+def test_verify_zeroes_credit_for_nonempty_early_invalid_packet_without_validation_anchor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case_name: str,
+    expected_reason: str,
+) -> None:
+    runner = _runner(tmp_path)
+    artifact_root = runner.protocol.artifact_root
+    retained = artifact_root / "retained-inputs"
+    retained.mkdir(parents=True)
+    candidate_a_path = retained / "candidate-a.json"
+    candidate_a_path.write_bytes(b'{"candidate":"A"}')
+    if case_name == "inventory-invalid":
+        artifact_root.joinpath("unknown.tmp").write_bytes(b"stale")
+    else:
+        artifact_root.joinpath("implementation-validation.json").write_bytes(b"{")
+
+    before = {
+        path.relative_to(artifact_root).as_posix(): path.read_bytes()
+        for path in sorted(artifact_root.rglob("*"))
+        if path.is_file()
+    }
+    deep_calls = 0
+    publish_calls = 0
+
+    def forbid_deep_verification(*args: object, **kwargs: object) -> None:
+        nonlocal deep_calls
+        del args, kwargs
+        deep_calls += 1
+        raise AssertionError("validation-anchor-free packets must not deep-verify")
+
+    def forbid_publication(*args: object, **kwargs: object) -> object:
+        nonlocal publish_calls
+        del args, kwargs
+        publish_calls += 1
+        raise AssertionError("verify() must remain read-only")
+
+    monkeypatch.setattr(StudyRunner, "_verify_trusted_evidence", forbid_deep_verification)
+    monkeypatch.setattr(StudyArtifactStore, "publish_json", forbid_publication)
+    monkeypatch.setattr(StudyArtifactStore, "publish_bytes", forbid_publication)
+
+    state = runner._public_state()
+    report = runner.verify()
+    after = {
+        path.relative_to(artifact_root).as_posix(): path.read_bytes()
+        for path in sorted(artifact_root.rglob("*"))
+        if path.is_file()
+    }
+
+    assert deep_calls == 0
+    assert publish_calls == 0
+    assert before == after
+    assert state.status.study_valid is False
+    assert state.status.terminal_decision == "STUDY_INVALID"
+    assert state.status.reasons == (expected_reason,)
+    assert state.present_paths == tuple(before)
+    assert state.invalid_paths == state.present_paths
+    assert state.verified_paths == ()
+    assert report.status == state.status
+    assert report.verified_paths == ()
+    assert report.verify_rate == 0.0
+
+
 def test_orphaned_phase1_claim_is_terminal_and_never_removed(tmp_path: Path) -> None:
     runner = _runner(tmp_path)
     protocol = runner.protocol
@@ -2440,8 +2510,12 @@ def test_malformed_upstream_json_invalidates_stale_derived_decision_and_report(
     assert malformed_path not in state.verified_paths
     assert "decision.json" not in state.verified_paths
     assert "report.md" not in state.verified_paths
-    assert report.verified_paths == state.verified_paths
-    assert report.verify_rate == pytest.approx((14 - len(expected_invalid)) / 14)
+    if malformed_path == "implementation-validation.json":
+        assert report.verified_paths == ()
+        assert report.verify_rate == 0.0
+    else:
+        assert report.verified_paths == state.verified_paths
+        assert report.verify_rate == pytest.approx((14 - len(expected_invalid)) / 14)
     assert deep_calls == (
         []
         if malformed_path == "implementation-validation.json"

@@ -1555,7 +1555,14 @@ class StudyRunner:
             store=self._store,
         )
         if "implementation-validation.json" not in state.verified_json:
-            return state
+            if not state.present_paths:
+                return state
+            return _invalid_state(
+                state.status.reasons or ("ARTIFACT_VERIFICATION_FAILED",),
+                present_paths=state.present_paths,
+                invalid_paths=state.present_paths,
+                verified_json=state.verified_json,
+            )
         try:
             self._verify_trusted_evidence(state)
             return state
