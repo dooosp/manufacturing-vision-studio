@@ -3790,6 +3790,7 @@ class _SourceFlowAnalyzer:
         self, node: ast.IfExp, state: _State, context: _TransferContext
     ) -> _ExprResult:
         condition = self._transfer_expression(node.test, state, context)
+        capture_state = condition.post_state or state
         branches: list[_ExprResult] = []
         for exit, expression in (
             (condition.truthy, node.body),
@@ -3800,10 +3801,10 @@ class _SourceFlowAnalyzer:
                     _policy_only_expression(
                         self._transfer_expression(
                             expression,
-                            state,
+                            capture_state,
                             _TransferContext("unreachable", False, False, False),
                         ),
-                        state,
+                        capture_state,
                     )
                 )
             else:

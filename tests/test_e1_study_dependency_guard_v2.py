@@ -5673,6 +5673,83 @@ def test_unreachable_if_expression_does_not_erase_plan_cases_provenance(
         scan_study_dependencies(protocol, repo_root=repo_root)
 
 
+def test_unreachable_if_expression_uses_condition_post_state_for_scope_capture(
+    tmp_path: Path,
+) -> None:
+    source = _compiled_source(
+        "scope_alias = EvaluationScope\n"
+        "dead = (lambda: scope_alias.CALIBRATION) "
+        "if (scope_alias := None) else None\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        Path("src/manufacturing_vision_studio/e1/study_truth_v2.py"),
+        "\n" + source,
+    )
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_unreachable_if_expression_uses_condition_post_state_for_plan_capture(
+    tmp_path: Path,
+) -> None:
+    source = _compiled_source(
+        "def safe_after_condition(generator: object) -> None:\n"
+        "    planner = generator.plan_cases\n"
+        "    dead = (planner('development') for _ in ()) "
+        "if (planner := None) else None\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_unreachable_if_statement_uses_condition_post_state_for_scope_capture(
+    tmp_path: Path,
+) -> None:
+    source = _compiled_source(
+        "scope_alias = EvaluationScope\n"
+        "if (scope_alias := None):\n"
+        "    deferred_capture = lambda: scope_alias.CALIBRATION\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        Path("src/manufacturing_vision_studio/e1/study_truth_v2.py"),
+        "\n" + source,
+    )
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_unknown_if_expression_keeps_deferred_scope_capture_conservative(
+    tmp_path: Path,
+) -> None:
+    source = _compiled_source(
+        "scope_alias = EvaluationScope\n"
+        "flag = object()\n"
+        "deferred_capture = (lambda: scope_alias.CALIBRATION) if flag else None\n"
+    )
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        Path("src/manufacturing_vision_studio/e1/study_truth_v2.py"),
+        "\n" + source,
+    )
+
+    with pytest.raises(
+        StudyRetentionError,
+        match=r"protected scope reference.*CALIBRATION",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
 def test_unreachable_branch_still_emits_policy_facts(tmp_path: Path) -> None:
     source = _compiled_source(
         "if False:\n"
