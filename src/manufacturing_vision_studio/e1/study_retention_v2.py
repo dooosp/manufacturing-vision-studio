@@ -603,6 +603,7 @@ class _GitCommandResult:
 _Capability = Literal[
     "builtins-namespace",
     "dynamic-loader-module",
+    "evaluation-scope",
     "executable-code",
     "import-loader",
     "import-namespace",
@@ -611,6 +612,7 @@ _Capability = Literal[
     "namespace-reflection",
     "operator-module",
     "package-object",
+    "plan-cases-callable",
     "pkgutil-module",
     "sys-module",
     "type-checking-sentinel",
@@ -2997,7 +2999,10 @@ class _SourceFlowAnalyzer:
         facts = receiver.facts
         value = _derived_value(receiver_value, complete=receiver_value.facts.complete)
         if (
-            _has_exact_identity(receiver_value, _evaluation_scope_identity())
+            (
+                _has_exact_identity(receiver_value, _evaluation_scope_identity())
+                or "evaluation-scope" in capabilities
+            )
             and node.attr in _PROTECTED_SCOPES
         ):
             facts = _join_policy(
@@ -3092,7 +3097,11 @@ class _SourceFlowAnalyzer:
                 value,
                 facts=replace(
                     value.facts,
+                    may_capabilities=(
+                        value.facts.may_capabilities | {"plan-cases-callable"}
+                    ),
                     identity=_exact_identity(_plan_cases_callable_identity()),
+                    complete=True,
                 ),
             )
         return self._expr_from_parts(
@@ -3215,7 +3224,8 @@ class _SourceFlowAnalyzer:
             else None
         )
         exact_plan_cases = (
-            function_value.facts.identity.state == "exact"
+            function_value.facts.complete
+            and function_value.facts.identity.state == "exact"
             and function_value.facts.identity.identity
             == _plan_cases_callable_identity()
         )
@@ -3409,9 +3419,16 @@ class _SourceFlowAnalyzer:
             "study-truth-development-plan",
             "study-truth-legacy-plan",
         }
-        if (call_name == "plan_cases" or exact_plan_cases) and (
-            exact_site is None or exact_site.role not in allowed_plan_roles
-        ):
+        exact_approved_plan_call = (
+            exact_plan_cases
+            and exact_site is not None
+            and exact_site.role in allowed_plan_roles
+        )
+        if (
+            call_name == "plan_cases"
+            or exact_plan_cases
+            or "plan-cases-callable" in capabilities
+        ) and not exact_approved_plan_call:
             facts = _join_policy(
                 facts,
                 _PolicyFacts(
@@ -3466,6 +3483,11 @@ class _SourceFlowAnalyzer:
                 facts,
                 self._policy_error(category, node, "capability crossed unknown call"),
             )
+        protected_crossing = crossing.may_capabilities.intersection(
+            {"evaluation-scope", "plan-cases-callable"}
+        )
+        if value is _UNKNOWN_VALUE and protected_crossing:
+            value = _value_with_capabilities(*protected_crossing, complete=False)
         return self._expr_from_parts(
             value,
             post,
@@ -3494,7 +3516,10 @@ class _SourceFlowAnalyzer:
                 "cli-dataclass-getattr",
             }:
                 return _UNKNOWN_VALUE, _PolicyFacts()
-            if _has_exact_identity(receiver, _evaluation_scope_identity()):
+            if (
+                _has_exact_identity(receiver, _evaluation_scope_identity())
+                or "evaluation-scope" in receiver.facts.may_capabilities
+            ):
                 return _UNKNOWN_VALUE, _protected_scope_fact(
                     self.source_module, node, "<dynamic>"
                 )
@@ -3518,7 +3543,10 @@ class _SourceFlowAnalyzer:
                 "namespace-reflection", node, f"sensitive attribute access: {attribute}"
             )
         if (
-            _has_exact_identity(receiver, _evaluation_scope_identity())
+            (
+                _has_exact_identity(receiver, _evaluation_scope_identity())
+                or "evaluation-scope" in receiver.facts.may_capabilities
+            )
             and attribute in _PROTECTED_SCOPES
         ):
             return _UNKNOWN_VALUE, _protected_scope_fact(
@@ -3557,7 +3585,11 @@ class _SourceFlowAnalyzer:
                 value,
                 facts=replace(
                     value.facts,
+                    may_capabilities=(
+                        value.facts.may_capabilities | {"plan-cases-callable"}
+                    ),
                     identity=_exact_identity(_plan_cases_callable_identity()),
+                    complete=True,
                 ),
             )
         return value, _PolicyFacts()
@@ -4836,6 +4868,11 @@ class _SourceFlowAnalyzer:
         )
         if module == "sys":
             capabilities.append("sys-module")
+        elif (
+            module == "manufacturing_vision_studio.e1.domain_v2"
+            and imported_name == "EvaluationScope"
+        ):
+            capabilities.append("evaluation-scope")
         elif module == "typing":
             capabilities.append("typing-module")
         elif module == "builtins":

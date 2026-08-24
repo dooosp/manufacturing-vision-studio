@@ -2302,7 +2302,7 @@ def _assert_canonical_complexity_bounds(
     maximum_frames: int,
     straight_line: bool,
 ) -> None:
-    height = max(1, 1 + 67 * maximum_bindings + maximum_frames)
+    height = max(1, 1 + 73 * maximum_bindings + maximum_frames)
 
     assert stats.computed_height_bound == height
     assert stats.max_updates_per_program_point <= height
@@ -5581,6 +5581,176 @@ def _analyze_source(source: str) -> tuple[ast.Module, object]:
     return tree, analyzer.analyze(tree)
 
 
+def _analyze_evaluation_scope_source(source: str) -> tuple[ast.Module, object]:
+    tree = ast.parse(_compiled_source(source))
+    analyzer = retention_module._SourceFlowAnalyzer(
+        source_module="source_flow_stats_fixture",
+        known_modules=frozenset({"manufacturing_vision_studio.e1.domain_v2"}),
+        initializer_policy=retention_module._InitializerPolicy((), ()),
+    )
+    return tree, analyzer.analyze(tree)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "from manufacturing_vision_studio.e1.domain_v2 import EvaluationScope\n"
+        "carrier = [EvaluationScope]\n"
+        "scope = carrier[0]\n"
+        "PROTECTED = scope.CALIBRATION\n",
+        "from manufacturing_vision_studio.e1.domain_v2 import EvaluationScope\n"
+        "carrier = {'scope': EvaluationScope}\n"
+        "scope = carrier['scope']\n"
+        "PROTECTED = scope.CALIBRATION\n",
+    ),
+    ids=("list", "dict"),
+)
+def test_container_subscript_preserves_evaluation_scope_may_provenance(
+    source: str,
+) -> None:
+    _, result = _analyze_evaluation_scope_source(source)
+
+    assert any(
+        reference.endswith(":EvaluationScope.CALIBRATION")
+        for reference in result.facts.protected
+    )
+
+
+def test_unknown_call_return_preserves_evaluation_scope_may_provenance() -> None:
+    _, result = _analyze_evaluation_scope_source(
+        "from manufacturing_vision_studio.e1.domain_v2 import EvaluationScope\n"
+        "scope = relay(EvaluationScope)\n"
+        "PROTECTED = scope.CALIBRATION\n"
+    )
+
+    assert any(
+        reference.endswith(":EvaluationScope.CALIBRATION")
+        for reference in result.facts.protected
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "planner = generator.plan_cases\n"
+        "carrier = [planner]\n"
+        "escaped = carrier[0]\n"
+        "escaped('development')\n",
+        "planner = generator.plan_cases\n"
+        "carrier = {'planner': planner}\n"
+        "escaped = carrier['planner']\n"
+        "escaped('development')\n",
+    ),
+    ids=("list", "dict"),
+)
+def test_container_subscript_preserves_plan_cases_may_provenance(
+    source: str,
+) -> None:
+    _, result = _analyze_source(source)
+
+    assert any(
+        "plan_cases outside DevelopmentCorpusProvider" in reference
+        for reference in result.facts.study_forbidden_calls
+    )
+
+
+def test_unknown_call_return_preserves_plan_cases_may_provenance() -> None:
+    _, result = _analyze_source(
+        "planner = generator.plan_cases\n"
+        "escaped = relay(planner)\n"
+        "escaped('development')\n"
+    )
+
+    assert any(
+        "plan_cases outside DevelopmentCorpusProvider" in reference
+        for reference in result.facts.study_forbidden_calls
+    )
+
+
+def test_protected_carrier_never_qualifies_as_exact_approved_plan() -> None:
+    source_module = "source_flow_stats_fixture"
+    tree = ast.parse("generator.plan_cases('development')\n")
+    approved_call = tree.body[0].value
+    assert isinstance(approved_call, ast.Call)
+    policy = retention_module._InitializerPolicy(
+        (
+            retention_module._ExactCallSite(
+                "study-truth-development-plan",
+                retention_module._source_location(source_module, approved_call),
+                (),
+                identity_node=approved_call,
+            ),
+        ),
+        (),
+    )
+    analyzer = retention_module._SourceFlowAnalyzer(
+        source_module=source_module,
+        known_modules=frozenset(),
+        initializer_policy=policy,
+    )
+    original_function = approved_call.func
+    approved_call.func = ast.copy_location(
+        ast.Subscript(
+            value=ast.List(elts=[original_function], ctx=ast.Load()),
+            slice=ast.Constant(value=0),
+            ctx=ast.Load(),
+        ),
+        original_function,
+    )
+    ast.fix_missing_locations(tree)
+
+    result = analyzer.analyze(tree)
+
+    assert any(
+        "plan_cases outside DevelopmentCorpusProvider" in reference
+        for reference in result.facts.study_forbidden_calls
+    )
+
+
+@pytest.mark.parametrize("depth", (1, 2, 4, 8, 16, 32, 64))
+def test_protected_provenance_depth_obeys_canonical_complexity_bound(
+    depth: int,
+) -> None:
+    source = (
+        "from manufacturing_vision_studio.e1.domain_v2 import EvaluationScope\n"
+        "scope = EvaluationScope\n"
+        + "carrier = [scope]\nscope = carrier[0]\n" * depth
+        + "PROTECTED = scope.CALIBRATION\n"
+    )
+    tree, result = _analyze_evaluation_scope_source(source)
+
+    assert any(
+        reference.endswith(":EvaluationScope.CALIBRATION")
+        for reference in result.facts.protected
+    )
+    _assert_canonical_complexity_bounds(
+        tree,
+        result.stats,
+        maximum_bindings=4,
+        maximum_frames=1,
+        straight_line=True,
+    )
+
+
+def test_harmless_container_and_unknown_call_carriers_remain_allowed(
+    tmp_path: Path,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\nimport sys\n"
+        "list_carrier = [sys.stdout]\n"
+        "dict_carrier = {'stdout': sys.stdout}\n"
+        "safe_list = list_carrier[0]\n"
+        "safe_dict = dict_carrier['stdout']\n"
+        "safe_call = relay(sys.stdout)\n",
+    )
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
 def test_unreachable_if_statement_does_not_erase_evaluation_scope_provenance(
     tmp_path: Path,
 ) -> None:
@@ -6220,7 +6390,7 @@ def test_analysis_stats_are_canonical_for_straight_line_dunder_chains(
         strict_state_updates=0,
         worklist_pops=0,
         max_updates_per_program_point=0,
-        computed_height_bound=69,
+        computed_height_bound=75,
     )
     assert stats.expression_transfers <= 2 * syntax_nodes
     assert stats.max_updates_per_program_point <= stats.computed_height_bound
@@ -6276,7 +6446,7 @@ def test_branch_state_join_uses_canonical_program_point_counters() -> None:
         strict_state_updates=1,
         worklist_pops=0,
         max_updates_per_program_point=1,
-        computed_height_bound=69,
+        computed_height_bound=75,
     )
 
 
@@ -6292,7 +6462,7 @@ def test_retained_loop_point_growth_uses_canonical_update_counters() -> None:
     assert stats.state_join_attempts == 6
     assert stats.strict_state_updates == 2
     assert stats.max_updates_per_program_point == 1
-    assert stats.computed_height_bound == 137
+    assert stats.computed_height_bound == 149
     assert stats.max_updates_per_program_point <= stats.computed_height_bound
     assert stats.worklist_pops <= stats.program_points * (
         stats.computed_height_bound + 1
@@ -6342,4 +6512,4 @@ def test_computed_height_uses_one_real_program_point_shape() -> None:
         "nested = lambda: (lambda: None)\n"
     )
 
-    assert result.stats.computed_height_bound == 807
+    assert result.stats.computed_height_bound == 879
