@@ -1784,6 +1784,20 @@ def _value_with_capabilities(
     )
 
 
+def _with_plan_cases_capability(value: _AbsValue, receiver: _AbsValue) -> _AbsValue:
+    facts = replace(
+        value.facts,
+        may_capabilities=value.facts.may_capabilities | {"plan-cases-callable"},
+    )
+    if "plan-cases-callable" not in receiver.facts.may_capabilities:
+        facts = replace(
+            facts,
+            identity=_exact_identity(_plan_cases_callable_identity()),
+            complete=True,
+        )
+    return replace(value, facts=facts)
+
+
 class _ScopeDeclarationCollector(ast.NodeVisitor):
     def __init__(self, arguments: ast.arguments | None = None) -> None:
         self.local_names: set[str] = set()
@@ -3093,17 +3107,7 @@ class _SourceFlowAnalyzer:
         elif "operator-module" in capabilities and node.attr == "attrgetter":
             value = _value_with_capabilities("namespace-reflection")
         if node.attr == "plan_cases":
-            value = replace(
-                value,
-                facts=replace(
-                    value.facts,
-                    may_capabilities=(
-                        value.facts.may_capabilities | {"plan-cases-callable"}
-                    ),
-                    identity=_exact_identity(_plan_cases_callable_identity()),
-                    complete=True,
-                ),
-            )
+            value = _with_plan_cases_capability(value, receiver.value)
         return self._expr_from_parts(
             value,
             post,
@@ -3581,17 +3585,7 @@ class _SourceFlowAnalyzer:
             return _SAFE_VALUE, _PolicyFacts()
         value = _derived_value(receiver, complete=receiver.facts.complete)
         if attribute == "plan_cases":
-            value = replace(
-                value,
-                facts=replace(
-                    value.facts,
-                    may_capabilities=(
-                        value.facts.may_capabilities | {"plan-cases-callable"}
-                    ),
-                    identity=_exact_identity(_plan_cases_callable_identity()),
-                    complete=True,
-                ),
-            )
+            value = _with_plan_cases_capability(value, receiver)
         return value, _PolicyFacts()
 
     def _dynamic_import_call_facts(

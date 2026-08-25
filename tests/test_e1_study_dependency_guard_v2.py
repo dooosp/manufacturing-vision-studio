@@ -5,6 +5,7 @@ import subprocess
 import sys
 import textwrap
 import warnings
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -1083,6 +1084,173 @@ def test_exact_approved_plan_calls_reject_same_location_clones(role: str) -> Non
 
     assert analyzer._exact_call_site(approved_call) == site
     assert analyzer._exact_call_site(cloned_call) is None
+
+
+def _approved_plan_call_subject(
+    role: str,
+) -> tuple[
+    ast.Module,
+    retention_module._SourceFlowAnalyzer,
+    retention_module._ExactCallSite,
+    ast.Assign,
+    ast.Call,
+]:
+    source_module = "manufacturing_vision_studio.e1.study_truth_v2"
+    protocol = load_study_protocol_v2()
+    truth_path = PROJECT_ROOT / "src/manufacturing_vision_studio/e1/study_truth_v2.py"
+    tree = ast.parse(truth_path.read_bytes(), filename=str(truth_path))
+    policy = retention_module._validate_initializer_policy(
+        source_module,
+        tree,
+        frozenset(retention_module._projected_modules(protocol.implementation_projection_paths())),
+    )
+    analyzer = retention_module._SourceFlowAnalyzer(
+        source_module=source_module,
+        known_modules=retention_module._repository_modules(PROJECT_ROOT),
+        initializer_policy=policy,
+    )
+    site = next(site for site in policy.exact_call_sites if site.role == role)
+    approved_assignments = [
+        statement
+        for statement in ast.walk(tree)
+        if isinstance(statement, ast.Assign)
+        and isinstance(statement.value, ast.Call)
+        and retention_module._source_location(source_module, statement.value) == site.location
+    ]
+    assert len(approved_assignments) == 1
+    assignment = approved_assignments[0]
+    approved_call = assignment.value
+    assert isinstance(approved_call, ast.Call)
+    assert analyzer._exact_call_site(approved_call) == site
+    return tree, analyzer, site, assignment, approved_call
+
+
+def _insert_wrapped_plan_assignment(
+    tree: ast.Module,
+    assignment: ast.Assign,
+    wrapped_assignment: ast.Assign,
+) -> None:
+    for statement in ast.walk(tree):
+        for field_name in ("body", "orelse", "finalbody"):
+            body = getattr(statement, field_name, None)
+            if not isinstance(body, list):
+                continue
+            for index, candidate in enumerate(body):
+                if candidate is assignment:
+                    body.insert(index, wrapped_assignment)
+                    return
+        handlers = getattr(statement, "handlers", None)
+        if not isinstance(handlers, list):
+            continue
+        for handler in handlers:
+            for field_name in ("body", "orelse", "finalbody"):
+                body = getattr(handler, field_name, None)
+                if not isinstance(body, list):
+                    continue
+                for index, candidate in enumerate(body):
+                    if candidate is assignment:
+                        body.insert(index, wrapped_assignment)
+                        return
+    raise AssertionError("approved assignment parent body not found")
+
+
+@pytest.mark.parametrize(
+    ("role", "wrapped_call_builder"),
+    (
+        pytest.param(
+            "study-truth-development-plan",
+            lambda receiver, argument: ast.Call(
+                func=ast.Attribute(value=receiver, attr="plan_cases", ctx=ast.Load()),
+                args=[argument],
+                keywords=[],
+            ),
+            id="development-attribute-second-hop",
+        ),
+        pytest.param(
+            "study-truth-development-plan",
+            lambda receiver, argument: ast.Call(
+                func=ast.Call(
+                    func=ast.Name(id="getattr", ctx=ast.Load()),
+                    args=[receiver, ast.Constant(value="plan_cases")],
+                    keywords=[],
+                ),
+                args=[argument],
+                keywords=[],
+            ),
+            id="development-literal-getattr-second-hop",
+        ),
+        pytest.param(
+            "study-truth-legacy-plan",
+            lambda receiver, argument: ast.Call(
+                func=ast.Attribute(value=receiver, attr="plan_cases", ctx=ast.Load()),
+                args=[argument],
+                keywords=[],
+            ),
+            id="legacy-attribute-second-hop",
+        ),
+        pytest.param(
+            "study-truth-legacy-plan",
+            lambda receiver, argument: ast.Call(
+                func=ast.Call(
+                    func=ast.Name(id="getattr", ctx=ast.Load()),
+                    args=[receiver, ast.Constant(value="plan_cases")],
+                    keywords=[],
+                ),
+                args=[argument],
+                keywords=[],
+            ),
+            id="legacy-literal-getattr-second-hop",
+        ),
+    ),
+)
+def test_exact_approved_plan_sites_reject_second_hop_plan_cases_repromotion(
+    role: str,
+    wrapped_call_builder: Callable[[ast.expr, ast.expr], ast.Call],
+) -> None:
+    tree, analyzer, site, assignment, approved_call = _approved_plan_call_subject(role)
+    original_function = approved_call.func
+    wrapped_assignment = ast.copy_location(
+        ast.Assign(
+            targets=[ast.Name(id="wrapped", ctx=ast.Store())],
+            value=ast.Call(
+                func=ast.Name(id="relay", ctx=ast.Load()),
+                args=[original_function],
+                keywords=[],
+            ),
+        ),
+        assignment,
+    )
+    wrapped_receiver = ast.Name(id="wrapped", ctx=ast.Load())
+    rewritten_call = ast.copy_location(
+        wrapped_call_builder(wrapped_receiver, approved_call.args[0]),
+        approved_call,
+    )
+    approved_call.func = rewritten_call.func
+    approved_call.args = rewritten_call.args
+    approved_call.keywords = rewritten_call.keywords
+    _insert_wrapped_plan_assignment(tree, assignment, wrapped_assignment)
+    ast.fix_missing_locations(tree)
+
+    result = analyzer.analyze(tree)
+    fail_closed_facts = (
+        result.facts.study_forbidden_calls
+        | {
+            error
+            for error in result.facts.closure_errors
+            if "plan_cases outside DevelopmentCorpusProvider" in error
+            or "unobserved exact roles" in error
+        }
+    )
+
+    assert retention_module._source_location(
+        "manufacturing_vision_studio.e1.study_truth_v2",
+        approved_call,
+    ) == site.location
+    assert len(fail_closed_facts) == 1
+    assert any(
+        "plan_cases outside DevelopmentCorpusProvider" in reference
+        for reference in fail_closed_facts
+    )
 
 
 def test_performance_root_cannot_reach_freecad_adapter(tmp_path: Path) -> None:
