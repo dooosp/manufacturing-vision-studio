@@ -1253,6 +1253,396 @@ def test_exact_approved_plan_sites_reject_second_hop_plan_cases_repromotion(
     )
 
 
+@pytest.mark.parametrize(
+    "role",
+    (
+        "study-truth-development-plan",
+        "study-truth-legacy-plan",
+    ),
+    ids=("development", "legacy"),
+)
+@pytest.mark.parametrize(
+    ("access", "wrapped_call_builder"),
+    (
+        pytest.param(
+            "attribute",
+            lambda receiver, argument: ast.Call(
+                func=ast.Attribute(value=receiver, attr="plan_cases", ctx=ast.Load()),
+                args=[argument],
+                keywords=[],
+            ),
+            id="attribute",
+        ),
+        pytest.param(
+            "literal-getattr",
+            lambda receiver, argument: ast.Call(
+                func=ast.Call(
+                    func=ast.Name(id="getattr", ctx=ast.Load()),
+                    args=[receiver, ast.Constant(value="plan_cases")],
+                    keywords=[],
+                ),
+                args=[argument],
+                keywords=[],
+            ),
+            id="literal-getattr",
+        ),
+    ),
+)
+@pytest.mark.parametrize(
+    ("carrier", "carrier_builder"),
+    (
+        pytest.param(
+            "list",
+            lambda value: ast.List(elts=[value], ctx=ast.Load()),
+            id="list",
+        ),
+        pytest.param(
+            "dict",
+            lambda value: ast.Dict(
+                keys=[ast.Constant(value="planner")], values=[value]
+            ),
+            id="dict",
+        ),
+        pytest.param(
+            "nested-list-dict",
+            lambda value: ast.Dict(
+                keys=[ast.Constant(value="planner")],
+                values=[ast.List(elts=[value], ctx=ast.Load())],
+            ),
+            id="nested-list-dict",
+        ),
+    ),
+)
+def test_exact_approved_plan_sites_reject_container_contained_plan_cases_repromotion(
+    role: str,
+    access: str,
+    wrapped_call_builder: Callable[[ast.expr, ast.expr], ast.Call],
+    carrier: str,
+    carrier_builder: Callable[[ast.expr], ast.expr],
+) -> None:
+    tree, analyzer, site, assignment, approved_call = _approved_plan_call_subject(role)
+    original_function = approved_call.func
+    carrier_assignment = ast.copy_location(
+        ast.Assign(
+            targets=[ast.Name(id="carrier", ctx=ast.Store())],
+            value=carrier_builder(
+                ast.Call(
+                    func=ast.Name(id="relay", ctx=ast.Load()),
+                    args=[original_function],
+                    keywords=[],
+                )
+            ),
+        ),
+        assignment,
+    )
+    rewritten_call = ast.copy_location(
+        wrapped_call_builder(
+            ast.Name(id="carrier", ctx=ast.Load()), approved_call.args[0]
+        ),
+        approved_call,
+    )
+    approved_call.func = rewritten_call.func
+    approved_call.args = rewritten_call.args
+    approved_call.keywords = rewritten_call.keywords
+    _insert_wrapped_plan_assignment(tree, assignment, carrier_assignment)
+    ast.fix_missing_locations(tree)
+
+    result = analyzer.analyze(tree)
+
+    assert access in {"attribute", "literal-getattr"}
+    assert carrier in {"list", "dict", "nested-list-dict"}
+    assert retention_module._source_location(
+        "manufacturing_vision_studio.e1.study_truth_v2",
+        approved_call,
+    ) == site.location
+    assert len(result.facts.study_forbidden_calls) == 1, (
+        "missing fail-closed fact for container-contained plan_cases re-promotion: "
+        f"{result.facts.study_forbidden_calls}"
+    )
+    assert any(
+        "plan_cases outside DevelopmentCorpusProvider" in reference
+        for reference in result.facts.study_forbidden_calls
+    )
+
+
+@pytest.mark.parametrize(
+    "role",
+    (
+        "study-truth-development-plan",
+        "study-truth-legacy-plan",
+    ),
+    ids=("development", "legacy"),
+)
+@pytest.mark.parametrize(
+    ("access", "wrapped_call_builder"),
+    (
+        pytest.param(
+            "attribute",
+            lambda receiver, argument: ast.Call(
+                func=ast.Attribute(value=receiver, attr="plan_cases", ctx=ast.Load()),
+                args=[argument],
+                keywords=[],
+            ),
+            id="attribute",
+        ),
+        pytest.param(
+            "literal-getattr",
+            lambda receiver, argument: ast.Call(
+                func=ast.Call(
+                    func=ast.Name(id="getattr", ctx=ast.Load()),
+                    args=[receiver, ast.Constant(value="plan_cases")],
+                    keywords=[],
+                ),
+                args=[argument],
+                keywords=[],
+            ),
+            id="literal-getattr",
+        ),
+    ),
+)
+def test_exact_approved_plan_sites_reject_unknown_call_subscript_plan_cases_repromotion(
+    role: str,
+    access: str,
+    wrapped_call_builder: Callable[[ast.expr, ast.expr], ast.Call],
+) -> None:
+    tree, analyzer, site, assignment, approved_call = _approved_plan_call_subject(role)
+    original_function = approved_call.func
+    carrier_assignment = ast.copy_location(
+        ast.Assign(
+            targets=[ast.Name(id="carrier", ctx=ast.Store())],
+            value=ast.Subscript(
+                value=ast.Call(
+                    func=ast.Name(id="relay", ctx=ast.Load()),
+                    args=[original_function],
+                    keywords=[],
+                ),
+                slice=ast.Constant(value=0),
+                ctx=ast.Load(),
+            ),
+        ),
+        assignment,
+    )
+    rewritten_call = ast.copy_location(
+        wrapped_call_builder(
+            ast.Name(id="carrier", ctx=ast.Load()), approved_call.args[0]
+        ),
+        approved_call,
+    )
+    approved_call.func = rewritten_call.func
+    approved_call.args = rewritten_call.args
+    approved_call.keywords = rewritten_call.keywords
+    _insert_wrapped_plan_assignment(tree, assignment, carrier_assignment)
+    ast.fix_missing_locations(tree)
+
+    result = analyzer.analyze(tree)
+
+    assert access in {"attribute", "literal-getattr"}
+    assert retention_module._source_location(
+        "manufacturing_vision_studio.e1.study_truth_v2",
+        approved_call,
+    ) == site.location
+    assert len(result.facts.study_forbidden_calls) == 1, (
+        "missing fail-closed fact for unknown-call subscript plan_cases re-promotion: "
+        f"{result.facts.study_forbidden_calls}"
+    )
+    assert any(
+        "plan_cases outside DevelopmentCorpusProvider" in reference
+        for reference in result.facts.study_forbidden_calls
+    )
+
+
+@pytest.mark.parametrize(
+    "role",
+    (
+        "study-truth-development-plan",
+        "study-truth-legacy-plan",
+    ),
+    ids=("development", "legacy"),
+)
+@pytest.mark.parametrize(
+    ("access", "wrapped_call_builder"),
+    (
+        pytest.param(
+            "attribute",
+            lambda receiver, argument: ast.Call(
+                func=ast.Attribute(value=receiver, attr="plan_cases", ctx=ast.Load()),
+                args=[argument],
+                keywords=[],
+            ),
+            id="attribute",
+        ),
+        pytest.param(
+            "literal-getattr",
+            lambda receiver, argument: ast.Call(
+                func=ast.Call(
+                    func=ast.Name(id="getattr", ctx=ast.Load()),
+                    args=[receiver, ast.Constant(value="plan_cases")],
+                    keywords=[],
+                ),
+                args=[argument],
+                keywords=[],
+            ),
+            id="literal-getattr",
+        ),
+    ),
+)
+def test_exact_approved_plan_sites_allow_harmless_unknown_call_subscript_receivers(
+    role: str,
+    access: str,
+    wrapped_call_builder: Callable[[ast.expr, ast.expr], ast.Call],
+) -> None:
+    tree, analyzer, site, assignment, approved_call = _approved_plan_call_subject(role)
+    tree.body.insert(0, ast.Import(names=[ast.alias(name="sys")]))
+    carrier_assignment = ast.copy_location(
+        ast.Assign(
+            targets=[ast.Name(id="carrier", ctx=ast.Store())],
+            value=ast.Subscript(
+                value=ast.Call(
+                    func=ast.Name(id="relay", ctx=ast.Load()),
+                    args=[
+                        ast.Attribute(
+                            value=ast.Name(id="sys", ctx=ast.Load()),
+                            attr="stdout",
+                            ctx=ast.Load(),
+                        )
+                    ],
+                    keywords=[],
+                ),
+                slice=ast.Constant(value=0),
+                ctx=ast.Load(),
+            ),
+        ),
+        assignment,
+    )
+    rewritten_call = ast.copy_location(
+        wrapped_call_builder(
+            ast.Name(id="carrier", ctx=ast.Load()), approved_call.args[0]
+        ),
+        approved_call,
+    )
+    approved_call.func = rewritten_call.func
+    approved_call.args = rewritten_call.args
+    approved_call.keywords = rewritten_call.keywords
+    _insert_wrapped_plan_assignment(tree, assignment, carrier_assignment)
+    ast.fix_missing_locations(tree)
+
+    result = analyzer.analyze(tree)
+    fail_closed_facts = (
+        result.facts.study_forbidden_calls
+        | {
+            error
+            for error in result.facts.closure_errors
+            if "plan_cases outside DevelopmentCorpusProvider" in error
+            or "unobserved exact roles" in error
+        }
+    )
+
+    assert access in {"attribute", "literal-getattr"}
+    assert retention_module._source_location(
+        "manufacturing_vision_studio.e1.study_truth_v2",
+        approved_call,
+    ) == site.location
+    assert not fail_closed_facts
+
+
+@pytest.mark.parametrize(
+    "role",
+    (
+        "study-truth-development-plan",
+        "study-truth-legacy-plan",
+    ),
+    ids=("development", "legacy"),
+)
+@pytest.mark.parametrize(
+    ("access", "wrapped_call_builder"),
+    (
+        pytest.param(
+            "attribute",
+            lambda receiver, argument: ast.Call(
+                func=ast.Attribute(value=receiver, attr="plan_cases", ctx=ast.Load()),
+                args=[argument],
+                keywords=[],
+            ),
+            id="attribute",
+        ),
+        pytest.param(
+            "literal-getattr",
+            lambda receiver, argument: ast.Call(
+                func=ast.Call(
+                    func=ast.Name(id="getattr", ctx=ast.Load()),
+                    args=[receiver, ast.Constant(value="plan_cases")],
+                    keywords=[],
+                ),
+                args=[argument],
+                keywords=[],
+            ),
+            id="literal-getattr",
+        ),
+    ),
+)
+@pytest.mark.parametrize(
+    ("carrier", "carrier_builder"),
+    (
+        pytest.param(
+            "list",
+            lambda value: ast.List(elts=[value], ctx=ast.Load()),
+            id="list",
+        ),
+        pytest.param(
+            "dict",
+            lambda value: ast.Dict(
+                keys=[ast.Constant(value="safe")], values=[value]
+            ),
+            id="dict",
+        ),
+        pytest.param(
+            "nested-list-dict",
+            lambda value: ast.Dict(
+                keys=[ast.Constant(value="safe")],
+                values=[ast.List(elts=[value], ctx=ast.Load())],
+            ),
+            id="nested-list-dict",
+        ),
+    ),
+)
+def test_exact_approved_plan_sites_allow_harmless_container_receivers(
+    role: str,
+    access: str,
+    wrapped_call_builder: Callable[[ast.expr, ast.expr], ast.Call],
+    carrier: str,
+    carrier_builder: Callable[[ast.expr], ast.expr],
+) -> None:
+    tree, analyzer, site, assignment, approved_call = _approved_plan_call_subject(role)
+    carrier_assignment = ast.copy_location(
+        ast.Assign(
+            targets=[ast.Name(id="carrier", ctx=ast.Store())],
+            value=carrier_builder(ast.Constant(value=None)),
+        ),
+        assignment,
+    )
+    rewritten_call = ast.copy_location(
+        wrapped_call_builder(
+            ast.Name(id="carrier", ctx=ast.Load()), approved_call.args[0]
+        ),
+        approved_call,
+    )
+    approved_call.func = rewritten_call.func
+    approved_call.args = rewritten_call.args
+    approved_call.keywords = rewritten_call.keywords
+    _insert_wrapped_plan_assignment(tree, assignment, carrier_assignment)
+    ast.fix_missing_locations(tree)
+
+    result = analyzer.analyze(tree)
+
+    assert access in {"attribute", "literal-getattr"}
+    assert carrier in {"list", "dict", "nested-list-dict"}
+    assert retention_module._source_location(
+        "manufacturing_vision_studio.e1.study_truth_v2",
+        approved_call,
+    ) == site.location
+    assert not result.facts.study_forbidden_calls
+
+
 def test_performance_root_cannot_reach_freecad_adapter(tmp_path: Path) -> None:
     protocol = load_study_protocol_v2()
     repo_root = _complete_repo(tmp_path, protocol)
@@ -5797,6 +6187,19 @@ def test_unknown_call_return_preserves_evaluation_scope_may_provenance() -> None
     )
 
 
+def test_unknown_call_subscript_preserves_evaluation_scope_may_provenance() -> None:
+    _, result = _analyze_evaluation_scope_source(
+        "from manufacturing_vision_studio.e1.domain_v2 import EvaluationScope\n"
+        "scope = relay(EvaluationScope)[0]\n"
+        "PROTECTED = scope.CALIBRATION\n"
+    )
+
+    assert any(
+        reference.endswith(":EvaluationScope.CALIBRATION")
+        for reference in result.facts.protected
+    )
+
+
 @pytest.mark.parametrize(
     "source",
     (
@@ -5826,6 +6229,19 @@ def test_unknown_call_return_preserves_plan_cases_may_provenance() -> None:
     _, result = _analyze_source(
         "planner = generator.plan_cases\n"
         "escaped = relay(planner)\n"
+        "escaped('development')\n"
+    )
+
+    assert any(
+        "plan_cases outside DevelopmentCorpusProvider" in reference
+        for reference in result.facts.study_forbidden_calls
+    )
+
+
+def test_unknown_call_subscript_preserves_plan_cases_may_provenance() -> None:
+    _, result = _analyze_source(
+        "planner = generator.plan_cases\n"
+        "escaped = relay(planner)[0]\n"
         "escaped('development')\n"
     )
 
@@ -5913,7 +6329,8 @@ def test_harmless_container_and_unknown_call_carriers_remain_allowed(
         "dict_carrier = {'stdout': sys.stdout}\n"
         "safe_list = list_carrier[0]\n"
         "safe_dict = dict_carrier['stdout']\n"
-        "safe_call = relay(sys.stdout)\n",
+        "safe_call = relay(sys.stdout)\n"
+        "safe_subscript = relay(sys.stdout)[0]\n",
     )
 
     scan_study_dependencies(protocol, repo_root=repo_root)

@@ -1789,7 +1789,7 @@ def _with_plan_cases_capability(value: _AbsValue, receiver: _AbsValue) -> _AbsVa
         value.facts,
         may_capabilities=value.facts.may_capabilities | {"plan-cases-callable"},
     )
-    if "plan-cases-callable" not in receiver.facts.may_capabilities:
+    if "plan-cases-callable" not in _flatten_facts(receiver).may_capabilities:
         facts = replace(
             facts,
             identity=_exact_identity(_plan_cases_callable_identity()),
@@ -3128,8 +3128,16 @@ class _SourceFlowAnalyzer:
         container_value = values[0]
         element = _element_value(container_value)
         contained = container_value.contained
+        selected_facts = _join_value_facts(element.facts, contained)
+        selected_facts = replace(
+            selected_facts,
+            may_capabilities=(
+                selected_facts.may_capabilities
+                | container_value.facts.may_capabilities
+            ),
+        )
         value = _AbsValue(
-            facts=_join_value_facts(element.facts, contained),
+            facts=selected_facts,
             iterable_element=element.iterable_element,
             contained=_join_value_facts(
                 element.contained, _as_contained(contained)
