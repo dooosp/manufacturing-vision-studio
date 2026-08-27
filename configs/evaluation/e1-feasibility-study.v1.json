@@ -1,0 +1,44 @@
+{
+  "$schema": "../../schemas/e1-feasibility-study-config.v1.json",
+  "schema_version": "1.0.0",
+  "record_type": "e1_feasibility_study_config_v1",
+  "study_id": "e1-feasibility-separability",
+  "base_commit": "9fd6d0c600206083fde4fafc874e0226b5df60b3",
+  "paths": {"artifact_root": "docs/evaluation/results/e1-feasibility-study", "raw_data_root": "data/e1-feasibility-study"},
+  "diagnostic_matrix": {"path": "configs/evaluation/e1-feasibility-diagnostic-108.json", "sha256": "a30fa1e0dfcc393a49c6a5904d7ca490eadd68747d28e3a8e046ffa26f8aa900"},
+  "source_hashes": {
+    "candidate_a_raw_sha256": "ed8c0331759500d78cb69805af8678b4214398120b8ec5ad7389e2360f344c84",
+    "candidate_b_raw_sha256": "983c8e6dc47e62f78b3c55e701a091c96d603a9ea7334e6e7098392ff97ae029",
+    "selection_raw_sha256": "32868450a349379e8e548854217c69035b7972ab75acc7f02295e5fae8a76242",
+    "selection_record_sha256": "7392d4d1d9078b44dac0c9dc777d7622f1f145c2e3b6bf9fffb9a58be407ae5a",
+    "task4_report_raw_sha256": "b6a2093082aa63631adb233c282466539720281ab96b53bc3928cf292efc8835",
+    "task4_progress_ledger_raw_sha256": "fcef0c3b22b962f185911cc74bdad45f1bd2860c42ae8e59bac76d6741c13ea7"
+  },
+  "ownership_map_hashes": {
+    "rev-A/front": "eadc490b04f8240e8356b3e20e75db08d79dfc5e27af180574d707836b3b776f",
+    "rev-A/oblique_left": "2d2a52ecae44ccae98455180211aaf528078707948dbf83f792223c550d3a074",
+    "rev-A/oblique_right": "8c42a88c3ffdf3dda10b073665b6d7a565ddde54a7a7450ba3c0f4782be14477",
+    "rev-B/front": "5f69348a9ce7b646054dce02f95a0ff8ebd420c641ab40f414b0afa645ef49bc",
+    "rev-B/oblique_left": "1fb2f752d738a7bf595f8cae97860452a3a8628ea5cb3eec4347d1f42fe43b8b",
+    "rev-B/oblique_right": "373337ec46da320dbbcdf0ffa14c22794db05208cd9491e5b272e0d34169830d"
+  },
+  "negative_result_snapshots": [
+    {"name": "task4_report", "checked_in_path": "docs/evaluation/negative-results/e1-v2-task4-report.raw.txt", "original_sibling_path": "/Users/jangtaeho/manufacturing-vision-studio-e1-v2/.superpowers/sdd/2026-08-01-e1-v2-scale-feature-remediation/task-4-report.md", "raw_sha256": "b6a2093082aa63631adb233c282466539720281ab96b53bc3928cf292efc8835"},
+    {"name": "task4_progress_ledger", "checked_in_path": "docs/evaluation/negative-results/e1-v2-task4-progress-ledger.raw.txt", "original_sibling_path": "/Users/jangtaeho/manufacturing-vision-studio-e1-v2/.superpowers/sdd/2026-08-01-e1-v2-scale-feature-remediation/progress.md", "raw_sha256": "fcef0c3b22b962f185911cc74bdad45f1bd2860c42ae8e59bac76d6741c13ea7"}
+  ],
+  "phase_1": {"modes": ["NEAREST", "BILINEAR", "BICUBIC"], "limits": {"diagnostic_rows": 108, "seed_start": 800000, "seed_end": 800107, "threshold": 0.0025, "difference_mask_minimum": 32}},
+  "phase_2": {"counts": {"clean": 24, "nuisance": 30, "defect": 60, "trust_boundary": 6, "total": 120}},
+  "diagnostic_gates": {"max_recall_drop": 0.05, "median_dice_drop": 0.01, "medium_high_recall": 0.9},
+  "development_gates": {"medium_high_recall": 0.9, "nuisance_fpr": 0.05, "median_dice": 0.7, "feature_accuracy": 0.95},
+  "implementation_projection_paths": ["Makefile", "configs/evaluation/e1-feasibility-diagnostic-108.json", "configs/evaluation/e1-feasibility-study.v1.json", "configs/evaluation/e1-v1-history-integrity.json", "configs/evaluation/e1-v1.json", "configs/evaluation/e1-v2-candidate-selection.json", "configs/evaluation/e1-v2.json", "pyproject.toml", "schemas/e1-candidate-selection.v2.json", "schemas/e1-case-manifest.v1.json", "schemas/e1-evaluation-protocol.v1.json", "schemas/e1-evaluation-protocol.v2.json", "schemas/e1-evaluation-result.v1.json", "schemas/e1-feasibility-study-artifact.v1.json", "schemas/e1-feasibility-study-config.v1.json", "schemas/e1-threshold-lock.v1.json", "src/manufacturing_vision_studio/__init__.py", "src/manufacturing_vision_studio/adapters.py", "src/manufacturing_vision_studio/canonical.py", "src/manufacturing_vision_studio/canonical_png.py", "src/manufacturing_vision_studio/config.py", "src/manufacturing_vision_studio/e1/__init__.py", "src/manufacturing_vision_studio/e1/domain.py", "src/manufacturing_vision_studio/e1/domain_v2.py", "src/manufacturing_vision_studio/e1/feature_mapping.py", "src/manufacturing_vision_studio/e1/generator.py", "src/manufacturing_vision_studio/e1/generator_v2.py", "src/manufacturing_vision_studio/e1/known_transform_v2.py", "src/manufacturing_vision_studio/e1/metrics.py", "src/manufacturing_vision_studio/e1/metrics_v2.py", "src/manufacturing_vision_studio/e1/model.py", "src/manufacturing_vision_studio/e1/oracle.py", "src/manufacturing_vision_studio/e1/policy_v2.py", "src/manufacturing_vision_studio/e1/protocol.py", "src/manufacturing_vision_studio/e1/protocol_v2.py", "src/manufacturing_vision_studio/e1/study_artifacts_v2.py", "src/manufacturing_vision_studio/e1/study_cli_v2.py", "src/manufacturing_vision_studio/e1/study_inference_v2.py", "src/manufacturing_vision_studio/e1/study_protocol_v2.py", "src/manufacturing_vision_studio/e1/study_retention_v2.py", "src/manufacturing_vision_studio/e1/study_runner_v2.py", "src/manufacturing_vision_studio/e1/study_truth_v2.py", "src/manufacturing_vision_studio/errors.py", "src/manufacturing_vision_studio/evidence.py", "src/manufacturing_vision_studio/images.py", "src/manufacturing_vision_studio/model.py", "src/manufacturing_vision_studio/registry.py"],
+  "direct_import_allowlist": {
+    "study_protocol_v2": ["manufacturing_vision_studio.canonical", "manufacturing_vision_studio.e1.domain"],
+    "known_transform_v2": ["manufacturing_vision_studio.canonical", "manufacturing_vision_studio.canonical_png"],
+    "study_inference_v2": ["manufacturing_vision_studio.canonical", "manufacturing_vision_studio.e1.domain", "manufacturing_vision_studio.e1.feature_mapping", "manufacturing_vision_studio.e1.model", "manufacturing_vision_studio.e1.protocol_v2", "manufacturing_vision_studio.errors", "manufacturing_vision_studio.images", "manufacturing_vision_studio.model"],
+    "study_truth_v2": ["manufacturing_vision_studio.canonical", "manufacturing_vision_studio.canonical_png", "manufacturing_vision_studio.e1.domain", "manufacturing_vision_studio.e1.domain_v2", "manufacturing_vision_studio.e1.feature_mapping", "manufacturing_vision_studio.e1.generator", "manufacturing_vision_studio.e1.generator_v2", "manufacturing_vision_studio.e1.metrics_v2", "manufacturing_vision_studio.e1.oracle", "manufacturing_vision_studio.e1.protocol_v2"],
+    "study_artifacts_v2": ["manufacturing_vision_studio.canonical"],
+    "study_retention_v2": ["manufacturing_vision_studio.canonical", "manufacturing_vision_studio.e1.protocol_v2"],
+    "study_runner_v2": ["manufacturing_vision_studio.canonical_png", "manufacturing_vision_studio.e1.feature_mapping", "manufacturing_vision_studio.e1.metrics_v2", "manufacturing_vision_studio.e1.protocol_v2"],
+    "study_cli_v2": []
+  }
+}

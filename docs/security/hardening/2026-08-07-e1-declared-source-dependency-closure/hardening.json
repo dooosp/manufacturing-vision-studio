@@ -1,0 +1,470 @@
+{
+  "documentType": "codex-security.hardening-analysis",
+  "schemaVersion": "1.0",
+  "analysisId": "hardening_20260807_e1_declared_source_dependency_closure",
+  "sourceEvidence": {
+    "kind": "mixed_source_snapshot_and_supplied_findings",
+    "label": "E1 feasibility study exact source snapshot and four supplied review findings",
+    "collectionSha256": "7394cd37a067a25a87dd5c41a64ee52bcfdd4ed210d3516fcd763d4854dc0619",
+    "artifactCount": 206,
+    "targetRevision": "8e4b3ff52461c907c728fb2eae6660dafba7c53a",
+    "targetTree": "1fa91aa8206122b5d75038276e2ec1926a6b72dc",
+    "trackedArchiveSha256": "f30970efc36f5fc9a8c175cf3415ce5f4925afe4116e81e2ba3fbcd5341ae6e2",
+    "findingSetSha256": "29a8cb27eb3abc556ddc9ae4b54b9cbad39690eb8ab36f787aaea754f8aada28",
+    "sourceDrift": "none"
+  },
+  "assessment": {
+    "outcome": "opportunities_identified",
+    "summary": "The repeated loader-spelling bypass supports one structural hardening opportunity: retain exact-byte projection and replace negative spelling recognition with a fail-closed declared-source capability grammar. Three independent truth and CLI defects still require direct fixes under every option."
+  },
+  "constraints": {
+    "profile": "balanced",
+    "changeHorizons": [
+      "incremental",
+      "medium_term",
+      "foundational"
+    ],
+    "nonNegotiables": [
+      "Read each bounded projected source once and hash and parse those exact bytes.",
+      "Fail closed before Phase 0 on an unknown dependency-sensitive source capability.",
+      "Preserve ordinary safe object operations and the two exact PEP 562 package initializers.",
+      "Do not claim a Python sandbox or complete runtime dependency proof.",
+      "Retain direct fixes for decision/report propagation, exact snapshot paths, and verify exit status under every option.",
+      "Do not run implementation validation or any study phase while planning or implementing this hardening."
+    ],
+    "assumptions": [
+      "No measured latency or memory budget was supplied.",
+      "The target remains a local deterministic demo rather than a production inspection system.",
+      "The written specification is approved and the implementation plan has passed independent review; the user must explicitly authorize one execution mode before any production edit.",
+      "No repository code, tests, validation, or study commands were executed for this analysis."
+    ]
+  },
+  "opportunities": [
+    {
+      "opportunityId": "declarative-dependency-closure",
+      "title": "Make declared source dependencies a positive capability boundary",
+      "summary": "Preserve the exact-byte projection and express accepted source capabilities positively instead of enumerating new reflective loader spellings after review finds them.",
+      "diagnosis": "The current visitor owns a growing set of syntax-specific recognizers. That structure can reject known loader spellings but cannot make the open-ended Python reflection surface closed; adjacent artifact and CLI findings also show why verification credit and process success must propagate through explicit dependencies rather than complements or generic success paths.",
+      "evidence": [
+        {
+          "claimType": "observed",
+          "sourceKind": "document",
+          "evidenceId": "E1-F01",
+          "path": "src/manufacturing_vision_studio/e1/study_retention_v2.py",
+          "claim": "The supplied review identifies vars(builtins)[\"__import__\"] as the latest accepted reflected-loader spelling; exact-revision source recognizes selected names, attributes, getattr calls and __dict__ subscripts but not this call-wrapped namespace access."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "source",
+          "path": "src/manufacturing_vision_studio/e1/study_retention_v2.py",
+          "claim": "The projection reader hashes each bounded payload and retains the same payload for ast.parse, then builds declared edges, direct allowlists and forbidden reachability from that snapshot."
+        },
+        {
+          "claimType": "inferred",
+          "sourceKind": "source",
+          "path": "src/manufacturing_vision_studio/e1/study_retention_v2.py",
+          "claim": "A positive capability grammar is a more stable control owner than another deny predicate because unknown dependency-sensitive reflection can fail closed without first naming its spelling."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "document",
+          "evidenceId": "E1-F02",
+          "path": "src/manufacturing_vision_studio/e1/study_runner_v2.py",
+          "claim": "Malformed decision JSON can return an invalid state that marks decision.json invalid without propagating invalidity to a present dependent report.md."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "document",
+          "evidenceId": "E1-F03",
+          "path": "src/manufacturing_vision_studio/e1/study_protocol_v2.py",
+          "claim": "Snapshot validation checks names and bytes, accepts any original path with a broad user-directory prefix, and does not compare either path to the two exact frozen tuples."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "document",
+          "evidenceId": "E1-F04",
+          "path": "src/manufacturing_vision_studio/e1/study_cli_v2.py",
+          "claim": "The CLI prints every non-exception verify result and then returns zero without inspecting result.status.study_valid."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "source",
+          "path": "src/manufacturing_vision_studio/__init__.py",
+          "claim": "The root package and E1 package initializers are the two intended PEP 562 lazy-export sites and both use literal maps plus import_module inside module-level __getattr__."
+        }
+      ],
+      "desiredInvariants": [
+        "Every declared production source file is read once within the existing bounds, and the bytes hashed into the projection are the bytes parsed for policy.",
+        "Every accepted project dependency is a declared, projected and allowed source edge before Phase 0.",
+        "Unknown loader, executable-code or dependency-sensitive reflection capability syntax fails closed in runtime-reachable projected source.",
+        "Only the exact root and E1 package initializer paths may use the structurally exact PEP 562 lazy-loader form.",
+        "Ordinary safe object operations remain available through finite positive forms rather than a broad reflection exemption.",
+        "A report receives verification credit only through a verified decision dependency; snapshot identity includes both exact paths and bytes; verify exits nonzero for study_valid=false.",
+        "The resulting claim is declared source dependency closure, not sandboxing or complete semantic runtime reachability."
+      ],
+      "proposalPath": "proposals/declarative-dependency-closure.md",
+      "options": [
+        {
+          "optionId": "incremental-spelling-patches",
+          "title": "Continue incremental spelling patches",
+          "kind": "baseline",
+          "summary": "Add vars(builtins) and adjacent negative fixtures while directly repairing the three independent truth and CLI defects.",
+          "diagramPaths": {
+            "before": "diagrams/declarative-dependency-closure-before.mmd",
+            "after": "diagrams/declarative-dependency-closure-incremental-spelling-patches-after.mmd"
+          },
+          "evidenceCoverage": [
+            {
+              "evidenceId": "E1-F01",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "A new predicate can reject the known vars(builtins) spelling, but adjacent unmodeled spellings remain recurrence risk."
+            },
+            {
+              "evidenceId": "E1-F02",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Central invalidity propagation must be added directly; loader predicates do not affect report credit."
+            },
+            {
+              "evidenceId": "E1-F03",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Both canonical snapshot paths must be compared directly before reading bytes."
+            },
+            {
+              "evidenceId": "E1-F04",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "The verify command needs an explicit domain-invalid exit mapping."
+            }
+          ],
+          "tradeoffs": [
+            {
+              "dimension": "security",
+              "direction": "improves",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "The four known cases can be closed, but the import control still depends on reviewers finding every relevant spelling.",
+              "validationPlan": "Add exact regressions for all four findings and challenge the visitor with adjacent loader acquisition forms."
+            },
+            {
+              "dimension": "performance",
+              "direction": "neutral",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "A few AST predicates and path comparisons add no runtime hop and little work to the existing scan.",
+              "validationPlan": "Compare dependency-scan wall time on the same 47-path projection; any repeatable regression requires review."
+            },
+            {
+              "dimension": "memory",
+              "direction": "neutral",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "The option adds bounded fixture and predicate state without a new long-lived structure.",
+              "validationPlan": "Compare peak RSS for the same projection and investigate any repeatable increase."
+            },
+            {
+              "dimension": "reliability",
+              "direction": "improves",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Explicit report propagation and exit semantics improve failure signaling, while denylist omissions remain possible.",
+              "validationPlan": "Exercise malformed decisions, path aliases and invalid domain reports and assert deterministic fail-closed results."
+            },
+            {
+              "dimension": "operability",
+              "direction": "improves",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "Shell automation would see invalid verification, with no new service or deployment component.",
+              "validationPlan": "Capture JSON output and process status for valid PENDING, valid terminal and invalid reports."
+            },
+            {
+              "dimension": "migration",
+              "direction": "neutral",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "The existing scanner and public APIs remain, so rollout and rollback are focused; future patch churn is the long-term cost.",
+              "validationPlan": "Run focused compatibility coverage for the current projection and both lazy initializers before broader validation."
+            }
+          ],
+          "residualRisks": [
+            "A new reflective loader spelling can bypass the visitor.",
+            "Tests may create false confidence by enumerating examples rather than the capability invariant.",
+            "The direct fixes remain independently safety-critical."
+          ],
+          "implementationReadiness": {
+            "affectedComponents": [
+              "src/manufacturing_vision_studio/e1/study_retention_v2.py",
+              "src/manufacturing_vision_studio/e1/study_runner_v2.py",
+              "src/manufacturing_vision_studio/e1/study_protocol_v2.py",
+              "src/manufacturing_vision_studio/e1/study_cli_v2.py",
+              "focused tests"
+            ],
+            "workPackages": [
+              "Add the known reflection predicate and regression matrix.",
+              "Propagate decision invalidity to report credit.",
+              "Freeze both snapshot paths and map invalid verify results to nonzero."
+            ],
+            "acceptanceCriteria": [
+              "All four supplied findings fail closed without changing the frozen study inputs.",
+              "Both PEP 562 initializer compatibility cases remain accepted."
+            ],
+            "migrationNotes": [
+              "Preserve current direct protections throughout rollout."
+            ],
+            "rollback": "Before study execution, revert the focused change. After evidence is generated, invalidate it and restart the freeze gate."
+          }
+        },
+        {
+          "optionId": "static-positive-capability-grammar",
+          "title": "Adopt a static positive source-capability grammar",
+          "kind": "structural",
+          "summary": "Keep single-read hashing and AST parsing, but accept only declared dependency edges and finite safe capability forms, with exact exceptions for two PEP 562 initializers.",
+          "diagramPaths": {
+            "before": "diagrams/declarative-dependency-closure-before.mmd",
+            "after": "diagrams/declarative-dependency-closure-static-positive-capability-grammar-after.mmd"
+          },
+          "evidenceCoverage": [
+            {
+              "evidenceId": "E1-F01",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "The known bypass becomes a mandatory regression while unknown dependency-sensitive capabilities reject by default."
+            },
+            {
+              "evidenceId": "E1-F02",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "The selected option still directly centralizes decision-to-report invalidity propagation."
+            },
+            {
+              "evidenceId": "E1-F03",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "The selected option still freezes and compares both snapshot paths and the existing byte hashes."
+            },
+            {
+              "evidenceId": "E1-F04",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "The selected option still maps study_valid=false to a nonzero verify process status after printing JSON."
+            }
+          ],
+          "tradeoffs": [
+            {
+              "dimension": "security",
+              "direction": "improves",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "Unknown loader, executable-code and dependency-sensitive reflection capabilities fail closed in the declared projection; semantic runtime behavior outside that source claim remains.",
+              "validationPlan": "Use positive and negative capability matrices, exact-byte swap cases and the original four regressions; separately review the bounded claim language."
+            },
+            {
+              "dimension": "performance",
+              "direction": "regresses",
+              "confidence": "low",
+              "basis": "hypothetical",
+              "assessment": "Lexical provenance and branch joins add work to the existing bounded AST walk but add no application runtime hop.",
+              "validationPlan": "Require the focused projected-source suites and make validate to complete within their existing fixed timeouts; confirm one parse and one bounded policy traversal per captured module, and add no standalone benchmark without a separate design update."
+            },
+            {
+              "dimension": "memory",
+              "direction": "regresses",
+              "confidence": "low",
+              "basis": "hypothetical",
+              "assessment": "Per-scope provenance maps and branch unions increase transient scan memory while ASTs are live; no persistent cache or process is added.",
+              "validationPlan": "Review transient scope and branch-join bounds, require existing focused/full validation to complete without resource failure, and add no numeric memory gate without a separate design update."
+            },
+            {
+              "dimension": "reliability",
+              "direction": "improves",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Stable capability categories and explicit truth dependencies improve deterministic failure, though conservative false positives can block legitimate future source.",
+              "validationPlan": "Run accepted ordinary-object fixtures, both initializer contracts and ambiguous binding cases; every rejection must identify module, line and capability family."
+            },
+            {
+              "dimension": "operability",
+              "direction": "improves",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "There is no new deployment unit, and category diagnostics plus nonzero verify status improve automation; policy ownership becomes a review responsibility.",
+              "validationPlan": "Review diagnostic stability and CI/Make status propagation, and document the exception-review workflow."
+            },
+            {
+              "dimension": "migration",
+              "direction": "regresses",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "The visitor becomes a real lexical capability analysis and may require narrow refactors of legitimate reflection; exact initializer and public API behavior must remain compatible.",
+              "validationPlan": "Inventory current reflection uses, prove finite safe forms, retain tactical guards, and gate broad validation behind written-spec approval."
+            }
+          ],
+          "residualRisks": [
+            "Static AST policy does not prove all Python semantics, callback targets, descriptors, native extensions, environment effects or subprocess code.",
+            "A policy implementation bug can misclassify capability provenance.",
+            "The two initializer exceptions become trusted syntax and require exact structural regression coverage.",
+            "This is not a sandbox."
+          ],
+          "implementationReadiness": {
+            "affectedComponents": [
+              "src/manufacturing_vision_studio/e1/study_retention_v2.py",
+              "src/manufacturing_vision_studio/__init__.py",
+              "src/manufacturing_vision_studio/e1/__init__.py",
+              "src/manufacturing_vision_studio/e1/study_runner_v2.py",
+              "src/manufacturing_vision_studio/e1/study_protocol_v2.py",
+              "src/manufacturing_vision_studio/e1/study_cli_v2.py",
+              "focused contract tests"
+            ],
+            "workPackages": [
+              "Replace spelling provenance with lexical capability frames and fail-closed branch joins.",
+              "Validate literal declared edges and two exact PEP 562 initializer structures.",
+              "Retain finite ordinary-object operations and reject broad dependency-sensitive reflection.",
+              "Apply the three direct truth and CLI repairs before freezing the projection."
+            ],
+            "acceptanceCriteria": [
+              "Known and adjacent capability-family cases fail closed while current safe object operations and both initializers pass.",
+              "Hashing and parsing use one captured byte payload per source path.",
+              "Reader-facing claims say declared source dependency closure and explicitly deny a sandbox claim.",
+              "All four supplied findings have focused regression evidence after implementation."
+            ],
+            "migrationNotes": [
+              "The written specification is approved and the implementation plan has passed independent review; production edits remain blocked until the user explicitly authorizes one execution mode.",
+              "Future dynamic Python requires a narrow reviewed exception or non-reflective refactor."
+            ],
+            "implementationPlanPath": "implementation/static-positive-capability-grammar.md",
+            "sourceRevision": "8e4b3ff52461c907c728fb2eae6660dafba7c53a",
+            "designRevision": "aaf425bababa2d0034f4ebcb66aba321ca1901de",
+            "approvedSpecificationBlob": "de7f65eb7e2d7e41896fa88014811da755eb592d",
+            "rollback": "Before any study execution, revert the grammar and direct fixes. Once validation or study artifacts exist, invalidate them and restart from an absent result root and newly frozen projection."
+          }
+        },
+        {
+          "optionId": "runtime-bootstrap",
+          "title": "Enforce imports through a runtime bootstrap",
+          "kind": "isolation",
+          "summary": "Install an import guard before loading the study runner, retain static inventory checks, and directly repair the three independent truth and CLI defects.",
+          "diagramPaths": {
+            "before": "diagrams/declarative-dependency-closure-before.mmd",
+            "after": "diagrams/declarative-dependency-closure-runtime-bootstrap-after.mmd"
+          },
+          "evidenceCoverage": [
+            {
+              "evidenceId": "E1-F01",
+              "effect": "mitigates",
+              "tacticalFixRequired": true,
+              "rationale": "The guard can block exercised forbidden imports after installation, but it does not prove unexercised or pre-bootstrap behavior."
+            },
+            {
+              "evidenceId": "E1-F02",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Decision/report invalidity still needs a direct artifact-state repair."
+            },
+            {
+              "evidenceId": "E1-F03",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Snapshot paths still need direct exact tuple comparison."
+            },
+            {
+              "evidenceId": "E1-F04",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "CLI domain-invalid status still needs direct process-status mapping."
+            }
+          ],
+          "tradeoffs": [
+            {
+              "dimension": "security",
+              "direction": "improves",
+              "confidence": "medium",
+              "basis": "analogous",
+              "assessment": "A guard observes actual post-bootstrap imports, but preloaded modules, pre-bootstrap code, unexercised branches, subprocesses and native loading remain outside the claim.",
+              "validationPlan": "Exercise allowed and forbidden imports before and after installation and enumerate every path that bypasses the hook."
+            },
+            {
+              "dimension": "performance",
+              "direction": "regresses",
+              "confidence": "medium",
+              "basis": "analogous",
+              "assessment": "The entry point adds hook decisions to import startup; steady-state impact should be small after module caching but is unmeasured.",
+              "validationPlan": "Measure process startup, first-import latency and total verify duration against HEAD; require an approved budget before rollout."
+            },
+            {
+              "dimension": "memory",
+              "direction": "regresses",
+              "confidence": "low",
+              "basis": "hypothetical",
+              "assessment": "Guard state and import ledgers remain live for the process, though no service or persistent cache is required.",
+              "validationPlan": "Compare startup and peak RSS with the same command and projection; investigate retained module or ledger growth."
+            },
+            {
+              "dimension": "reliability",
+              "direction": "regresses",
+              "confidence": "medium",
+              "basis": "analogous",
+              "assessment": "Hook ordering, module caching and bootstrap failures add new initialization modes and can make behavior entry-point dependent.",
+              "validationPlan": "Test direct module invocation, CLI invocation, repeated imports, partial bootstrap failure and subprocess behavior."
+            },
+            {
+              "dimension": "operability",
+              "direction": "regresses",
+              "confidence": "medium",
+              "basis": "analogous",
+              "assessment": "Operators need hook diagnostics and must distinguish static attestation from exercised runtime evidence.",
+              "validationPlan": "Define import-denial telemetry, startup failure messages and incident instructions before adoption."
+            },
+            {
+              "dimension": "migration",
+              "direction": "regresses",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "The current top-level runner import must move behind the guard, and every supported entry point needs compatibility coverage.",
+              "validationPlan": "Inventory entry points and import order, stage a wrapper with the existing scanner retained, and prove rollback before any evidence is generated."
+            }
+          ],
+          "residualRisks": [
+            "Already loaded modules and pre-bootstrap execution remain outside enforcement.",
+            "Unexercised paths are not attested.",
+            "Subprocesses and native extension loading require separate controls.",
+            "The bootstrap is not a sandbox."
+          ],
+          "implementationReadiness": {
+            "affectedComponents": [
+              "src/manufacturing_vision_studio/e1/study_cli_v2.py",
+              "a new bootstrap/import-guard boundary",
+              "src/manufacturing_vision_studio/e1/study_retention_v2.py",
+              "artifact, protocol and CLI direct-fix components",
+              "entry-point and import-order tests"
+            ],
+            "workPackages": [
+              "Move runner loading behind a fixed bootstrap.",
+              "Install and observe an import guard for the allowed runtime set.",
+              "Retain static projection inventory and the three direct truth/CLI repairs."
+            ],
+            "acceptanceCriteria": [
+              "All supported entry points install the guard before runner import.",
+              "Forbidden exercised imports fail with stable diagnostics.",
+              "Documentation distinguishes runtime observations from declared source attestation."
+            ],
+            "migrationNotes": [
+              "Treat this as a later defense-in-depth option unless runtime import evidence becomes a requirement."
+            ],
+            "rollback": "Restore the original entry point before study execution. If guarded evidence has been produced, invalidate it and restart the freeze gate."
+          }
+        }
+      ],
+      "recommendedOptionId": "static-positive-capability-grammar",
+      "recommendation": "Select the static positive capability grammar under the current local, pre-execution and no-new-service constraints. Use incremental patches only for an emergency short horizon, and prefer runtime bootstrap only if exercised runtime-import enforcement becomes more important than pre-execution attestation and operational simplicity."
+    }
+  ],
+  "openQuestions": [
+    "Should a future separately reviewed design add numeric scan-time or peak-memory budgets after the existing validation-runtime gate?",
+    "Which current ordinary reflection sites need finite positive forms versus small non-reflective refactors?",
+    "Should runtime bootstrap return later as defense in depth after the static design is implemented and validated?",
+    "When will the user explicitly authorize one execution mode under the reviewed implementation plan?"
+  ]
+}

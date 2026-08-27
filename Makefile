@@ -1,5 +1,8 @@
 .PHONY: setup lint typecheck test web-check e2e validate demo format \
-	evaluate-e1-mini evaluate-e1-full verify-e1-mini verify-e1-full verify-e1-results
+	evaluate-e1-mini evaluate-e1-full verify-e1-mini verify-e1-full verify-e1-results \
+	validate-e1-study-implementation e1-study-phase0 e1-study-phase1 \
+	e1-study-feature-oracle e1-study-phase2 e1-study-status finalize-e1-study \
+	verify-e1-study
 
 E1_OUTPUT_ROOT ?= data/e1-evaluation
 
@@ -46,6 +49,30 @@ verify-e1-full:
 	uv run mvs-e1 --output-root $(E1_OUTPUT_ROOT) verify --profile full
 
 verify-e1-results: verify-e1-mini verify-e1-full
+
+validate-e1-study-implementation:
+	uv run mvs-e1-study validate-implementation
+
+e1-study-phase0:
+	uv run mvs-e1-study phase0
+
+e1-study-phase1:
+	uv run mvs-e1-study phase1
+
+e1-study-feature-oracle:
+	uv run mvs-e1-study feature-oracle
+
+e1-study-phase2:
+	uv run mvs-e1-study phase2
+
+e1-study-status:
+	uv run mvs-e1-study status
+
+finalize-e1-study:
+	uv run mvs-e1-study finalize
+
+verify-e1-study:
+	uv run mvs-e1-study verify
 
 format:
 	uv run ruff format .

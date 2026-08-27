@@ -1,0 +1,185 @@
+# Task 4 Report — Candidate Comparison and v2 Policy
+
+## Terminal status
+
+- Outcome: `HOLD`; `selected_candidate_id` is `null`.
+- Candidate selection criteria and recorded metrics were not changed.
+- The candidate comparison, alignment searches, policy inference, and benchmark were
+  not rerun during remediation.
+- The only candidate comparison remains the original approved run, executed once with
+  explicit DEVELOPMENT inputs plus the separate 108-case diagnostic matrix.
+- No calibration or release scope was planned or rendered.
+
+## Immutable original evidence
+
+- Candidate A raw SHA-256:
+  `ed8c0331759500d78cb69805af8678b4214398120b8ec5ad7389e2360f344c84`.
+- Candidate B raw SHA-256:
+  `983c8e6dc47e62f78b3c55e701a091c96d603a9ea7334e6e7098392ff97ae029`.
+- Original checked selection raw SHA-256:
+  `18ca69bba321f24105c95cc3482b9658e7a2f03ef274ac75a5ed44f822782a9b`.
+- Original selection self-hash:
+  `f2a257a731d991ceba74f791e24a15e983fd806734af2ea973fc5808daab7280`.
+- Original execution projection:
+  `90c5c7a894b1289572718fce13f39177fafe278707fae697accb0cd9828de429`.
+- Commit `8d636717a1b04267933b214a3121acfb93182e46` is labeled only as the
+  repository snapshot containing those projected bytes. It is not claimed as the
+  execution checkout because the original run did not record that fact.
+
+## Preserved comparison result
+
+- Candidate A: nuisance FP `3`; medium/high FN `0`; recall `1.0`; mapping errors `0`;
+  median positive Dice `1.0`; median post objective `0.0006673177083333332`;
+  worst-case candidate pixels `44,236,800`; p95 `1,959,250,500 ns`; maximum
+  diagnostic recall drop `0.8706896551724138`; diagnostic median Dice drop
+  `-0.23769554974322077`.
+- Candidate B: nuisance FP `9`; medium/high FN `0`; recall `1.0`; mapping errors `0`;
+  median positive Dice `1.0`; median post objective `0.0028737386067708335`;
+  worst-case candidate pixels `35,082,240`; p95 `2,030,568,417 ns`; maximum
+  diagnostic recall drop `0.4166666666666667`; diagnostic median Dice drop
+  `-0.1728969120176281`.
+- Both candidates remain rejected by `DEVELOPMENT_GATE_FAILED` and
+  `DIAGNOSTIC_TRUTH_RECALL_DROP_EXCEEDED`.
+- Both candidates additionally fail closed with `DETERMINISM_NOT_VERIFIED`,
+  `DEPENDENCY_GUARD_FAILED`, `V0_1_REGRESSION_NOT_VERIFIED`, and
+  `TRUST_NOT_VERIFIED` because the original run did not retain enough evidence to
+  establish those execution-time claims.
+
+## Audit remediation
+
+- Split original-execution provenance from current checkout audit evidence.
+- Embedded both exact canonical candidate artifacts as bounded zlib-level-9 RFC 1950
+  payloads with canonical RFC 4648 base64, raw/compressed lengths, and hashes.
+- The pure runtime loader validates preallocation caps, base64 canonicality, bounded zlib
+  termination, exact lengths, raw hashes, duplicate-key rejection, canonical JSON,
+  schema, self-hash, current projection, portable algebraic bindings, ranking, and
+  `HOLD`/`null` semantics. It returns audit status `UNVERIFIED` and performs no git,
+  temporary-directory, trust, baseline, history, or replay work.
+- Expanded the implementation projection to the complete declared dependency closure.
+  The original projection is retained separately and correctly records its incomplete
+  closure as a failed original execution dependency guard.
+- Ran the public frozen v1 trust suite once for the repair audit and projected the six
+  declared v2 DEVELOPMENT trust cases. The current trust audit passes independently;
+  it does not upgrade the original candidates' `trust_verified` flags.
+- Ran the public v0.1 baseline audit with nonempty `MVS_DATA_DIR` and `MVS_SCHEMA_DIR`
+  overrides rejected. Current baseline/history checks pass independently; they do not
+  upgrade the original candidates' execution-time proof flags.
+- The explicit audit verifier reruns and exact-compares the complete current trust,
+  baseline, and history payloads. Tampering an observed trust error code, baseline
+  result/binding, or history artifact count is rejected even after recomputing the outer
+  self-hash.
+- Reconstructed exact development and diagnostic input bindings, operation counts,
+  benchmark observations, diagnostic XOR/edge components, recall/Dice, and objective
+  values from stored transforms only.
+- All 108 Candidate A diagnostic transform replays matched the stored eight-decimal
+  objective/IoU values. Candidate B diagnostic `007` required exact restoration of the
+  uniquely declared lower correction-scale bound `1/1.02` from its serialized
+  `0.98039216`; all Candidate B replays then matched. The record persists the serialized
+  value, exact representation, bound identifier, config path, and config hash.
+- Determinism remains `false` with `DETERMINISM_NOT_VERIFIED`; one preserved complete run
+  cannot prove the preregistered two-run condition.
+
+## Round-2 hardening
+
+- Added persisted `audit_evidence_status: UNVERIFIED`. The pure selection record also
+  reports runtime status `UNVERIFIED`; explicit verification does not mutate it or its
+  serialized bytes, self-hash, candidates, ranking, selected ID, or outcome.
+- The default `E1V2InferencePolicy` uses only the pure loader. Tests make subprocess,
+  temporary-directory, trust, baseline, history, comparison-input, and replay helpers
+  fail if entered; runtime policy construction reaches the normal checked `HOLD` result.
+- Baseline verification requires the exact nine-path allowlist, rejects nonempty
+  `MVS_DATA_DIR` and `MVS_SCHEMA_DIR`, reruns the public baseline, and structurally
+  compares the entire result for both preserved and fresh provenance formats.
+- Explicit replay verification regenerates diagnostic inputs and exact-compares every
+  stored replay field: serialized/applied transforms, exact-bound restoration and
+  provenance, XOR, edge MAE, foreground IoU, objective, and diagnostic truth metrics.
+  Compensating XOR/edge mutations and standalone IoU mutations are rejected.
+- Selection reads are bounded to `4,000,000 + 1` bytes before JSON allocation. Embedded
+  base64 is bounded before decoding at `666,668` characters, derived from the `500,000`
+  compressed-byte cap; bounded decompression, EOF, and trailing-data checks remain.
+- Removed unverifiable `zlib_runtime_version` provenance.
+- Pure load of the final record took `0.46s`; full explicit verification took `137.52s`.
+  The explicit path is offline verification and is not used by runtime policy.
+
+## Round-3 immutability hardening
+
+- `CandidateSelectionRecord` exposes neither audit status as a constructor/dataclass
+  field. Both are read-only `UNVERIFIED` properties, so ordinary construction,
+  `dataclasses.replace`, and direct slot assignment cannot forge `VERIFIED`.
+- Construction recursively copies and freezes every retained audit-evidence mapping and
+  array as ordered mapping proxies and tuples. Source dictionaries/lists, nested retained
+  data, and independent records share no mutable aliases. Non-string mapping keys,
+  nonfinite numbers, sets, and other non-JSON values are rejected.
+- Every `as_record()` call recursively thaws into a fresh JSON-compatible dictionary/list
+  tree. Mutating one export cannot alter the selection, evidence, self-hash, ranking,
+  outcome, or any later export.
+- `verify_candidate_selection_audit()` is procedural: it runs the complete exact audit,
+  raises on any failure, returns `None` on success, and retains no verification status.
+  Callers needing selection semantics use the pure loader separately and receive only an
+  immutable `UNVERIFIED` record.
+- No `VerifiedCandidateSelectionAudit`, capability token, minting function, or runtime
+  `VERIFIED` symbol/state exists. This avoids making an unprovable durable in-process trust
+  claim under Python reflection and leaves the reviewer attacks with no target.
+- The checked schema and selection semantics did not change. The checked record was
+  repaired only to bind the changed diagnostics source projection, using the immutable
+  original candidate artifacts and stored transforms without comparison, search,
+  candidate inference, or benchmark reruns.
+- Final temporary repair took `178.58s`; procedural verification of those exact bytes took
+  `114.19s`.
+
+## Runtime and metrics changes
+
+- `E1V2InferencePolicy` now uses fail-closed ABSTAIN traces consistently.
+- Tests prove the core model consumes the alignment result bytes, the structural
+  postfilter consumes the core registered bytes, and the mapper consumes the exact final
+  mask with distinct registration shifts retained.
+- V2 metric counts reject impossible positive counts above total pixel counts.
+- No v1 source file, Task 3 module, or registered candidate implementation was changed.
+
+## RED / GREEN evidence
+
+- Initial diagnostics RED: collection failed because `declared_evaluation_seeds` was
+  missing.
+- Policy/metrics GREEN: `15 passed` after fail-closed trace and count validation changes.
+- Strict replay initially failed closed on Candidate B diagnostic `007`; exact frozen
+  bound restoration produced a complete A/B replay pass without search.
+- Reviewer RED: a recomputed self-hash allowed altered trust result details and history
+  artifact count. Two regression tests reproduced both failures.
+- Reviewer GREEN: both tamper tests pass after exact current-audit recomputation.
+- Round-2 RED/GREEN: runtime loader/policy tests first failed on git access; baseline
+  exactness failed `7/7`; compensating replay mutations failed `2/2`; allocation tests
+  proved oversized data reached JSON/base64 decoding. All turned GREEN after the split,
+  exact verification, and bounded-read changes.
+- Round-3 immutability attacks first failed `3/3` on forgeable replacement, shared source
+  evidence, and the original mutable verification state. Attempts to retain a wrapper
+  were rejected in review because raw slot injection and then an importable token could
+  forge it. The final procedural-verification test failed while a wrapper was still
+  returned, then passed after all persistent `VERIFIED` state was removed. All four
+  immutable/procedural attack tests passed before the final checked record repair.
+- Final diagnostics suite: `45 passed`; policy suite: `8 passed`.
+- Relevant v1 regression suite: `49 passed` (`102` focused tests total).
+- Final full-suite result: `367 passed`; one unrelated Starlette deprecation warning.
+- Ruff: `All checks passed!`.
+- Mypy: `Success: no issues found in 38 source files`.
+- `git diff --check`: clean.
+
+## Final checked record
+
+- Checked file raw SHA-256:
+  `92d3a2f86645a4d0fc33cfc39b769c6d2c4234383c7f132e803c449c7a66f2f3`.
+- Record self-hash:
+  `3d4aa7e95240ed2bd4c018fb0762fdf788f919069cfbb935fd228de4b67dc2fe`.
+- Current audit/implementation projection:
+  `7ad73f8a05bbaf88367ecf17dc27214a96b551de7b4404a424b93e2ae9e26f2e`.
+- Pure loader result: `HOLD`, selected candidate `None`, audit status `UNVERIFIED`.
+- Procedural verifier result: `None`; a fresh pure load remains unchanged
+  `UNVERIFIED`/`HOLD`/`None` with the same self-hash and bytes.
+- Round-1 remediation commit: `d54c375b820c8a0099efd0ba27eff29370bc426b` —
+  `fix(e1): harden candidate hold evidence`.
+- Round-2 remediation commit: `6ade1a6c402087322f176353155a2a4f3666bd01` —
+  `fix(e1): separate hold loading from audit verification`.
+- Round-3 remediation commit: `9fd6d0c600206083fde4fafc874e0226b5df60b3` —
+  `fix(e1): make hold audit verification immutable`.
+
+Formal progression stops at HOLD. Neither candidate may proceed to smoke, freeze,
+calibration, or release as a selected candidate.

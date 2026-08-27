@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://manufacturing-vision-studio.local/schemas/e1-case-manifest.v2.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "protocol_version", "dataset_version", "scope", "cases"],
+  "properties": {
+    "schema_version": {"const": "2.0.0"},
+    "protocol_version": {"const": "2.0.0"},
+    "dataset_version": {"const": "2.0.0"},
+    "scope": {"enum": ["development", "smoke", "calibration", "release_test"]},
+    "cases": {"type": "array", "items": {"$ref": "#/$defs/case"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "case": {"type": "object", "additionalProperties": false, "required": ["scope", "case_id", "recipe_id", "seed_family", "seed", "group", "expected_outcome", "defect_id", "reference_sha256", "inspection_sha256", "authoritative_mask_sha256", "case_binding_sha256", "source_hashes"], "properties": {"scope": {"enum": ["development", "smoke", "calibration", "release_test"]}, "case_id": {"type": "string"}, "recipe_id": {"type": "string"}, "seed_family": {"type": "string"}, "seed": {"type": "integer"}, "group": {"enum": ["clean", "nuisance", "defect", "trust_boundary"]}, "expected_outcome": {"enum": ["NORMAL", "ANOMALY", "ABSTAIN"]}, "defect_id": {"type": ["string", "null"]}, "reference_sha256": {"$ref": "#/$defs/sha256"}, "inspection_sha256": {"$ref": "#/$defs/sha256"}, "authoritative_mask_sha256": {"$ref": "#/$defs/sha256"}, "case_binding_sha256": {"$ref": "#/$defs/sha256"}, "source_hashes": {"type": "object", "additionalProperties": false, "required": ["reference_sha256", "inspection_sha256", "authoritative_mask_sha256", "case_binding_sha256"], "properties": {"reference_sha256": {"$ref": "#/$defs/sha256"}, "inspection_sha256": {"$ref": "#/$defs/sha256"}, "authoritative_mask_sha256": {"$ref": "#/$defs/sha256"}, "case_binding_sha256": {"$ref": "#/$defs/sha256"}}}}}
+  }
+}

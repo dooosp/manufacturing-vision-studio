@@ -1,0 +1,12 @@
+flowchart LR
+  A["Protocol-declared source paths"] --> B["Bounded single read"]
+  B --> H["SHA-256 projection"]
+  B --> P["AST parse of same bytes"]
+  P --> V["Spelling-specific _ImportVisitor"]
+  V --> G["Dependency graph and allowlists"]
+  G --> R["Dependency scan report"]
+  S["Projected source"] --> X["Unrecognized reflection spelling"]
+  X -. "for example vars(builtins)[__import__]" .-> U["Unprojected runtime import"]
+  X -. "misses matcher" .-> V
+  I["Two PEP 562 initializers"] --> E["Broad name/ancestry exception"]
+  E --> V

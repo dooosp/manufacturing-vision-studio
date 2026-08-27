@@ -455,7 +455,7 @@ def _recall_slices(
 ) -> dict[str, Any]:
     grouped: dict[str, list[EvaluationObservation]] = defaultdict(list)
     for item in observations:
-        grouped[cast(str | None, getattr(item, attribute)) or "unknown"].append(item)
+        grouped[_recall_slice_value(item, attribute) or "unknown"].append(item)
     return {
         name: _proportion_metric(
             sum(item.actual_outcome == "ANOMALY" for item in items),
@@ -463,6 +463,13 @@ def _recall_slices(
         )
         for name, items in sorted(grouped.items())
     }
+
+
+def _recall_slice_value(
+    item: EvaluationObservation,
+    attribute: Literal["severity", "defect_type"],
+) -> str | None:
+    return item.severity if attribute == "severity" else item.defect_type
 
 
 def _nuisance_slices(observations: list[EvaluationObservation]) -> dict[str, Any]:
@@ -485,7 +492,7 @@ def _accuracy_slices(
 ) -> dict[str, Any]:
     grouped: dict[str, list[EvaluationObservation]] = defaultdict(list)
     for item in observations:
-        grouped[cast(str, getattr(item, attribute)) or "unknown"].append(item)
+        grouped[_accuracy_slice_value(item, attribute) or "unknown"].append(item)
     return {
         name: _proportion_metric(
             sum(item.actual_outcome == item.expected_outcome for item in items),
@@ -493,6 +500,13 @@ def _accuracy_slices(
         )
         for name, items in sorted(grouped.items())
     }
+
+
+def _accuracy_slice_value(
+    item: EvaluationObservation,
+    attribute: Literal["cad_revision", "view_id"],
+) -> str:
+    return item.cad_revision if attribute == "cad_revision" else item.view_id
 
 
 def _trust_slices(observations: list[EvaluationObservation]) -> dict[str, Any]:
