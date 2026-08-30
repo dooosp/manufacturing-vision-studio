@@ -39,14 +39,55 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
       - name: Install locked Python environment
         run: |
+          set -euo pipefail
           python -m pip install --disable-pip-version-check "uv==${UV_VERSION}"
-          uv sync --all-groups --locked
+          account_home="$(
+            python -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)'
+          )"
+          node_bin="$(command -v node)"
+          node_prefix="$(dirname "$(dirname "${node_bin}")")"
+          case "${node_prefix}" in
+            "${RUNNER_TOOL_CACHE}"/node/*/*) ;;
+            *)
+              echo "setup-node prefix is outside RUNNER_TOOL_CACHE: ${node_prefix}" >&2
+              exit 1
+              ;;
+          esac
+          test "${node_bin}" = "${node_prefix}/bin/node"
+          test -x "${node_prefix}/bin/node"
+          test -x "${node_prefix}/bin/npm"
+
+          reviewed_root="${account_home}/.local"
+          reviewed_bin="${reviewed_root}/bin"
+          install -d -m 0755 "${reviewed_root}"
+          cp -a "${node_prefix}/." "${reviewed_root}/"
+
+          uv_bin="$(
+            python -c 'import os, sysconfig; print(os.path.join(sysconfig.get_path("scripts"), "uv"))'
+          )"
+          test -x "${uv_bin}"
+          install -m 0755 "${uv_bin}" "${reviewed_bin}/uv"
+          test -x "${reviewed_bin}/node"
+          test -x "${reviewed_bin}/npm"
+          test -x "${reviewed_bin}/uv"
+          sealed_tool_path="${reviewed_bin}:/usr/bin:/bin:/usr/sbin:/sbin"
+          PATH="${sealed_tool_path}" "${reviewed_bin}/uv" --version
+          PATH="${sealed_tool_path}" "${reviewed_bin}/node" --version
+          PATH="${sealed_tool_path}" "${reviewed_bin}/npm" --version
+          printf '%s\n' "${reviewed_bin}" >> "${GITHUB_PATH}"
+          "${reviewed_bin}/uv" sync --all-groups --locked
       - name: Lint
         run: uv run ruff check .
       - name: Typecheck

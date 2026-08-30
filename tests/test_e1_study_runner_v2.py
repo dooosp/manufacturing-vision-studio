@@ -1034,13 +1034,21 @@ def test_reviewed_production_lookup_finds_real_checkout_tools() -> None:
         expected_name="node",
     )
 
-    assert uv_path == _ACCOUNT_HOME / ".local/bin/uv"
-    assert npm_path == Path("/opt/homebrew/bin/npm")
-    assert node_path == Path("/opt/homebrew/bin/node")
-    assert environment["PATH"] == (
-        f"{_ACCOUNT_HOME.as_posix()}/.local/bin:/opt/homebrew/bin:"
-        "/usr/bin:/bin:/usr/sbin:/sbin"
+    reviewed_roots = frozenset(_REVIEWED_PRODUCTION_LOOKUP_PATH.split(":"))
+    assert uv_path.name == "uv"
+    assert npm_path.name == "npm"
+    assert node_path.name == "node"
+    assert uv_path.parent.as_posix() in reviewed_roots
+    assert npm_path.parent.as_posix() in reviewed_roots
+    assert node_path.parent.as_posix() in reviewed_roots
+
+    executable_parents = tuple(
+        dict.fromkeys((uv_path.parent.as_posix(), npm_path.parent.as_posix()))
     )
+    assert environment["PATH"] == ":".join(
+        (*executable_parents, "/usr/bin", "/bin", "/usr/sbin", "/sbin")
+    )
+    assert node_path.parent.as_posix() in environment["PATH"].split(":")
 
 
 @pytest.mark.parametrize("tool_state", ("missing", "unusable"))
