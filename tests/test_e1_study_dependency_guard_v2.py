@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import ast
+import shutil
 import subprocess
 import sys
 import textwrap
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
 
@@ -44,6 +45,53 @@ SYNTHETIC_CLI = b"""from manufacturing_vision_studio.e1.study_runner_v2 import M
 CLI_MARKER = MARKER
 """
 
+_COMPLETE_REPO_TEMPLATES: dict[bool, Path] = {}
+_COMPLETE_REPO_TEMPLATE_ROOT: Path | None = None
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _reset_complete_repo_template_state(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[None]:
+    global _COMPLETE_REPO_TEMPLATE_ROOT
+
+    _COMPLETE_REPO_TEMPLATE_ROOT = tmp_path_factory.mktemp("complete-repo-templates")
+    try:
+        yield
+    finally:
+        _COMPLETE_REPO_TEMPLATES.clear()
+        _COMPLETE_REPO_TEMPLATE_ROOT = None
+
+
+# Break prevented: reintroducing per-copy Git bootstrap or shared fixture-copy
+# state must fail this test.
+def test_complete_repo_copies_pristine_template_without_per_copy_git_bootstrap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol = load_study_protocol_v2()
+    seed_parent = tmp_path / "seed"
+    first_parent = tmp_path / "first"
+    second_parent = tmp_path / "second"
+    seed_parent.mkdir()
+    first_parent.mkdir()
+    second_parent.mkdir()
+
+    _complete_repo(seed_parent, protocol)
+    git_trace = tmp_path / "git-trace.log"
+    monkeypatch.setenv("GIT_TRACE", str(git_trace))
+    first_repo = _complete_repo(first_parent, protocol)
+    second_repo = _complete_repo(second_parent, protocol)
+    monkeypatch.delenv("GIT_TRACE")
+
+    assert not git_trace.exists()
+    assert not first_repo.samefile(second_repo)
+    _append(first_repo, RUNNER_PATH, "\nFIXTURE_ONLY = True\n")
+    assert not (second_repo / RUNNER_PATH).read_text().endswith(
+        "FIXTURE_ONLY = True\n"
+    )
+    assert _git(second_repo, "status", "--porcelain") == ""
+
 
 def _git(repo_root: Path, *args: str) -> str:
     completed = subprocess.run(
@@ -56,13 +104,12 @@ def _git(repo_root: Path, *args: str) -> str:
     return completed.stdout.strip()
 
 
-def _complete_repo(
-    tmp_path: Path,
+def _build_complete_repo(
+    repo_root: Path,
     protocol: StudyProtocolV2,
     *,
     preserve_real_cli: bool = False,
 ) -> Path:
-    repo_root = tmp_path / "repo"
     repo_root.mkdir()
     source_root = PROJECT_ROOT / "src/manufacturing_vision_studio"
     for source in sorted(source_root.rglob("*.py")):
@@ -83,6 +130,31 @@ def _complete_repo(
     _git(repo_root, "config", "user.email", "task6@example.invalid")
     _git(repo_root, "add", ".")
     _git(repo_root, "commit", "-m", "fixture")
+    return repo_root
+
+
+def _complete_repo(
+    tmp_path: Path,
+    protocol: StudyProtocolV2,
+    *,
+    preserve_real_cli: bool = False,
+) -> Path:
+    assert _COMPLETE_REPO_TEMPLATE_ROOT is not None
+
+    template = _COMPLETE_REPO_TEMPLATES.get(preserve_real_cli)
+    if template is None:
+        template = _COMPLETE_REPO_TEMPLATE_ROOT / (
+            f"preserve-real-cli-{preserve_real_cli}"
+        )
+        _build_complete_repo(
+            template,
+            protocol,
+            preserve_real_cli=preserve_real_cli,
+        )
+        _COMPLETE_REPO_TEMPLATES[preserve_real_cli] = template
+
+    repo_root = tmp_path / "repo"
+    shutil.copytree(template, repo_root, copy_function=shutil.copy2)
     return repo_root
 
 

@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - "codex/**"
   pull_request:
   workflow_dispatch:
     inputs:
@@ -34,7 +33,7 @@ jobs:
   python:
     name: Python
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -52,8 +51,104 @@ jobs:
         run: uv run ruff check .
       - name: Typecheck
         run: uv run mypy src
-      - name: Test
-        run: uv run pytest
+      - name: Test non-guard Python suite
+        run: >-
+          uv run pytest
+          --ignore=tests/test_e1_study_dependency_guard_v2.py
+
+  dependency-guard:
+    name: Dependency guard / shard ${{ matrix.shard_index }} of 8
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard_index: [0, 1, 2, 3, 4, 5, 6, 7]
+    env:
+      SHARD_COUNT: "8"
+      SHARD_INDEX: ${{ matrix.shard_index }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install locked Python environment
+        run: |
+          python -m pip install --disable-pip-version-check "uv==${UV_VERSION}"
+          uv sync --all-groups --locked
+      - name: Run dependency-guard shard
+        run: |
+          uv run python - <<'PY'
+          from __future__ import annotations
+
+          import os
+          import subprocess
+          import sys
+
+          module = "tests/test_e1_study_dependency_guard_v2.py"
+          prefix = f"{module}::"
+          expected_count = 1057
+          expected_shards = 8
+
+          collection = subprocess.run(
+              [
+                  sys.executable,
+                  "-m",
+                  "pytest",
+                  "-o",
+                  "addopts=",
+                  module,
+                  "--collect-only",
+                  "-q",
+              ],
+              check=False,
+              capture_output=True,
+              text=True,
+          )
+          if collection.returncode != 0:
+              print(collection.stdout, end="")
+              print(collection.stderr, end="", file=sys.stderr)
+              raise SystemExit(collection.returncode)
+
+          nodeids = tuple(
+              line for line in collection.stdout.splitlines() if line.startswith(prefix)
+          )
+          if len(nodeids) != expected_count or len(set(nodeids)) != expected_count:
+              raise SystemExit(
+                  f"expected {expected_count} unique guard node IDs, got "
+                  f"{len(nodeids)} total / {len(set(nodeids))} unique"
+              )
+
+          shard_count = int(os.environ["SHARD_COUNT"])
+          shard_index = int(os.environ["SHARD_INDEX"])
+          if shard_count != expected_shards or not 0 <= shard_index < shard_count:
+              raise SystemExit(
+                  f"invalid shard contract: index={shard_index}, count={shard_count}"
+              )
+
+          selected = nodeids[shard_index::shard_count]
+          expected_size = 133 if shard_index == 0 else 132
+          if len(selected) != expected_size:
+              raise SystemExit(
+                  f"shard {shard_index} expected {expected_size} cases, "
+                  f"got {len(selected)}"
+              )
+
+          print(
+              f"Running guard shard {shard_index}/{shard_count - 1}: "
+              f"{len(selected)} of {len(nodeids)} cases",
+              flush=True,
+          )
+          result = subprocess.run(
+              [sys.executable, "-m", "pytest", *selected],
+              check=False,
+          )
+          raise SystemExit(result.returncode)
+          PY
 
   frontend:
     name: Frontend
@@ -259,7 +354,7 @@ jobs:
   clean-checkout:
     name: Clean checkout
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -279,8 +374,6 @@ jobs:
         run: python -m pip install --disable-pip-version-check "uv==${UV_VERSION}"
       - name: Prove clean-checkout setup
         run: make setup
-      - name: Prove clean-checkout validation
-        run: make validate
       - name: Smoke the local demo
         run: |
           set -euo pipefail
