@@ -2765,6 +2765,248 @@ def test_ordered_expression_effects_keep_safe_sources_allowed(
     scan_study_dependencies(protocol, repo_root=repo_root)
 
 
+_MODULE_MEMBER_SELECTION_FORMS = (
+    "attribute",
+    "getattr",
+    "getattr-alias",
+    "builtins-getattr",
+    "getattr-default",
+    "bound-getattribute",
+    "import-from",
+    "import-from-alias",
+)
+_REFLECTED_MEMBER_SELECTION_FORMS = _MODULE_MEMBER_SELECTION_FORMS[:-2]
+_UNIVERSAL_REFLECTION_MEMBERS = (
+    "__globals__",
+    "__subclasses__",
+    "__bases__",
+    "__mro__",
+    "f_globals",
+    "f_locals",
+    "f_builtins",
+    "f_back",
+    "tb_frame",
+    "gi_frame",
+    "cr_frame",
+    "ag_frame",
+)
+
+
+def _module_member_selection_source(
+    module: str,
+    member: str,
+    selection_form: str,
+) -> str:
+    sources = {
+        "attribute": f"import {module}\nSELECTED_MEMBER = {module}.{member}\n",
+        "getattr": (
+            f"import {module}\nSELECTED_MEMBER = getattr({module}, {member!r})\n"
+        ),
+        "getattr-alias": (
+            f"import {module}\n"
+            "select_member = getattr\n"
+            f"SELECTED_MEMBER = select_member({module}, {member!r})\n"
+        ),
+        "builtins-getattr": (
+            f"import {module}\n"
+            "import builtins\n"
+            f"SELECTED_MEMBER = builtins.getattr({module}, {member!r})\n"
+        ),
+        "getattr-default": (
+            f"import {module}\n"
+            f"SELECTED_MEMBER = getattr({module}, {member!r}, None)\n"
+        ),
+        "bound-getattribute": (
+            f"import {module}\n"
+            f"SELECTED_MEMBER = {module}.__getattribute__({member!r})\n"
+        ),
+        "import-from": (
+            f"from {module} import {member}\nSELECTED_MEMBER = {member}\n"
+        ),
+        "import-from-alias": (
+            f"from {module} import {member} as SELECTED_MEMBER\n"
+        ),
+    }
+    return _compiled_source(sources[selection_form])
+
+
+def _receiver_member_selection_source(member: str, selection_form: str) -> str:
+    sources = {
+        "attribute": f"return receiver.{member}\n",
+        "getattr": f"return getattr(receiver, {member!r})\n",
+        "getattr-alias": (
+            "select_member = getattr\n"
+            f"return select_member(receiver, {member!r})\n"
+        ),
+        "builtins-getattr": (
+            "import builtins\n"
+            f"return builtins.getattr(receiver, {member!r})\n"
+        ),
+        "getattr-default": (
+            f"return getattr(receiver, {member!r}, None)\n"
+        ),
+        "bound-getattribute": (
+            f"return receiver.__getattribute__({member!r})\n"
+        ),
+    }
+    body = textwrap.indent(sources[selection_form], "    ")
+    return _compiled_source(
+        "def forbidden(receiver: object) -> object:\n" + body
+    )
+
+
+@pytest.mark.parametrize("selection_form", _MODULE_MEMBER_SELECTION_FORMS)
+@pytest.mark.parametrize("member", ("modules", "meta_path", "path_hooks"))
+def test_sys_registry_member_grammar_rejects_all_selection_forms(
+    tmp_path: Path,
+    member: str,
+    selection_form: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    source = _module_member_selection_source("sys", member, selection_form)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: import-registry",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize("selection_form", _MODULE_MEMBER_SELECTION_FORMS)
+@pytest.mark.parametrize(
+    ("module", "member"),
+    (
+        pytest.param("pkgutil", "get_loader", id="pkgutil-get-loader"),
+        pytest.param("pkgutil", "resolve_name", id="pkgutil-resolve-name"),
+        pytest.param("zipimport", "zipimporter", id="zipimporter"),
+    ),
+)
+def test_dynamic_loader_member_grammar_rejects_direct_reflected_and_imported_forms(
+    tmp_path: Path,
+    module: str,
+    member: str,
+    selection_form: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    source = _module_member_selection_source(module, member, selection_form)
+    source += "DYNAMIC = SELECTED_MEMBER('manufacturing_vision_studio.adapters')\n"
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: dynamic-import",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize("selection_form", _MODULE_MEMBER_SELECTION_FORMS)
+@pytest.mark.parametrize("member", ("attrgetter", "methodcaller"))
+def test_operator_reflection_member_grammar_rejects_direct_reflected_and_imported_forms(
+    tmp_path: Path,
+    member: str,
+    selection_form: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    source = _module_member_selection_source("operator", member, selection_form)
+    source += "REFLECTED = SELECTED_MEMBER('__dict__')\n"
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: namespace-reflection",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize("selection_form", _REFLECTED_MEMBER_SELECTION_FORMS)
+@pytest.mark.parametrize("member", _UNIVERSAL_REFLECTION_MEMBERS)
+def test_universal_reflection_member_grammar_rejects_direct_getattr_and_dunder_forms(
+    tmp_path: Path,
+    member: str,
+    selection_form: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    source = _receiver_member_selection_source(member, selection_form)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: namespace-reflection",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_dunder_plan_cases_selection_retains_protected_provenance(
+    tmp_path: Path,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\n\ndef forbidden(generator: object) -> object:\n"
+        "    planner = generator.__getattribute__('plan_cases')\n"
+        "    return planner('development')\n",
+    )
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="plan_cases outside DevelopmentCorpusProvider",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_nonliteral_dunder_member_selection_fails_closed(tmp_path: Path) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        "\n\ndef forbidden(value: object, member: str) -> object:\n"
+        "    return value.__getattribute__(member)\n",
+    )
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="source capability rejected: namespace-reflection",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+@pytest.mark.parametrize("selection_form", _MODULE_MEMBER_SELECTION_FORMS)
+def test_sys_stdout_member_grammar_allows_all_selection_forms(
+    tmp_path: Path,
+    selection_form: str,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    source = _module_member_selection_source("sys", "stdout", selection_form)
+    source += "SAFE = SELECTED_MEMBER\n"
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
+def test_harmless_literal_dunder_member_selection_remains_allowed(
+    tmp_path: Path,
+) -> None:
+    source = _compiled_source("SAFE = (1).__getattribute__('real')\n")
+    namespace: dict[str, object] = {}
+    _execute_source(source, namespace)
+    assert namespace["SAFE"] == 1
+
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(repo_root, RUNNER_PATH, "\n" + source)
+
+    scan_study_dependencies(protocol, repo_root=repo_root)
+
+
 @pytest.mark.parametrize(
     ("control_id", "source"),
     (

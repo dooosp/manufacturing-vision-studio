@@ -132,7 +132,7 @@ jobs:
 
           module = "tests/test_e1_study_dependency_guard_v2.py"
           prefix = f"{module}::"
-          expected_count = 1057
+          expected_count = 1204
           expected_shards = 8
 
           collection = subprocess.run(
@@ -172,7 +172,8 @@ jobs:
               )
 
           selected = nodeids[shard_index::shard_count]
-          expected_size = 133 if shard_index == 0 else 132
+          base_size, remainder = divmod(expected_count, shard_count)
+          expected_size = base_size + (shard_index < remainder)
           if len(selected) != expected_size:
               raise SystemExit(
                   f"shard {shard_index} expected {expected_size} cases, "

@@ -244,6 +244,25 @@ _FORBIDDEN_CALL_NAMES = frozenset(
     }
 )
 _PROTECTED_SCOPES = frozenset({"SMOKE", "CALIBRATION", "RELEASE_TEST"})
+_SYS_REGISTRY_MEMBERS = frozenset({"modules", "meta_path", "path_hooks"})
+_PKGUTIL_LOADER_MEMBERS = frozenset({"get_loader", "resolve_name"})
+_OPERATOR_REFLECTION_MEMBERS = frozenset({"attrgetter", "methodcaller"})
+_UNIVERSAL_REFLECTION_MEMBERS = frozenset(
+    {
+        "__globals__",
+        "__subclasses__",
+        "__bases__",
+        "__mro__",
+        "f_globals",
+        "f_locals",
+        "f_builtins",
+        "f_back",
+        "tb_frame",
+        "gi_frame",
+        "cr_frame",
+        "ag_frame",
+    }
+)
 _PROJECTED_PACKAGE_ROOTS = frozenset(
     {"manufacturing_vision_studio", "manufacturing_vision_studio.e1"}
 )
@@ -3001,6 +3020,100 @@ class _SourceFlowAnalyzer:
             self._transfer_expression_sequence(nodes, state, context), complete=False
         )
 
+    def _classify_member_selection(
+        self,
+        node: ast.AST,
+        receiver: _AbsValue,
+        member: str | None,
+        default: _AbsValue,
+        *,
+        emit_policy: bool = True,
+    ) -> tuple[_AbsValue, _PolicyFacts, bool]:
+        capabilities = _flatten_facts(receiver).may_capabilities
+        evaluation_scope = (
+            _has_exact_identity(receiver, _evaluation_scope_identity())
+            or "evaluation-scope" in capabilities
+        )
+        if member is None:
+            if evaluation_scope:
+                return (
+                    default,
+                    _protected_scope_fact(self.source_module, node, "<dynamic>"),
+                    True,
+                )
+            return default, _PolicyFacts(), False
+        if member in _UNIVERSAL_REFLECTION_MEMBERS:
+            facts = (
+                self._policy_error(
+                    "namespace-reflection",
+                    node,
+                    f"sensitive attribute access: {member}",
+                )
+                if emit_policy
+                else _PolicyFacts()
+            )
+            return (
+                _value_with_capabilities("namespace-reflection", complete=False),
+                facts,
+                True,
+            )
+        if (
+            "sys-module" in capabilities and member in _SYS_REGISTRY_MEMBERS
+        ) or (member == "modules" and not receiver.facts.complete):
+            facts = (
+                self._policy_error(
+                    "import-registry", node, "sensitive import registry access"
+                )
+                if emit_policy
+                else _PolicyFacts()
+            )
+            return (
+                _value_with_capabilities("import-registry", complete=False),
+                facts,
+                True,
+            )
+        if (
+            "pkgutil-module" in capabilities
+            and member in _PKGUTIL_LOADER_MEMBERS
+        ) or (
+            "zipimport-module" in capabilities and member == "zipimporter"
+        ):
+            facts = (
+                self._policy_error(
+                    "dynamic-import", node, "runtime dynamic import member access"
+                )
+                if emit_policy
+                else _PolicyFacts()
+            )
+            return _value_with_capabilities("import-loader"), facts, True
+        if (
+            "operator-module" in capabilities
+            and member in _OPERATOR_REFLECTION_MEMBERS
+        ):
+            facts = (
+                self._policy_error(
+                    "namespace-reflection", node, "runtime namespace reflection"
+                )
+                if emit_policy
+                else _PolicyFacts()
+            )
+            return _value_with_capabilities("namespace-reflection"), facts, True
+        if evaluation_scope and member in _PROTECTED_SCOPES:
+            return (
+                default,
+                _protected_scope_fact(self.source_module, node, member),
+                True,
+            )
+        if member == "plan_cases":
+            return (
+                _with_plan_cases_capability(default, receiver),
+                _PolicyFacts(),
+                True,
+            )
+        if "sys-module" in capabilities and member == "stdout":
+            return _SAFE_VALUE, _PolicyFacts(), True
+        return default, _PolicyFacts(), False
+
     def _transfer_attribute(
         self, node: ast.Attribute, state: _State, context: _TransferContext
     ) -> _ExprResult:
@@ -3012,16 +3125,6 @@ class _SourceFlowAnalyzer:
         capabilities = receiver_value.facts.may_capabilities
         facts = receiver.facts
         value = _derived_value(receiver_value, complete=receiver_value.facts.complete)
-        if (
-            (
-                _has_exact_identity(receiver_value, _evaluation_scope_identity())
-                or "evaluation-scope" in capabilities
-            )
-            and node.attr in _PROTECTED_SCOPES
-        ):
-            facts = _join_policy(
-                facts, _protected_scope_fact(self.source_module, node, node.attr)
-            )
         package_target = (
             receiver_value.facts.package.target
             if receiver_value.facts.package.state == "exact"
@@ -3048,7 +3151,16 @@ class _SourceFlowAnalyzer:
                     "package-object", node, "ambiguous package attribute"
                 ),
             )
-        if (
+        value, selection_facts, matched = self._classify_member_selection(
+            node,
+            receiver_value,
+            node.attr,
+            value,
+        )
+        facts = _join_policy(facts, selection_facts)
+        if matched:
+            pass
+        elif (
             "typing-module" in capabilities
             and receiver_value.facts.complete
             and receiver_value.facts.identity.state == "exact"
@@ -3065,25 +3177,6 @@ class _SourceFlowAnalyzer:
             if builtins_value is not None:
                 value = builtins_value
             facts = _join_policy(facts, builtins_facts)
-        elif "sys-module" in capabilities and node.attr == "stdout":
-            value = _SAFE_VALUE
-        elif node.attr == "modules":
-            if "sys-module" in capabilities or not receiver_value.facts.complete:
-                facts = _join_policy(
-                    facts,
-                    self._policy_error(
-                        "import-registry", node, "sensitive import registry access"
-                    ),
-                )
-                value = _value_with_capabilities("import-registry", complete=False)
-        elif node.attr == "__globals__":
-            facts = _join_policy(
-                facts,
-                self._policy_error(
-                    "namespace-reflection", node, "function namespace reflection"
-                ),
-            )
-            value = _value_with_capabilities("namespace-reflection", complete=False)
         elif "import-namespace" in capabilities and node.attr == "import_module":
             value = _value_with_capabilities(
                 "import-loader",
@@ -3098,16 +3191,6 @@ class _SourceFlowAnalyzer:
                 "dynamic-loader-module",
                 identity=_ResolvedIdentity("imported", "runpy", node.attr),
             )
-        elif (
-            "pkgutil-module" in capabilities and node.attr == "get_loader"
-        ) or (
-            "zipimport-module" in capabilities and node.attr == "zipimporter"
-        ):
-            value = _value_with_capabilities("import-loader")
-        elif "operator-module" in capabilities and node.attr == "attrgetter":
-            value = _value_with_capabilities("namespace-reflection")
-        if node.attr == "plan_cases":
-            value = _with_plan_cases_capability(value, receiver.value)
         return self._expr_from_parts(
             value,
             post,
@@ -3334,6 +3417,52 @@ class _SourceFlowAnalyzer:
             "__contains__",
         }:
             value = _SAFE_VALUE
+        elif (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "__getattribute__"
+        ):
+            expanded_arguments = self._expanded_fixed_call_arguments(
+                node, values
+            )
+            selection_receiver: _AbsValue | None = None
+            member_node: ast.expr | None = None
+            if expanded_arguments is not None:
+                expanded_nodes, expanded_values = expanded_arguments
+                if len(expanded_nodes) == 1:
+                    selection_receiver = function_value
+                    member_node = expanded_nodes[0]
+                elif len(expanded_nodes) == 2:
+                    selection_receiver = expanded_values[0]
+                    member_node = expanded_nodes[1]
+            member = (
+                None
+                if member_node is None
+                else self._string_constant(member_node)
+            )
+            if selection_receiver is None or member is None:
+                facts = _join_policy(
+                    facts,
+                    self._policy_error(
+                        "namespace-reflection",
+                        node,
+                        "broad non-literal __getattribute__ access",
+                    ),
+                )
+                value = _value_with_capabilities(
+                    "namespace-reflection", complete=False
+                )
+            else:
+                default = _derived_value(
+                    selection_receiver,
+                    complete=selection_receiver.facts.complete,
+                )
+                value, selection_facts, _ = self._classify_member_selection(
+                    node,
+                    selection_receiver,
+                    member,
+                    default,
+                )
+                facts = _join_policy(facts, selection_facts)
         elif exact_builtin == "getattr":
             value, call_facts = self._transfer_getattr_call(
                 node, values, context, exact_site
@@ -3528,13 +3657,14 @@ class _SourceFlowAnalyzer:
                 "cli-dataclass-getattr",
             }:
                 return _UNKNOWN_VALUE, _PolicyFacts()
-            if (
-                _has_exact_identity(receiver, _evaluation_scope_identity())
-                or "evaluation-scope" in receiver.facts.may_capabilities
-            ):
-                return _UNKNOWN_VALUE, _protected_scope_fact(
-                    self.source_module, node, "<dynamic>"
-                )
+            value, facts, matched = self._classify_member_selection(
+                node,
+                receiver,
+                None,
+                _UNKNOWN_VALUE,
+            )
+            if matched:
+                return value, facts
             if "package-object" in receiver.facts.may_capabilities:
                 return _UNKNOWN_VALUE, self._policy_error(
                     "package-object", node, "runtime package-object import"
@@ -3546,35 +3676,8 @@ class _SourceFlowAnalyzer:
             return _UNKNOWN_VALUE, self._policy_error(
                 "namespace-reflection", node, "broad non-literal getattr access"
             )
-        if attribute == "__import__":
-            return _value_with_capabilities("import-loader"), self._policy_error(
-                "dynamic-import", node, "runtime __import__ symbol access"
-            )
-        if attribute in {"__globals__", "__subclasses__", "__bases__", "__mro__"}:
-            return _UNKNOWN_VALUE, self._policy_error(
-                "namespace-reflection", node, f"sensitive attribute access: {attribute}"
-            )
-        if (
-            (
-                _has_exact_identity(receiver, _evaluation_scope_identity())
-                or "evaluation-scope" in receiver.facts.may_capabilities
-            )
-            and attribute in _PROTECTED_SCOPES
-        ):
-            return _UNKNOWN_VALUE, _protected_scope_fact(
-                self.source_module, node, attribute
-            )
-        if self._has_builtins_origin(receiver):
-            value, facts = self._builtins_attribute_value(
-                node, receiver, attribute
-            )
-            if value is not None:
-                return value, facts
-        if "import-namespace" in receiver.facts.may_capabilities and attribute == "import_module":
-            return _value_with_capabilities(
-                "import-loader",
-                identity=_ResolvedIdentity("imported", "importlib", "import_module"),
-            ), _PolicyFacts()
+        value = _derived_value(receiver, complete=receiver.facts.complete)
+        facts = _PolicyFacts()
         package_target = (
             receiver.facts.package.target
             if receiver.facts.package.state == "exact"
@@ -3583,18 +3686,48 @@ class _SourceFlowAnalyzer:
         if package_target is not None:
             candidate = f"{package_target}.{attribute}"
             if candidate in self.known_modules:
-                return _value_with_capabilities(
+                value = _value_with_capabilities(
                     "package-object", package=candidate
-                ), self._reference_fact(candidate, context)
-            return _UNKNOWN_VALUE, self._policy_error(
-                "package-object", node, f"unresolved package attribute: {candidate}"
+                )
+                facts = self._reference_fact(candidate, context)
+            else:
+                value = _UNKNOWN_VALUE
+                facts = self._policy_error(
+                    "package-object",
+                    node,
+                    f"unresolved package attribute: {candidate}",
+                )
+        value, selection_facts, matched = self._classify_member_selection(
+            node,
+            receiver,
+            attribute,
+            value,
+        )
+        facts = _join_policy(facts, selection_facts)
+        if matched:
+            return value, facts
+        if attribute == "__import__":
+            return _value_with_capabilities("import-loader"), _join_policy(
+                facts,
+                self._policy_error(
+                    "dynamic-import", node, "runtime __import__ symbol access"
+                ),
             )
-        if "sys-module" in receiver.facts.may_capabilities and attribute == "stdout":
-            return _SAFE_VALUE, _PolicyFacts()
-        value = _derived_value(receiver, complete=receiver.facts.complete)
-        if attribute == "plan_cases":
-            value = _with_plan_cases_capability(value, receiver)
-        return value, _PolicyFacts()
+        if self._has_builtins_origin(receiver):
+            builtins_value, builtins_facts = self._builtins_attribute_value(
+                node, receiver, attribute
+            )
+            if builtins_value is not None:
+                return builtins_value, _join_policy(facts, builtins_facts)
+        if (
+            "import-namespace" in receiver.facts.may_capabilities
+            and attribute == "import_module"
+        ):
+            return _value_with_capabilities(
+                "import-loader",
+                identity=_ResolvedIdentity("imported", "importlib", "import_module"),
+            ), facts
+        return value, facts
 
     def _dynamic_import_call_facts(
         self,
@@ -4868,33 +5001,34 @@ class _SourceFlowAnalyzer:
         identity: _ResolvedIdentity | None = _ResolvedIdentity(
             "imported", module, "<module>"
         )
-        if module == "sys":
-            capabilities.append("sys-module")
-        elif (
-            module == "manufacturing_vision_studio.e1.domain_v2"
-            and imported_name == "EvaluationScope"
-        ):
-            capabilities.append("evaluation-scope")
-        elif module == "typing":
-            capabilities.append("typing-module")
-        elif module == "builtins":
-            capabilities.append("builtins-namespace")
-        elif module == "importlib":
-            capabilities.append("import-namespace")
-        elif module == "runpy":
-            capabilities.append("dynamic-loader-module")
-        elif module == "pkgutil":
-            capabilities.append("pkgutil-module")
-        elif module == "zipimport":
-            capabilities.append("zipimport-module")
-        elif module == "operator":
-            capabilities.append("operator-module")
-        if module in _PROJECTED_PACKAGE_ROOTS:
-            capabilities.append("package-object")
-            package = module
-        if imported_name is not None:
+        if imported_name is None:
+            if module == "sys":
+                capabilities.append("sys-module")
+            elif module == "typing":
+                capabilities.append("typing-module")
+            elif module == "builtins":
+                capabilities.append("builtins-namespace")
+            elif module == "importlib":
+                capabilities.append("import-namespace")
+            elif module == "runpy":
+                capabilities.append("dynamic-loader-module")
+            elif module == "pkgutil":
+                capabilities.append("pkgutil-module")
+            elif module == "zipimport":
+                capabilities.append("zipimport-module")
+            elif module == "operator":
+                capabilities.append("operator-module")
+            if module in _PROJECTED_PACKAGE_ROOTS:
+                capabilities.append("package-object")
+                package = module
+        else:
             identity = _ResolvedIdentity("imported", module, imported_name)
-            if module == "typing" and imported_name == "TYPE_CHECKING":
+            if (
+                module == "manufacturing_vision_studio.e1.domain_v2"
+                and imported_name == "EvaluationScope"
+            ):
+                capabilities = ["evaluation-scope"]
+            elif module == "typing" and imported_name == "TYPE_CHECKING":
                 capabilities = ["type-checking-sentinel"]
             elif module == "importlib" and imported_name == "import_module":
                 capabilities = ["import-loader"]
@@ -5052,6 +5186,15 @@ class _SourceFlowAnalyzer:
                         "imported", candidate, "<module>"
                     )
                 )
+            owner = self._import_value(base)
+            value, selection_facts, _ = self._classify_member_selection(
+                node,
+                owner,
+                alias.name,
+                value,
+                emit_policy=context.mode != "type-only",
+            )
+            facts = _join_policy(facts, selection_facts)
             bound_name = alias.asname or alias.name
             synthetic = ast.Name(
                 id=bound_name,
