@@ -2961,6 +2961,36 @@ def test_dunder_plan_cases_selection_retains_protected_provenance(
         scan_study_dependencies(protocol, repo_root=repo_root)
 
 
+def test_imported_plan_cases_alias_retains_protected_provenance(
+    tmp_path: Path,
+) -> None:
+    protocol = load_study_protocol_v2()
+    repo_root = _complete_repo(tmp_path, protocol)
+    _append(
+        repo_root,
+        Path("src/manufacturing_vision_studio/e1/metrics_v2.py"),
+        _compiled_source(
+            "\n\ndef plan_cases() -> str:\n"
+            "    return 'guarded by member provenance'\n"
+        ),
+    )
+    _append(
+        repo_root,
+        RUNNER_PATH,
+        _compiled_source(
+            "\nfrom manufacturing_vision_studio.e1.metrics_v2 "
+            "import plan_cases as safe_plan\n"
+            "SAFE_PLAN = safe_plan()\n"
+        ),
+    )
+
+    with pytest.raises(
+        StudyRetentionError,
+        match="plan_cases outside DevelopmentCorpusProvider",
+    ):
+        scan_study_dependencies(protocol, repo_root=repo_root)
+
+
 def test_nonliteral_dunder_member_selection_fails_closed(tmp_path: Path) -> None:
     protocol = load_study_protocol_v2()
     repo_root = _complete_repo(tmp_path, protocol)

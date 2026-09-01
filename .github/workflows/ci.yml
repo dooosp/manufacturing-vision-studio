@@ -132,7 +132,7 @@ jobs:
 
           module = "tests/test_e1_study_dependency_guard_v2.py"
           prefix = f"{module}::"
-          expected_count = 1204
+          expected_count = 1205
           expected_shards = 8
 
           collection = subprocess.run(
