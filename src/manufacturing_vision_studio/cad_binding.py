@@ -257,3 +257,11 @@ def validate_selected_binding(
     if len(matches) != 1 or any(not isinstance(v, str) for v in matches[0].values()):
         raise EvidenceError("CAD source differs from pinned selection", code="HASH_MISMATCH")
     return validate_cad_binding(manifest_bytes, artifacts, expected_source=matches[0])
+
+
+def bundle_cad_payloads(payloads: Mapping[str, bytes]) -> dict[str, bytes]:
+    names = {"cad-reference/" + name for name in PAYLOAD_NAMES}
+    observed = {name for name in payloads if name.startswith("cad-reference/")}
+    if observed != names:
+        raise EvidenceError("CAD bundle payloads incomplete", code="EVIDENCE_INCOMPLETE")
+    return {name: payloads["cad-reference/" + name] for name in PAYLOAD_NAMES}

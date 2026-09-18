@@ -16,6 +16,12 @@ from typing import Any, cast
 import numpy as np
 from PIL import Image, UnidentifiedImageError
 
+from manufacturing_vision_studio.cad_binding import (
+    MANIFEST,
+    PAYLOAD_NAMES,
+    bundle_cad_payloads,
+    validate_cad_binding,
+)
 from manufacturing_vision_studio.canonical import canonical_json_bytes, sha256_bytes
 from manufacturing_vision_studio.config import Settings
 from manufacturing_vision_studio.errors import (
@@ -24,11 +30,14 @@ from manufacturing_vision_studio.errors import (
     IdentityMismatchError,
 )
 from manufacturing_vision_studio.images import ImageIngestor, resolve_canonical_image_bytes
+from manufacturing_vision_studio.model import DeterministicDifferenceModel
 from manufacturing_vision_studio.registry import (
+    CLASSIFICATION_THRESHOLD,
     LIMITATION,
     MODEL_ARTIFACT_SHA256,
     SCHEMA_VERSION,
     CaseRegistry,
+    _feature_findings,
 )
 from manufacturing_vision_studio.schema_validation import schema_id, validate_document
 
@@ -135,7 +144,9 @@ class EvidenceService:
         payload_sha256 = payload_inventory_hash(artifacts)
         case_document = cast(dict[str, Any], snapshot["case_document"])
         manifest: dict[str, Any] = {
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": "1.1.0"
+            if "freecad_adapter_binding" in case_document
+            else SCHEMA_VERSION,
             "bundle_id": f"bundle-{payload_sha256[:24]}",
             "case_id": case_document["case_id"],
             "case_revision": case_document["case_revision"],
@@ -277,6 +288,9 @@ class EvidenceService:
                 b"It is not validated for production, safety, or shop-floor release decisions.\n"
             ),
         }
+        if "freecad_adapter_binding" in case_document:
+            _, cad_payloads = self.registry.get_cad_reference(cast(str, case_document["case_id"]))
+            payloads.update({"cad-reference/" + name: data for name, data in cad_payloads.items()})
         validate_document(case_document, "inspection-case")
         for row in images:
             document = self.registry.get_image_document(cast(str, row["id"]))
@@ -406,7 +420,7 @@ class EvidenceService:
         )
         case_id = cast(str, case_document["case_id"])
         case_revision = cast(int, case_document["case_revision"])
-        return {
+        report: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
             "report_id": f"eval-{case_id}-{case_revision}",
             "evaluation_run_id": f"run-{case_id}-{case_revision}",
@@ -480,6 +494,34 @@ class EvidenceService:
                 "No labeled benchmark ground truth was evaluated in this case export.",
             ],
         }
+        if "freecad_adapter_binding" in case_document:
+            report["schema_version"] = "1.1.0"
+            report["evaluation_scope"] = {
+                "kind": "case_reproducibility_only",
+                "ground_truth_available": False,
+                "performance_claim": False,
+                "human_approval": "not_asserted",
+            }
+            report["dataset"]["positive_count"] = None
+            report["dataset"]["negative_count"] = None
+            report["classification_metrics"] = {
+                key: None for key in report["classification_metrics"]
+            }
+            report["acceptance_criteria"] = [
+                row
+                for row in report["acceptance_criteria"]
+                if row["criterion_id"] != "declared-fixture-classification-correct"
+            ]
+            report["acceptance_criteria"][0].update(
+                criterion_id="all-analyses-have-disposition-records",
+                observed=(
+                    f"{len({row['analysis_id'] for row in dispositions})} disposition records; "
+                    "approval not inferred"
+                ),
+                threshold=f"{len(analyses)} disposition records",
+            )
+            report["verdict"] = "inconclusive"
+        return report
 
     def _artifact_inventory(self, payloads: dict[str, bytes]) -> list[dict[str, Any]]:
         image_roles_by_metadata_path: dict[str, str] = {}
@@ -512,8 +554,9 @@ class EvidenceService:
                 "media_type": media_type,
             }
             if schema_name is not None:
-                entry["schema_id"] = schema_id(schema_name)
-                entry["schema_version"] = SCHEMA_VERSION
+                version = cast(str, _strict_json_loads(data)["schema_version"])
+                entry["schema_id"] = schema_id(schema_name, version)
+                entry["schema_version"] = version
             inventory.append(entry)
         return inventory
 
@@ -620,9 +663,7 @@ class EvidenceService:
         manifest: dict[str, Any],
         payloads: dict[str, bytes],
     ) -> None:
-        allow_legacy_source_png = (
-            manifest["payload_sha256"] in _LEGACY_SOURCE_PNG_PAYLOAD_SHA256S
-        )
+        allow_legacy_source_png = manifest["payload_sha256"] in _LEGACY_SOURCE_PNG_PAYLOAD_SHA256S
         inventory = {
             cast(str, entry["path"]): entry
             for entry in cast(list[dict[str, Any]], manifest["artifacts"])
@@ -639,6 +680,10 @@ class EvidenceService:
                     "JSON artifact is not canonical", code="CANONICAL_JSON_MISMATCH"
                 )
             validate_document(document, schema_name)
+            if entry.get("schema_version") != document["schema_version"] or entry.get(
+                "schema_id"
+            ) != schema_id(schema_name, document["schema_version"]):
+                raise EvidenceError("Artifact schema binding mismatch", code="SCHEMA_INVALID")
             documents_by_role.setdefault(role, []).append((path, document))
 
         case_document = documents_by_role["inspection_case"][0][1]
@@ -677,6 +722,28 @@ class EvidenceService:
             ):
                 raise EvidenceError("Canonical image binding does not match", code="HASH_MISMATCH")
 
+        cad_binding = None
+        if "freecad_adapter_binding" in case_document:
+            if manifest["schema_version"] != "1.1.0":
+                raise EvidenceError("CAD evidence requires v1.1", code="UNSUPPORTED_SCHEMA_VERSION")
+            cad_payloads = bundle_cad_payloads(payloads)
+            cad_binding = validate_cad_binding(
+                cad_payloads[MANIFEST], {k: v for k, v in cad_payloads.items() if k != MANIFEST}
+            )
+            reference_doc = images_by_id.get(case_document["reference_image_id"])
+            if (
+                case_document["freecad_adapter_binding"] != cad_binding.case_binding()
+                or case_document["feature_ids"] != sorted(cad_binding.regions())
+                or case_document["part_identity"]
+                != {"part_id": cad_binding.part_id, "cad_revision": cad_binding.cad_revision}
+                or reference_doc is None
+                or reference_doc["sha256"] != cad_binding.reference_sha256
+            ):
+                raise EvidenceError("CAD case/reference binding mismatch", code="HASH_MISMATCH")
+        elif manifest["schema_version"] == "1.1.0" or any(
+            p.startswith("cad-reference/") for p in payloads
+        ):
+            raise EvidenceError("CAD evidence binding is absent", code="EVIDENCE_INCOMPLETE")
         analyses_by_id: dict[str, tuple[dict[str, Any], str]] = {}
         for path, document in documents_by_role.get("analysis_result", []):
             self._assert_identity(manifest, document)
@@ -720,6 +787,30 @@ class EvidenceService:
                 raise EvidenceError("Analysis mask is missing", code="EVIDENCE_INCOMPLETE")
             mask_bytes = payloads[cast(str, mask["relative_path"])]
             _verify_mask(mask_bytes, mask)
+            if cad_binding is not None:
+                if document.get("cad_binding") != cad_binding.analysis_binding():
+                    raise EvidenceError("CAD analysis binding mismatch", code="HASH_MISMATCH")
+                ingestor = ImageIngestor(self.settings)
+                result = DeterministicDifferenceModel().inspect(
+                    ingestor.ingest_bytes(
+                        payloads[reference["relative_path"]], filename="reference.png"
+                    ),
+                    ingestor.ingest_bytes(
+                        payloads[inspection["relative_path"]], filename="inspection.png"
+                    ),
+                    feature_regions=cad_binding.regions(),
+                )
+                completed = document["completed_output"]
+                if (
+                    result.config_hash != document["configuration_sha256"]
+                    or result.mask_sha256 != mask["sha256"]
+                    or result.anomaly_score != completed["anomaly_score"]
+                    or _feature_findings(result) != completed["feature_findings"]
+                    or completed["threshold"] != CLASSIFICATION_THRESHOLD
+                    or completed["automated_classification"]
+                    != ("anomaly" if result.anomaly_score >= CLASSIFICATION_THRESHOLD else "normal")
+                ):
+                    raise EvidenceError("CAD analysis does not reproduce", code="HASH_MISMATCH")
             analyses_by_id[document["analysis_id"]] = (document, sha256_bytes(payloads[path]))
 
         disposed: set[str] = set()
@@ -752,8 +843,7 @@ class EvidenceService:
             image_documents=image_documents,
             analysis_documents=[document for document, _digest in analyses_by_id.values()],
             disposition_documents=[
-                document
-                for _path, document in documents_by_role.get("human_disposition", [])
+                document for _path, document in documents_by_role.get("human_disposition", [])
             ],
         )
 
@@ -829,23 +919,29 @@ class EvidenceService:
             raise EvidenceError("Evaluation model does not match", code="UNKNOWN_MODEL_VERSION")
         if evaluation["configuration_sha256"] != configuration["configuration_sha256"]:
             raise EvidenceError("Evaluation configuration does not match", code="HASH_MISMATCH")
-        dataset = evaluation["dataset"]
-        if dataset["positive_count"] + dataset["negative_count"] != dataset["sample_count"]:
-            raise EvidenceError("Evaluation dataset counts are inconsistent", code="SCHEMA_INVALID")
-        metrics = evaluation["classification_metrics"]
-        confusion_total = sum(
-            metrics[field]
-            for field in ("true_positive", "true_negative", "false_positive", "false_negative")
-        )
-        if confusion_total != dataset["sample_count"]:
-            raise EvidenceError(
-                "Evaluation confusion counts are inconsistent", code="SCHEMA_INVALID"
+        if evaluation["schema_version"] == "1.1.0":
+            if "freecad_adapter_binding" not in case_document:
+                raise EvidenceError("CAD evaluation scope requires binding", code="SCHEMA_INVALID")
+        else:
+            dataset = evaluation["dataset"]
+            if dataset["positive_count"] + dataset["negative_count"] != dataset["sample_count"]:
+                raise EvidenceError(
+                    "Evaluation dataset counts are inconsistent", code="SCHEMA_INVALID"
+                )
+            metrics = evaluation["classification_metrics"]
+            confusion_total = sum(
+                metrics[field]
+                for field in ("true_positive", "true_negative", "false_positive", "false_negative")
             )
-        expected_accuracy = (metrics["true_positive"] + metrics["true_negative"]) / dataset[
-            "sample_count"
-        ]
-        if abs(metrics["accuracy"] - expected_accuracy) > 1e-12:
-            raise EvidenceError("Evaluation accuracy is inconsistent", code="SCHEMA_INVALID")
+            if confusion_total != dataset["sample_count"]:
+                raise EvidenceError(
+                    "Evaluation confusion counts are inconsistent", code="SCHEMA_INVALID"
+                )
+            expected_accuracy = (metrics["true_positive"] + metrics["true_negative"]) / dataset[
+                "sample_count"
+            ]
+            if abs(metrics["accuracy"] - expected_accuracy) > 1e-12:
+                raise EvidenceError("Evaluation accuracy is inconsistent", code="SCHEMA_INVALID")
         reproducibility = evaluation["reproducibility"]
         run_hashes = reproducibility["run_result_sha256s"]
         if len(run_hashes) != reproducibility["repeat_count"]:
@@ -943,6 +1039,14 @@ def _describe_artifact(
     image_roles_by_metadata_path: dict[str, str],
     image_roles_by_payload_path: dict[str, str],
 ) -> tuple[str, str, str | None]:
+    if path == "cad-reference/" + MANIFEST:
+        return "freecad_adapter_manifest", "application/json", "freecad-export-adapter-manifest"
+    if path in {"cad-reference/" + name for name in PAYLOAD_NAMES if name != MANIFEST}:
+        return (
+            "freecad_artifact",
+            "image/png" if path.endswith(".png") else "application/json",
+            None,
+        )
     if path == "records/inspection-case.json":
         return "inspection_case", "application/json", "inspection-case"
     if path == "records/evaluation-report.json":

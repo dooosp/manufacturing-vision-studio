@@ -17,15 +17,21 @@ export function EvidencePanel({ inspectionCase, copy }: EvidencePanelProps) {
         (image) => image.id === analysis.inspection_image_id,
       )
     : inspectionCase.inspection_images[0];
-  const evidence = [
+  const evidence: { label: string; ready: boolean; value: string }[] = [
     { label: copy.caseIdentity, ready: Boolean(inspectionCase.part_id && inspectionCase.revision), value: `${inspectionCase.part_id} · ${inspectionCase.revision}` },
     { label: copy.caseRevision, ready: Boolean(inspectionCase.case_revision), value: `R${inspectionCase.case_revision ?? 1}` },
     { label: copy.referenceHash, ready: Boolean(inspectionCase.reference_image?.sha256), value: displayHash(inspectionCase.reference_image?.sha256) },
     { label: copy.inputHash, ready: Boolean(analyzedInspection?.sha256), value: displayHash(analyzedInspection?.sha256) },
     { label: copy.configHash, ready: Boolean(analysis?.configuration_hash), value: displayHash(analysis?.configuration_hash) },
     { label: copy.maskHash, ready: Boolean(analysis?.mask?.sha256), value: displayHash(analysis?.mask?.sha256) },
-    { label: copy.reviewRecord, ready: Boolean(inspectionCase.disposition), value: inspectionCase.disposition?.decision ?? "—" },
+    { label: inspectionCase.freecad_adapter_binding ? copy.cadReviewRecord : copy.reviewRecord, ready: Boolean(inspectionCase.disposition), value: inspectionCase.disposition?.decision ?? "—" },
   ];
+
+  if (inspectionCase.freecad_adapter_binding) {
+    evidence.push({ label: copy.cadBinding,
+      ready: Boolean(inspectionCase.freecad_adapter_binding.manifest_sha256),
+      value: displayHash(inspectionCase.freecad_adapter_binding.manifest_sha256) });
+  }
 
   const completed = evidence.filter((item) => item.ready).length;
 
@@ -38,7 +44,7 @@ export function EvidencePanel({ inspectionCase, copy }: EvidencePanelProps) {
         </div>
         <span className="evidence-count">{completed}/{evidence.length}</span>
       </div>
-      <p className="panel-description">{copy.evidenceHint}</p>
+      <p className="panel-description">{inspectionCase.freecad_adapter_binding ? copy.cadEvidenceHint : copy.evidenceHint}</p>
       <div className="evidence-progress" aria-hidden="true">
         <span style={{ width: `${(completed / evidence.length) * 100}%` }} />
       </div>

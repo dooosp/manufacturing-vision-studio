@@ -226,6 +226,8 @@ export interface HumanDisposition {
 }
 
 export interface InspectionCase {
+  feature_ids?: string[];
+  freecad_adapter_binding?: { export_id: string; manifest_sha256: string };
   id: string;
   case_id?: string;
   case_revision?: number;

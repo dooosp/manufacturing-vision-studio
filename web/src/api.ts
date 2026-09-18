@@ -95,6 +95,12 @@ function normalizeCase(payload: unknown): InspectionCase {
     status: asString(document.status, "draft") as InspectionCase["status"],
     created_at: asString(document.created_at),
     updated_at: asString(document.updated_at),
+    feature_ids: Array.isArray(document.feature_ids)
+      ? document.feature_ids.filter((id): id is string => typeof id === "string") : [],
+    freecad_adapter_binding: isObject(document.freecad_adapter_binding)
+      ? { export_id: asString(document.freecad_adapter_binding.export_id),
+          manifest_sha256: asString(document.freecad_adapter_binding.manifest_sha256) }
+      : undefined,
     reference_image: reference,
     inspection_images: inspectionImages,
     analysis: latestAnalysis && completed

@@ -23,6 +23,7 @@ from manufacturing_vision_studio.cad_binding import (
     MANIFEST,
     PAYLOAD_NAMES,
     CadFeatureBinding,
+    bundle_cad_payloads,
     validate_cad_binding,
     validate_selected_binding,
 )
@@ -46,6 +47,7 @@ from manufacturing_vision_studio.model import (
 )
 
 SCHEMA_VERSION = "1.0.0"
+CLASSIFICATION_THRESHOLD = 0.0025
 LIMITATION = "Synthetic demo baseline only; not validated for production inspection."
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 DECISIONS = {"accept", "reject", "needs_review", "model_error"}
@@ -864,6 +866,31 @@ class CaseRegistry:
         evaluation_payload = payloads[evaluation_paths[0]]
         _decode_canonical_json(evaluation_payload)
 
+        cad_binding = None
+        cad_payloads: dict[str, bytes] = {}
+        if "freecad_adapter_binding" in case_document:
+            cad_payloads = bundle_cad_payloads(payloads)
+            cad_binding = validate_selected_binding(
+                cad_payloads[MANIFEST],
+                {k: v for k, v in cad_payloads.items() if k != MANIFEST},
+                self.settings.data_dir / "trusted-cad-sources.json",
+            )
+            if case_document[
+                "freecad_adapter_binding"
+            ] != cad_binding.case_binding() or case_document["part_identity"] != {
+                "part_id": cad_binding.part_id,
+                "cad_revision": cad_binding.cad_revision,
+            }:
+                raise UnsafeInputError(
+                    "Imported CAD binding identity mismatch", code="HASH_MISMATCH"
+                )
+        elif any(d["source"]["kind"] == "freecad_export" for d in image_documents):
+            raise UnsafeInputError(
+                "Imported CAD reference has no binding", code="EVIDENCE_INCOMPLETE"
+            )
+        model_args: dict[str, Any] = (
+            {} if cad_binding is None else {"feature_regions": cad_binding.regions()}
+        )
         ingestor = ImageIngestor(self.settings)
         ingested_images: dict[str, IngestedImage] = {}
         for document in image_documents:
@@ -917,7 +944,9 @@ class CaseRegistry:
         for document in analysis_documents:
             binding = cast(dict[str, Any], document["input_binding"])
             inspection_id = cast(str, binding["inspection_image_id"])
-            result = model.inspect(ingested_images[reference_id], ingested_images[inspection_id])
+            result = model.inspect(
+                ingested_images[reference_id], ingested_images[inspection_id], **model_args
+            )
             completed = cast(dict[str, Any], document["completed_output"])
             mask = cast(dict[str, Any], completed["mask"])
             mask_payload = payloads[cast(str, mask["relative_path"])]
@@ -933,6 +962,16 @@ class CaseRegistry:
                 raise UnsafeInputError(
                     "Imported analysis does not reproduce",
                     code="HASH_MISMATCH",
+                )
+            if cad_binding is not None and (
+                document.get("cad_binding") != cad_binding.analysis_binding()
+                or completed["feature_findings"] != _feature_findings(result)
+                or completed["threshold"] != CLASSIFICATION_THRESHOLD
+                or completed["automated_classification"]
+                != ("anomaly" if result.anomaly_score >= CLASSIFICATION_THRESHOLD else "normal")
+            ):
+                raise UnsafeInputError(
+                    "Imported CAD findings do not reproduce", code="HASH_MISMATCH"
                 )
             analysis_id = cast(str, document["analysis_id"])
             results[analysis_id] = result
@@ -960,6 +999,10 @@ class CaseRegistry:
                         case_document["updated_at"],
                     ),
                 )
+                if cad_binding is not None:
+                    self._store_cad_reference(
+                        connection, case_id, cad_binding, cad_payloads, created_blobs
+                    )
                 for document in image_documents:
                     image_id = cast(str, document["image_id"])
                     image = ingested_images[image_id]
@@ -1211,7 +1254,7 @@ class CaseRegistry:
         result: InspectionResult,
         produced_at: str,
     ) -> dict[str, Any]:
-        anomaly_threshold = 0.0025
+        anomaly_threshold = CLASSIFICATION_THRESHOLD
         classification = "anomaly" if result.anomaly_score >= anomaly_threshold else "normal"
         normalization_parameters = {
             "method": "none",
@@ -1220,29 +1263,7 @@ class CaseRegistry:
             "target_width_px": reference_row["width"],
             "target_height_px": reference_row["height"],
         }
-        feature_findings: list[dict[str, Any]] = [
-            {
-                "mapping_status": "mapped",
-                "feature_id": score.feature_id,
-                "anomaly_score": score.anomaly_fraction,
-                "mask_fraction": score.anomaly_fraction,
-                "mapping_confidence": 1.0,
-                "mapping_method": "feature_map_overlap",
-            }
-            for score in result.feature_scores
-            if score.anomaly_pixels > 0
-        ]
-        if result.anomaly_pixels > 0 and not feature_findings:
-            feature_findings.append(
-                {
-                    "mapping_status": "unmapped",
-                    "feature_id": None,
-                    "anomaly_score": result.anomaly_score,
-                    "mask_fraction": result.anomaly_score,
-                    "mapping_confidence": 0.0,
-                    "mapping_method": "unmapped",
-                }
-            )
+        feature_findings = _feature_findings(result)
         document: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
             "analysis_id": analysis_id,
@@ -1532,6 +1553,33 @@ class CaseRegistry:
                     "actual_case_revision": actual,
                 },
             )
+
+
+def _feature_findings(result: InspectionResult) -> list[dict[str, Any]]:
+    feature_findings: list[dict[str, Any]] = [
+        {
+            "mapping_status": "mapped",
+            "feature_id": score.feature_id,
+            "anomaly_score": score.anomaly_fraction,
+            "mask_fraction": score.anomaly_fraction,
+            "mapping_confidence": 1.0,
+            "mapping_method": "feature_map_overlap",
+        }
+        for score in result.feature_scores
+        if score.anomaly_pixels > 0
+    ]
+    if result.anomaly_pixels > 0 and not feature_findings:
+        feature_findings.append(
+            {
+                "mapping_status": "unmapped",
+                "feature_id": None,
+                "anomaly_score": result.anomaly_score,
+                "mask_fraction": result.anomaly_score,
+                "mapping_confidence": 0.0,
+                "mapping_method": "unmapped",
+            }
+        )
+    return feature_findings
 
 
 def _timestamp() -> str:

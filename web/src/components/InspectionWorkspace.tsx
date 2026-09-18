@@ -88,6 +88,15 @@ export function InspectionWorkspace({
           <p className="case-id">
             {copy.caseLabel} · {(inspectionCase.id || inspectionCase.case_id || "").toUpperCase()} · {copy.stateRevision} {inspectionCase.case_revision ?? 1}
           </p>
+          {inspectionCase.freecad_adapter_binding && (
+            <div className="boundary-note">
+              <div>
+                <strong>{copy.cadReference}</strong>
+                <p>{inspectionCase.feature_ids?.join(", ") || copy.bindingMissing}</p>
+                <p>{copy.cadReferenceHint}</p>
+              </div>
+            </div>
+          )}
         </div>
         <div className="workspace-actions">
           <ImageUpload
@@ -186,7 +195,7 @@ export function InspectionWorkspace({
         </div>
         <div className="metric-cell">
           <span>{copy.threshold}</span>
-          <strong>{formatScore(analysis?.threshold)}</strong>
+          <strong>{analysis?.threshold?.toFixed(4) ?? "—"}</strong>
         </div>
         <div className="metric-cell">
           <span>{copy.modelVerdict}</span>

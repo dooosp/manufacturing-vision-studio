@@ -2,6 +2,11 @@ import type { Locale } from "./types";
 
 const copy = {
   en: {
+    cadReference: "CAD reference · inspection features",
+    cadReferenceHint: "CAD silhouette and synthetic inspection. Physical testing and manufacturing release are not established. Scripted disposition is not human approval.",
+    cadBinding: "CAD reference binding",
+    cadReviewRecord: "Disposition record (may be scripted)",
+    cadEvidenceHint: "Checks identity, revision, source, analysis and disposition bindings. A complete record does not establish human approval.",
     productKicker: "Industrial evidence workbench",
     demoMode: "Synthetic demo",
     localOnly: "Local only",
@@ -246,10 +251,15 @@ const copy = {
       },
     },
     footerTarget: "DEMO_READY target · synthetic fixtures",
-    footerContract: "Evidence contract v1.0.0",
+    footerContract: "Evidence contracts v1.0.0 / v1.1.0",
     footerBoundary: "Not production validated",
   },
   ko: {
+    cadReference: "CAD 기준 · 검사 특징",
+    cadReferenceHint: "CAD 실루엣과 합성 검사 자료입니다. 실물 시험과 제조 출하 승인은 확인되지 않았습니다. 자동 시험의 판정 기록은 사람의 승인이 아닙니다.",
+    cadBinding: "CAD 기준 연결 해시",
+    cadReviewRecord: "판정 기록 (자동 시험 포함)",
+    cadEvidenceHint: "부품·리비전·기준·분석·판정 기록의 연결을 확인합니다. 기록이 완전해도 실제 사람의 승인을 뜻하지 않습니다.",
     productKicker: "산업 증거 워크벤치",
     demoMode: "합성 데이터 데모",
     localOnly: "로컬 전용",
@@ -494,7 +504,7 @@ const copy = {
       },
     },
     footerTarget: "DEMO_READY 목표 · 합성 fixture",
-    footerContract: "증거 계약 v1.0.0",
+    footerContract: "증거 계약 v1.0.0 / v1.1.0",
     footerBoundary: "생산 검증되지 않음",
   },
 } as const;
