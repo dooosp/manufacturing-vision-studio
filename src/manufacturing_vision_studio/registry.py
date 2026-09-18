@@ -10,7 +10,7 @@ import shutil
 import sqlite3
 import sys
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +19,13 @@ from typing import Any, Literal, cast
 from PIL import Image
 from PIL import __version__ as pillow_version
 
+from manufacturing_vision_studio.cad_binding import (
+    MANIFEST,
+    PAYLOAD_NAMES,
+    CadFeatureBinding,
+    validate_cad_binding,
+    validate_selected_binding,
+)
 from manufacturing_vision_studio.canonical import canonical_json_bytes, sha256_bytes
 from manufacturing_vision_studio.config import Settings
 from manufacturing_vision_studio.errors import (
@@ -178,6 +185,11 @@ class CaseRegistry:
                     recorded_at TEXT NOT NULL,
                     UNIQUE(analysis_id, disposition_revision)
                 );
+                CREATE TABLE IF NOT EXISTS cad_bindings (
+                    case_id TEXT PRIMARY KEY REFERENCES cases(id) ON DELETE CASCADE,
+                    manifest_sha256 TEXT NOT NULL,
+                    payload_index BLOB NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS imported_evaluation_snapshots (
                     case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
                     case_revision INTEGER NOT NULL,
@@ -253,6 +265,13 @@ class CaseRegistry:
         images = [self._image_document(row, case_row) for row in image_rows]
         analyses = [_decode_canonical_json(row["document_json"]) for row in analysis_rows]
         dispositions = [_decode_canonical_json(row["document_json"]) for row in disposition_rows]
+        binding, _ = self.get_cad_reference(case_id)
+        if binding is not None:
+            for document in analyses:
+                if document.get("cad_binding") != binding.analysis_binding():
+                    raise UnsafeInputError(
+                        "Stored CAD analysis binding mismatch", code="HASH_MISMATCH"
+                    )
         return {
             "case": self._case_document(case_row, image_rows, analysis_rows, disposition_rows),
             "locale": case_row["locale"],
@@ -263,6 +282,97 @@ class CaseRegistry:
 
     def get_case_document(self, case_id: str) -> dict[str, Any]:
         return cast(dict[str, Any], self.get_case_detail(case_id)["case"])
+
+    def import_cad_reference(
+        self,
+        case_id: str,
+        *,
+        image: IngestedImage,
+        binding: CadFeatureBinding,
+        payloads: Mapping[str, bytes],
+        expected_case_revision: int,
+    ) -> dict[str, Any]:
+        snapshot = dict(payloads)
+        if set(snapshot) != set(PAYLOAD_NAMES):
+            raise UnsafeInputError("CAD binding payloads incomplete", code="EVIDENCE_INCOMPLETE")
+        verified = validate_selected_binding(
+            snapshot[MANIFEST],
+            {k: v for k, v in snapshot.items() if k != MANIFEST},
+            self.settings.data_dir / "trusted-cad-sources.json",
+        )
+        if verified != binding or image.original_sha256 != binding.reference_sha256:
+            raise UnsafeInputError("CAD binding snapshot mismatch", code="HASH_MISMATCH")
+        self._add_image(
+            case_id,
+            image,
+            role="reference",
+            source_kind="freecad_export",
+            fixture_id=None,
+            freecad_export_id=binding.export_id,
+            expected_case_revision=expected_case_revision,
+            cad_snapshot=(binding, snapshot),
+        )
+        return self.get_case_detail(case_id)
+
+    def get_cad_reference(self, case_id: str) -> tuple[CadFeatureBinding | None, dict[str, bytes]]:
+        with closing(self._connect()) as connection:
+            case = self._case_row(connection, case_id)
+            row = connection.execute(
+                "SELECT * FROM cad_bindings WHERE case_id = ?", (case_id,)
+            ).fetchone()
+            reference = connection.execute(
+                "SELECT * FROM images WHERE case_id = ? AND role = 'reference'", (case_id,)
+            ).fetchone()
+        is_cad = reference is not None and reference["source_kind"] == "freecad_export"
+        if row is None:
+            if is_cad:
+                raise UnsafeInputError("CAD binding is missing", code="EVIDENCE_INCOMPLETE")
+            return None, {}
+        if not is_cad:
+            raise UnsafeInputError("CAD binding reference is missing", code="EVIDENCE_INCOMPLETE")
+        index = _decode_canonical_json(row["payload_index"])
+        if set(index) != set(PAYLOAD_NAMES):
+            raise UnsafeInputError(
+                "CAD binding payload index is incomplete", code="EVIDENCE_INCOMPLETE"
+            )
+        payloads = {
+            name: self._read_blob(entry["path"], entry["sha256"]) for name, entry in index.items()
+        }
+        binding = validate_cad_binding(
+            payloads[MANIFEST],
+            {k: v for k, v in payloads.items() if k != MANIFEST},
+            expected_source={"manifest_sha256": row["manifest_sha256"]},
+        )
+        if (
+            binding.part_id != case["part_id"]
+            or binding.cad_revision != case["cad_revision"]
+            or binding.reference_sha256 != reference["original_sha256"]
+            or binding.reference_pixel_sha256 != reference["pixel_sha256"]
+            or binding.export_id != reference["freecad_export_id"]
+        ):
+            raise UnsafeInputError(
+                "CAD binding does not match case/reference", code="HASH_MISMATCH"
+            )
+        return binding, payloads
+
+    def _store_cad_reference(
+        self,
+        connection: sqlite3.Connection,
+        case_id: str,
+        binding: CadFeatureBinding,
+        payloads: Mapping[str, bytes],
+        created_blobs: list[Path],
+    ) -> None:
+        index = {}
+        for name in PAYLOAD_NAMES:
+            data = payloads[name]
+            digest = sha256_bytes(data)
+            path = self._store_blob(data, digest, ".cad-" + name, created_paths=created_blobs)
+            index[name] = {"path": path, "sha256": digest}
+        connection.execute(
+            "INSERT INTO cad_bindings(case_id, manifest_sha256, payload_index) VALUES (?, ?, ?)",
+            (case_id, binding.manifest_sha256, canonical_json_bytes(index)),
+        )
 
     def add_reference(
         self,
@@ -314,6 +424,7 @@ class CaseRegistry:
         fixture_id: str | None,
         freecad_export_id: str | None,
         expected_case_revision: int,
+        cad_snapshot: tuple[CadFeatureBinding, Mapping[str, bytes]] | None = None,
     ) -> dict[str, Any]:
         if source_kind not in {"upload", "synthetic_fixture", "freecad_export"}:
             raise UnsafeInputError("Image source kind is invalid", code="SCHEMA_INVALID")
@@ -330,6 +441,8 @@ class CaseRegistry:
                     code="SCHEMA_INVALID",
                 )
             _validate_identifier(freecad_export_id, "freecad_export_id")
+        if source_kind == "freecad_export" and role == "reference" and cad_snapshot is None:
+            raise UnsafeInputError("CAD binding is required", code="EVIDENCE_INCOMPLETE")
         image_id = f"img-{uuid.uuid4().hex[:16]}"
         original_suffix = ".png" if image.source_format == "PNG" else ".jpg"
         now = _timestamp()
@@ -338,6 +451,15 @@ class CaseRegistry:
             with self._transaction() as connection:
                 case_row = self._case_row(connection, case_id)
                 self._assert_expected_revision(case_row, expected_case_revision)
+                if cad_snapshot is not None:
+                    binding = cad_snapshot[0]
+                    if (
+                        binding.part_id != case_row["part_id"]
+                        or binding.cad_revision != case_row["cad_revision"]
+                    ):
+                        raise IdentityMismatchError(
+                            "CAD binding identity mismatch", code="REVISION_MISMATCH"
+                        )
                 if role == "reference":
                     existing_reference = connection.execute(
                         "SELECT 1 FROM images WHERE case_id = ? AND role = 'reference'",
@@ -403,6 +525,10 @@ class CaseRegistry:
                         now,
                     ),
                 )
+                if cad_snapshot is not None:
+                    self._store_cad_reference(
+                        connection, case_id, cad_snapshot[0], cad_snapshot[1], created_blobs
+                    )
                 self._bump_case(connection, case_id, next_revision, now)
         except sqlite3.IntegrityError as exc:
             self._remove_created_blobs(created_blobs)
@@ -499,15 +625,30 @@ class CaseRegistry:
         if not inspection_rows:
             raise UnsafeInputError("Case has no matching inspection images", code="SCHEMA_INVALID")
         reference = self._ingested_from_row(reference_row)
+        cad_binding, _ = self.get_cad_reference(case_id)
+        model_args: dict[str, Any] = (
+            {} if cad_binding is None else {"feature_regions": cad_binding.regions()}
+        )
         documents: list[dict[str, Any]] = []
         for inspection_row in inspection_rows:
             existing = self._analysis_for_image(case_id, cast(str, inspection_row["id"]))
             if existing is not None:
+                if cad_binding is not None and (
+                    existing.get("cad_binding") != cad_binding.analysis_binding()
+                    or existing["configuration_sha256"] != active_model.config.config_hash
+                    or existing["input_binding"]["reference_image_sha256"]
+                    != reference.original_sha256
+                    or existing["input_binding"]["inspection_image_sha256"]
+                    != inspection_row["original_sha256"]
+                ):
+                    raise UnsafeInputError(
+                        "Cached CAD analysis binding mismatch", code="HASH_MISMATCH"
+                    )
                 documents.append(existing)
                 continue
             inspection = self._ingested_from_row(inspection_row)
-            result = active_model.inspect(reference, inspection)
-            repeat_result = active_model.inspect(reference, inspection)
+            result = active_model.inspect(reference, inspection, **model_args)
+            repeat_result = active_model.inspect(reference, inspection, **model_args)
             if (
                 canonical_json_bytes(result.as_record())
                 != canonical_json_bytes(repeat_result.as_record())
@@ -1102,7 +1243,7 @@ class CaseRegistry:
                     "mapping_method": "unmapped",
                 }
             )
-        return {
+        document: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
             "analysis_id": analysis_id,
             "case_id": case_row["id"],
@@ -1162,6 +1303,11 @@ class CaseRegistry:
             "warnings": [],
             "limitations": [LIMITATION],
         }
+        binding, _ = self.get_cad_reference(cast(str, case_row["id"]))
+        if binding is not None:
+            document["schema_version"] = "1.1.0"
+            document["cad_binding"] = binding.analysis_binding()
+        return document
 
     def _analysis_for_image(self, case_id: str, image_id: str) -> dict[str, Any] | None:
         with closing(self._connect()) as connection:
@@ -1192,7 +1338,8 @@ class CaseRegistry:
         else:
             status = "analyzed"
         config = DeterministicDifferenceModel().config
-        return {
+        binding, _ = self.get_cad_reference(cast(str, case_row["id"]))
+        document: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
             "case_id": case_row["id"],
             "case_revision": case_row["case_revision"],
@@ -1213,11 +1360,14 @@ class CaseRegistry:
                 "configuration_sha256": config.config_hash,
                 "normalization_policy": "reject_mismatch",
             },
-            "feature_ids": sorted(DEFAULT_FEATURE_REGIONS),
+            "feature_ids": sorted(binding.regions() if binding else DEFAULT_FEATURE_REGIONS),
             "created_at": case_row["created_at"],
             "updated_at": case_row["updated_at"],
             "limitations": [LIMITATION],
         }
+        if binding is not None:
+            document["freecad_adapter_binding"] = binding.case_binding()
+        return document
 
     def _image_document(self, row: sqlite3.Row, case_row: sqlite3.Row) -> dict[str, Any]:
         source: dict[str, str] = {"kind": cast(str, row["source_kind"])}

@@ -7,6 +7,7 @@ import json
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, NoReturn
 
 from manufacturing_vision_studio.canonical import sha256_bytes
@@ -67,6 +68,14 @@ class CadFeatureBinding:
 
     def case_binding(self) -> dict[str, str]:
         return {"export_id": self.export_id, "manifest_sha256": self.manifest_sha256}
+
+    def analysis_binding(self) -> dict[str, str]:
+        return {
+            **self.case_binding(),
+            "source_manifest_sha256": self.source_manifest_sha256,
+            "feature_map_sha256": self.feature_map_sha256,
+            "metadata_sha256": self.metadata_sha256,
+        }
 
 
 def validate_cad_binding(
@@ -223,3 +232,28 @@ def validate_cad_binding(
         source_kind=metadata["source_kind"],
         feature_regions=tuple(regions),
     )
+
+
+def validate_selected_binding(
+    manifest_bytes: bytes, artifacts: Mapping[str, bytes], selection_path: Path
+) -> CadFeatureBinding:
+    """Require an independently selected manifest digest before a new CAD import."""
+    try:
+        selected = json_object(selection_path.read_bytes())
+    except OSError as exc:
+        raise EvidenceError("CAD source selection is missing", code="EVIDENCE_INCOMPLETE") from exc
+    if (
+        set(selected) != {"schema_version", "sources"}
+        or selected["schema_version"] != "mvs-cad-source-selection/v1"
+        or not isinstance(selected["sources"], list)
+    ):
+        _reject("Malformed CAD source selection")
+    digest = sha256_bytes(manifest_bytes)
+    matches = [
+        entry
+        for entry in selected["sources"]
+        if isinstance(entry, dict) and entry.get("manifest_sha256") == digest
+    ]
+    if len(matches) != 1 or any(not isinstance(v, str) for v in matches[0].values()):
+        raise EvidenceError("CAD source differs from pinned selection", code="HASH_MISMATCH")
+    return validate_cad_binding(manifest_bytes, artifacts, expected_source=matches[0])

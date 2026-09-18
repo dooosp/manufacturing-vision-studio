@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
+from manufacturing_vision_studio.cad_binding import validate_selected_binding
 from manufacturing_vision_studio.canonical import canonical_json_bytes, sha256_bytes
 from manufacturing_vision_studio.config import Settings
 from manufacturing_vision_studio.errors import (
@@ -173,6 +174,7 @@ class MVTecADAdapter:
 
 @dataclass(frozen=True, slots=True)
 class ValidatedFreeCADExport:
+    manifest_bytes: bytes
     manifest: dict[str, Any]
     manifest_sha256: str
     artifacts: dict[str, bytes]
@@ -257,6 +259,7 @@ class FreeCADExportAdapter:
                     )
             artifacts[relative_path] = data
         return ValidatedFreeCADExport(
+            manifest_bytes=manifest_bytes,
             manifest=document,
             manifest_sha256=sha256_bytes(manifest_bytes),
             artifacts=artifacts,
@@ -279,28 +282,33 @@ class FreeCADExportAdapter:
             expected_part_id=identity["part_id"],
             expected_cad_revision=identity["cad_revision"],
         )
-        render_entries = [
-            entry
-            for entry in cast(list[dict[str, Any]], validated.manifest["artifacts"])
-            if entry["role"] == "reference_render"
-        ]
-        if len(render_entries) != 1:
-            raise EvidenceError(
-                "FreeCAD import requires exactly one reference render",
-                code="EVIDENCE_INCOMPLETE",
+        binding = validate_selected_binding(
+            validated.manifest_bytes,
+            validated.artifacts,
+            self.settings.data_dir / "trusted-cad-sources.json",
+        )
+        # Check for an observed change while still publishing the validated snapshot bytes.
+        root = _pin_read_only_root(source_root)
+        snapshot = {manifest_relative_path: validated.manifest_bytes, **validated.artifacts}
+        for name, data in snapshot.items():
+            current = _bounded_regular_read(
+                _safe_regular_file(root, name), self.settings.max_bundle_member_bytes
             )
-        render = render_entries[0]
-        data = validated.artifacts[cast(str, render["relative_path"])]
+            if current != data:
+                raise EvidenceError("CAD source changed after validation", code="HASH_MISMATCH")
         image = ImageIngestor(self.settings).ingest_bytes(
-            data,
-            filename=Path(cast(str, render["relative_path"])).name,
+            validated.artifacts["reference.png"],
+            filename="reference.png",
             declared_media_type="image/png",
         )
-        registry.add_reference(
+        registry.import_cad_reference(
             case_id,
-            image,
-            source_kind="freecad_export",
-            freecad_export_id=cast(str, validated.manifest["export_id"]),
+            image=image,
+            binding=binding,
+            payloads={
+                "freecad-export-adapter-manifest.json": validated.manifest_bytes,
+                **validated.artifacts,
+            },
             expected_case_revision=expected_case_revision,
         )
         return registry.get_case_detail(case_id)

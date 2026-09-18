@@ -103,3 +103,18 @@ def write_minimal_cad_export(root: Path) -> Path:
     }
     (root / "freecad-export-adapter-manifest.json").write_bytes(json_bytes(manifest))
     return root
+
+
+def pin_source(settings, source: Path):
+    """Explicit test selection made BEFORE adversarial source modifications."""
+    digest = sha256((source / "freecad-export-adapter-manifest.json").read_bytes()).hexdigest()
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    (settings.data_dir / "trusted-cad-sources.json").write_bytes(
+        json_bytes(
+            {
+                "schema_version": "mvs-cad-source-selection/v1",
+                "sources": [{"manifest_sha256": digest}],
+            }
+        )
+    )
+    return digest

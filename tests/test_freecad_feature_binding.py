@@ -4,7 +4,7 @@ from hashlib import sha256
 from pathlib import Path
 
 import pytest
-from cad_binding_fixtures import json_bytes, write_minimal_cad_export
+from cad_binding_fixtures import json_bytes, pin_source, write_minimal_cad_export
 
 
 def test_imported_feature_ids_reach_case(tmp_path):
@@ -18,6 +18,7 @@ def test_imported_feature_ids_reach_case(tmp_path):
     registry = CaseRegistry(settings)
     registry.create_case(part_id="USB-REF-ADAPTER", cad_revision="R1", case_id="case-r1")
     source = write_minimal_cad_export(tmp_path / "source")
+    pin_source(settings, source)
     detail = FreeCADExportAdapter(settings).import_reference(
         registry, "case-r1", source, expected_case_revision=1
     )
@@ -161,3 +162,215 @@ def test_contract_model_restores_half_open_pixel_regions(tmp_path):
     assert sha256(Path("tests/fixtures/cad-binding/profile-v1.json").read_bytes()).hexdigest() == (
         "8227681470be0754e3c1b17d5e1f4d1d3c2fd5afe947013c06172aeabe4f5045"
     )
+
+
+def setup_import(tmp_path, *, pin=True):
+    from manufacturing_vision_studio.adapters import FreeCADExportAdapter
+    from manufacturing_vision_studio.config import Settings
+    from manufacturing_vision_studio.registry import CaseRegistry
+
+    settings = Settings(data_dir=tmp_path / "registry")
+    registry = CaseRegistry(settings)
+    registry.create_case(part_id="USB-REF-ADAPTER", cad_revision="R1", case_id="case-r1")
+    source = write_minimal_cad_export(tmp_path / "source")
+    if pin:
+        pin_source(settings, source)
+    return registry, FreeCADExportAdapter(settings), source
+
+
+def test_analysis_and_repeat_receive_actual_regions(tmp_path):
+    import io
+
+    from PIL import Image, ImageDraw
+
+    from manufacturing_vision_studio.images import ImageIngestor
+    from manufacturing_vision_studio.model import DeterministicDifferenceModel
+
+    registry, adapter, source = setup_import(tmp_path)
+    adapter.import_reference(registry, "case-r1", source, expected_case_revision=1)
+    with Image.open(source / "reference.png") as image:
+        ImageDraw.Draw(image).ellipse((320, 526, 360, 566), fill=(180, 180, 180))
+        out = io.BytesIO()
+        image.save(out, format="PNG")
+    registry.add_inspection(
+        "case-r1",
+        ImageIngestor().ingest_bytes(out.getvalue(), filename="sample.png"),
+        expected_case_revision=2,
+    )
+    calls = []
+
+    class ObservedModel(DeterministicDifferenceModel):
+        def inspect(self, reference, inspection, *, feature_regions=None):
+            assert feature_regions is not None, "CAD regions lost before model invocation"
+            calls.append(tuple(sorted(feature_regions)))
+            return super().inspect(reference, inspection, feature_regions=feature_regions)
+
+    analysis = registry.analyze_case("case-r1", model=ObservedModel(), expected_case_revision=3)[0]
+    expected = tuple(f"hole_{g}{i}" for g in ("H", "P") for i in range(1, 5))
+    assert calls == [expected, expected]
+    assert analysis["schema_version"] == "1.1.0"
+    assert analysis["cad_binding"]["manifest_sha256"] == pin_source(registry.settings, source)
+    assert [x["feature_id"] for x in analysis["completed_output"]["feature_findings"]] == [
+        "hole_H1"
+    ]
+    from manufacturing_vision_studio.schema_validation import validate_document
+
+    validate_document(analysis, "analysis-result")
+    assert registry.analyze_case("case-r1", model=ObservedModel(), expected_case_revision=4) == [
+        analysis
+    ]
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "unselected",
+        "stale",
+        "rehashed_roi",
+        "rehashed_metadata",
+        "part",
+        "revision",
+        "source_changed",
+    ],
+)
+def test_cad_import_failures_leave_case_and_blobs_unchanged(tmp_path, monkeypatch, failure):
+    from manufacturing_vision_studio.errors import MVSError
+
+    registry, adapter, source = setup_import(tmp_path, pin=failure != "unselected")
+    before = registry.get_case_detail("case-r1")
+    manifest_path = source / "freecad-export-adapter-manifest.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    artifacts = read_payloads(source)[1]
+    if failure == "rehashed_roi":
+        manifest["features"][0]["normalized_region"]["x_min"] += 0.001
+        fmap = json.loads(artifacts["feature-map.json"])
+        fmap["features"] = manifest["features"]
+        artifacts["feature-map.json"] = json_bytes(fmap)
+    elif failure in {"rehashed_metadata", "part", "revision"}:
+        metadata = json.loads(artifacts["cad-metadata.json"])
+        if failure == "rehashed_metadata":
+            metadata["source_manifest_payload"]["kind"] = "different-source"
+            h = sha256(json_bytes(metadata["source_manifest_payload"])).hexdigest()
+            metadata["source_manifest_sha256"] = manifest["source_manifest_sha256"] = h
+        else:
+            field = "part_id" if failure == "part" else "cad_revision"
+            metadata["part_identity"][field] = manifest["part_identity"][field] = "OTHER"
+        artifacts["cad-metadata.json"] = json_bytes(metadata)
+    if failure in {"rehashed_roi", "rehashed_metadata", "part", "revision"}:
+        for name, data in artifacts.items():
+            (source / name).write_bytes(data)
+        manifest_path.write_bytes(rehash(manifest, artifacts))
+    if failure == "source_changed":
+        validate = adapter.validate
+
+        def mutate_after_validation(*args, **kwargs):
+            result = validate(*args, **kwargs)
+            (source / "feature-map.json").write_bytes(b"changed after validation")
+            return result
+
+        monkeypatch.setattr(adapter, "validate", mutate_after_validation)
+    with pytest.raises(MVSError):
+        adapter.import_reference(
+            registry, "case-r1", source, expected_case_revision=2 if failure == "stale" else 1
+        )
+    assert registry.get_case_detail("case-r1") == before
+    assert list(registry.settings.blob_dir.rglob("*")) == []
+
+
+def test_cad_blob_failure_rolls_back_reference_binding_and_revision(tmp_path, monkeypatch):
+    registry, adapter, source = setup_import(tmp_path)
+    before = registry.get_case_detail("case-r1")
+    store = registry._store_blob
+    calls = 0
+
+    def fail_after_write(*args, **kwargs):
+        nonlocal calls
+        result = store(*args, **kwargs)
+        calls += 1
+        if calls == 3:
+            raise OSError("simulated storage failure")
+        return result
+
+    monkeypatch.setattr(registry, "_store_blob", fail_after_write)
+    with pytest.raises(OSError, match="simulated storage failure"):
+        adapter.import_reference(registry, "case-r1", source, expected_case_revision=1)
+    assert registry.get_case_detail("case-r1") == before
+    assert not any(p.is_file() for p in registry.settings.blob_dir.rglob("*"))
+
+
+def test_missing_cad_binding_never_falls_back_to_demo(tmp_path):
+    from manufacturing_vision_studio.errors import MVSError
+
+    registry, adapter, source = setup_import(tmp_path)
+    adapter.import_reference(registry, "case-r1", source, expected_case_revision=1)
+    with registry._connect() as connection:
+        connection.execute("DELETE FROM cad_bindings WHERE case_id = 'case-r1'")
+    with pytest.raises(MVSError, match="binding"):
+        registry.get_case_detail("case-r1")
+
+
+def test_cad_reference_cannot_be_replaced(tmp_path):
+    from manufacturing_vision_studio.errors import MVSError
+
+    registry, adapter, source = setup_import(tmp_path)
+    detail = adapter.import_reference(registry, "case-r1", source, expected_case_revision=1)
+    before = {str(p): p.read_bytes() for p in registry.settings.blob_dir.rglob("*") if p.is_file()}
+    with pytest.raises(MVSError):
+        adapter.import_reference(registry, "case-r1", source, expected_case_revision=2)
+    assert registry.get_case_detail("case-r1") == detail
+    assert {
+        str(p): p.read_bytes() for p in registry.settings.blob_dir.rglob("*") if p.is_file()
+    } == before
+
+
+@pytest.mark.parametrize("field", ["cad_binding", "configuration_sha256", "reference_image_sha256"])
+def test_cached_cad_analysis_rejects_mismatched_binding(tmp_path, field):
+    from manufacturing_vision_studio.canonical import canonical_json_bytes
+    from manufacturing_vision_studio.errors import MVSError
+    from manufacturing_vision_studio.images import ImageIngestor
+
+    registry, adapter, source = setup_import(tmp_path)
+    adapter.import_reference(registry, "case-r1", source, expected_case_revision=1)
+    registry.add_inspection(
+        "case-r1",
+        ImageIngestor().ingest_bytes(
+            (source / "reference.png").read_bytes(), filename="sample.png"
+        ),
+        expected_case_revision=2,
+    )
+    document = registry.analyze_case("case-r1", expected_case_revision=3)[0]
+    if field == "cad_binding":
+        document["cad_binding"]["manifest_sha256"] = "0" * 64
+    elif field == "reference_image_sha256":
+        document["input_binding"][field] = "0" * 64
+    else:
+        document[field] = "0" * 64
+    payload = canonical_json_bytes(document)
+    with registry._connect() as connection:
+        connection.execute(
+            "UPDATE analyses SET document_json = ?, document_sha256 = ?",
+            (payload, sha256(payload).hexdigest()),
+        )
+    with pytest.raises(MVSError, match="binding"):
+        registry.analyze_case("case-r1", expected_case_revision=4)
+
+
+def test_corrupt_preserved_cad_payload_fails_before_using_demo_regions(tmp_path):
+    from manufacturing_vision_studio.errors import MVSError
+
+    registry, adapter, source = setup_import(tmp_path)
+    adapter.import_reference(registry, "case-r1", source, expected_case_revision=1)
+    payload = next(registry.settings.blob_dir.rglob("*.cad-feature-map.json"))
+    payload.write_bytes(b"corrupt")
+    with pytest.raises(MVSError, match="hash"):
+        registry.get_case_detail("case-r1")
+
+
+@pytest.mark.parametrize("version", [[], {}])
+def test_contract_reader_rejects_malformed_version_as_domain_error(version):
+    from manufacturing_vision_studio.errors import MVSError
+    from manufacturing_vision_studio.schema_validation import validate_document
+
+    with pytest.raises(MVSError):
+        validate_document({"schema_version": version}, "analysis-result")
