@@ -237,3 +237,152 @@ def test_cad_classification_policy_cannot_be_forged(cad_bundle, tmp_path, field,
         target_service(tmp_path / "policy-forgery", selection).verify_bundle(
             rewrite_bundle(raw, mutate)
         )
+
+
+def integration_runner():
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[1] / "scripts/run_coolgear_integration.py"
+    spec = importlib.util.spec_from_file_location("coolgear_runner", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_evaluation_keeps_small_hole_false_negative_and_blind_inputs(tmp_path):
+    import numpy as np
+    from PIL import Image
+
+    from manufacturing_vision_studio.cad_binding import validate_cad_binding
+    from manufacturing_vision_studio.model import DeterministicDifferenceModel
+
+    runner = integration_runner()
+    source = write_minimal_cad_export(tmp_path / "source")
+    payloads = {
+        n: (source / n).read_bytes()
+        for n in ["reference.png", "feature-map.json", "cad-metadata.json"]
+    }
+    binding = validate_cad_binding(
+        (source / "freecad-export-adapter-manifest.json").read_bytes(), payloads
+    )
+    reference = ImageIngestor().ingest_bytes(payloads["reference.png"], filename="reference.png")
+    holes = {"hole_H2": {"center_mm": [29, 49.6], "radius_mm": 2}}
+    spec = {
+        "operation": "fill_holes",
+        "parameters": {"features": ["hole_H2"]},
+        "expected_anomaly": True,
+    }
+    sample, truth, _ = runner.make_sample(reference.as_array(), holes, spec)
+    assert int(np.count_nonzero(truth)) > 1000
+    inspection = ImageIngestor().ingest_bytes(runner.png_bytes(sample), filename="sample.png")
+    seen = []
+
+    class GuardedModel(DeterministicDifferenceModel):
+        def inspect(self, ref, candidate, *, feature_regions=None):
+            assert candidate.filename == "sample.png"
+            assert feature_regions == binding.regions()
+            seen.append(True)
+            return super().inspect(ref, candidate, feature_regions=feature_regions)
+
+    observed = runner.inspect_sample(GuardedModel(), reference, inspection, binding)
+    assert len(seen) == 2
+    assert observed["prediction"] == "normal"
+    assert 0 < observed["anomaly_score"] < 0.0025
+    assert observed["mapped_feature_ids"] == ["hole_H2"]
+    assert observed["repeat_equivalent"] is True
+    assert Image.open(io.BytesIO(observed.pop("mask_bytes"))).size == (1520, 840)
+
+
+def test_evaluation_counts_failures_separately_from_false_negatives():
+    runner = integration_runner()
+    rows = [
+        {
+            "split": "evaluation",
+            "group_id": "a",
+            "status": "completed",
+            "expected_anomaly": True,
+            "prediction": "normal",
+            "expected_feature_ids": ["hole_H1"],
+            "mapped_feature_ids": ["hole_H1"],
+            "unmapped_pixels": 0,
+        },
+        {
+            "split": "evaluation",
+            "group_id": "b",
+            "status": "completed",
+            "expected_anomaly": False,
+            "prediction": "anomaly",
+            "expected_feature_ids": [],
+            "mapped_feature_ids": ["hole_H2"],
+            "unmapped_pixels": 0,
+        },
+        {
+            "split": "evaluation",
+            "group_id": "c",
+            "status": "completed",
+            "expected_anomaly": True,
+            "prediction": "anomaly",
+            "expected_feature_ids": [],
+            "mapped_feature_ids": [],
+            "unmapped_pixels": 5000,
+        },
+        {
+            "split": "evaluation",
+            "group_id": "d",
+            "status": "execution_failed",
+            "expected_anomaly": True,
+            "expected_feature_ids": ["hole_P4"],
+        },
+    ]
+    report = runner.summarize(rows, "evaluation")
+    assert report["sample_count"] == 4
+    assert report["execution_failures"] == 1
+    assert report["confusion"] == {
+        "true_positive": 1,
+        "true_negative": 0,
+        "false_positive": 1,
+        "false_negative": 1,
+    }
+    assert report["evaluated_positive_count"] == 2
+    assert report["recall"] == 0.5
+    assert report["feature_mapping"]["in_scope_positive_cases"] == 1
+    assert report["feature_mapping"]["correct"] == 1
+    assert report["feature_mapping"]["outside_scope_positive_cases"] == 1
+    assert report["feature_mapping"]["unmapped_detected_cases"] == 1
+
+
+def test_protocol_rejects_threshold_tuning_or_split_leakage():
+    runner = integration_runner()
+    protocol = json.loads(Path("configs/integration/coolgear-r1-v1.json").read_text())
+    runner.validate_protocol(protocol)
+    protocol["classification_threshold"] = 0.001
+    with pytest.raises(ValueError, match="threshold"):
+        runner.validate_protocol(protocol)
+    protocol = json.loads(Path("configs/integration/coolgear-r1-v1.json").read_text())
+    protocol["cases"][-1]["group_id"] = protocol["cases"][0]["group_id"]
+    with pytest.raises(ValueError, match="group"):
+        runner.validate_protocol(protocol)
+
+
+def test_generator_translation_direction_and_lost_coverage_are_explicit():
+    import numpy as np
+
+    runner = integration_runner()
+    reference = np.zeros((4, 5, 3), dtype=np.uint8)
+    reference[2, 1] = 180
+    sample, truth, provenance = runner.make_sample(
+        reference,
+        {},
+        {
+            "operation": "translate",
+            "parameters": {"dx_px": 1, "dy_px": -1},
+            "expected_anomaly": False,
+        },
+    )
+    expected = np.zeros((4, 5, 3), dtype=np.uint8)
+    expected[1, 2] = 180
+    assert np.array_equal(sample, expected)
+    assert not truth.any()
+    assert provenance["out_of_frame_pixels"] == 8
+    assert provenance["expected_cad_revision"] == "R1"
+    assert provenance["defect_cad_sha256"] is None

@@ -32,3 +32,24 @@ tolerance) must fail. A normal image under the R2 reference does not approve tha
 design. Wrong-revision/part and byte-tamper refusal probes are integrity checks,
 never added to visual detection accuracy. All scripted dispositions are identified
 as automated, with no human approval or manufacturing release.
+
+## Reproduction
+
+From the MVS worktree, after preserving the selected producer files and the
+separately reviewed R2 selection:
+
+```sh
+uv run python scripts/run_coolgear_integration.py \
+  --protocol configs/integration/coolgear-r1-v1.json \
+  --reference-export ../freecad-automation/output/mvs-reference/coolgear-r1 \
+  --r2-export ../freecad-automation/output/mvs-reference/coolgear-r2-demo \
+  --r2-selection ../freecad-automation/tmp/codex/freecad-mvs-baseline/r2-selected-source.json \
+  --out-dir output/coolgear-integration/run-001
+```
+
+An existing output folder is refused. The output contains blind-named inputs,
+separate truth masks, predicted masks/registered images, the exact protocol and
+`results.json`. The R2 case and its verified bundle are separate from the detection
+confusion matrix. A missing R2 selection cannot be filled by trusting the ZIP's
+own hash declarations. Recreating the producer run can change its manifest bytes;
+review a new selection/protocol version instead of rewriting the frozen v1 values.
