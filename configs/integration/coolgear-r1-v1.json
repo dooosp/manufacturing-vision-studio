@@ -1,0 +1,273 @@
+{
+  "schema_version": "coolgear-integration-protocol/v1",
+  "dataset_version": "1.0.0",
+  "frozen_at": "2026-09-18T12:07:17.436385+00:00",
+  "profile": "coolgear-plate-top/v1",
+  "part_identity": {
+    "part_id": "USB-REF-ADAPTER",
+    "cad_revision": "R1"
+  },
+  "selected_source": {
+    "manifest_sha256": "690a7b3702de7dc4b6c1deb60634a1d2db1018a51aaa9d70832ae9533ab52be0",
+    "source_manifest_sha256": "6ce9e30ec2f049fec5cd64ce114990f181db9629b40b8b0071a150661466ab46",
+    "model_sha256": "fc3e15a0d69a8d44b18b3405107c0392ee0af9035cc87a298ab9361bbcbf54fd",
+    "config_sha256": "612f93c676e9b8640d6b61539d78d8f0bb83a8140ebd6cb07399b4edbe212230",
+    "source_commit": "1ef42b2d469d0646c5f3996707d5588f9790a52b",
+    "producer_commit": "84e0a142c78359cf305907a56bdca3a66e80bb2b"
+  },
+  "model_config": {
+    "registration_max_shift": 12,
+    "difference_threshold": 32,
+    "registration_sample_stride": 4
+  },
+  "configuration_sha256": "0a6d7cdf32feeed5aa54b16018af5519adb4a2fa9188f86c259969b88b5129b8",
+  "classification_threshold": 0.0025,
+  "repeat_count": 2,
+  "grouping_rule": "Feature-local or perturbation-family groups do not cross smoke/evaluation splits. All cases share one CAD design; samples are correlated, not independent field evidence.",
+  "prior_observations": [
+    "G3 H1 occlusion mapped correctly but classified normal; retained only in smoke.",
+    "G1/G4 contract fixtures are software checks, not held-out performance evidence."
+  ],
+  "performance_scope": "Descriptive fixed synthetic cases; no generalization, real defect-rate, tolerance or metrology claim.",
+  "case_generation": "Raster mutations of the pinned native silhouette; no defect CAD revision is substituted for expected R1.",
+  "physical_test": "not_tested",
+  "manufacturing_release": false,
+  "installed_load_rating_N": null,
+  "fastening_torque_Nm": null,
+  "cases": [
+    {
+      "case_id": "s001",
+      "split": "smoke",
+      "group_id": "clean_smoke",
+      "operation": "normal",
+      "parameters": {},
+      "expected_anomaly": false,
+      "expected_feature_ids": [],
+      "expected_cad_revision": "R1"
+    },
+    {
+      "case_id": "s002",
+      "split": "smoke",
+      "group_id": "H1_local",
+      "operation": "fill_holes",
+      "parameters": {
+        "features": [
+          "hole_H1"
+        ]
+      },
+      "expected_anomaly": true,
+      "expected_feature_ids": [
+        "hole_H1"
+      ],
+      "expected_cad_revision": "R1"
+    },
+    {
+      "case_id": "s003",
+      "split": "smoke",
+      "group_id": "H1_local",
+      "operation": "move_hole",
+      "parameters": {
+        "feature": "hole_H1",
+        "dx_px": 6,
+        "dy_px": 0
+      },
+      "expected_anomaly": true,
+      "expected_feature_ids": [
+        "hole_H1"
+      ],
+      "expected_cad_revision": "R1"
+    },
+    {
+      "case_id": "s004",
+      "split": "smoke",
+      "group_id": "edge_top",
+      "operation": "patch",
+      "parameters": {
+        "box_px": [
+          600,
+          50,
+          700,
+          66
+        ],
+        "value": 0
+      },
+      "expected_anomaly": true,
+      "expected_feature_ids": [],
+      "expected_cad_revision": "R1"
+    },
+    {
+      "case_id": "s005",
+      "split": "smoke",
+      "group_id": "gaussian_noise",
+      "operation": "noise",
+      "parameters": {
+        "seed": 17,
+        "distribution": "gaussian",
+        "amplitude": 3
+      },
+      "expected_anomaly": false,
+      "expected_feature_ids": [],
+      "expected_cad_revision": "R1"
+    },
+    {
+      "case_id": "e001",
+      "split": "evaluation",
+      "group_id": "H2_local",
+      "operation": "fill_holes",
+      "parameters": {
+        "features": [
+          "hole_H2"
+        ]
+      },
+      "expected_anomaly": true,
+      "expected_feature_ids": [
+        "hole_H2"
+      ],
+      "expected_cad_revision": "R1"
+    },
+    {
+      "case_id": "e002",
+      "split": "evaluation",
+      "group_id": "P1_local",
+      "operation": "fill_holes",
+      "parameters": {
+        "features": [
+          "hole_P1"
+        ]
+      },
+      "expected_anomaly": true,
+      "expected_feature_ids": [
+        "hole_P1"
+      ],
+      "expected_cad_revision": "R1"
+    },
+    {
+      "case_id": "e003",
+      "split": "evaluation",
+      "group_id": "H4_local",
+      "operation": "move_hole",
+      "parameters": {
+        "feature": "hole_H4",
+        "dx_px": 5,
+        "dy_px": 0
+      },
+      "expected_anomaly": true,
+      "expected_feature_ids": [
+        "hole_H4"
+      ],
+      "expected_cad_revision": "R1"
+    },
+    {
+      "case_id": "e004",
+      "split": "evaluation",
+      "group_id": "P2_local",
+      "operation": "move_hole",
+      "parameters": {
+        "feature": "hole_P2",
+        "dx_px": -8,
+        "dy_px": 3
+      },
+      "expected_anomaly": true,
+      "expected_feature_ids": [
+        "hole_P2"
+      ],
+      "expected_cad_revision": "R1"
+    },
+    {
+      "case_id": "e005",
+      "split": "evaluation",
+      "group_id": "edge_right",
+      "operation": "patch",
+      "parameters": {
+        "box_px": [
+          1450,
+          200,
+          1470,
+          500
+        ],
+        "value": 0
+      },
+      "expected_anomaly": true,
+      "expected_feature_ids": [],
+      "expected_cad_revision": "R1"
+    },
+    {
+      "case_id": "e006",
+      "split": "evaluation",
+      "group_id": "paired_H3_P4",
+      "operation": "fill_holes",
+      "parameters": {
+        "features": [
+          "hole_H3",
+          "hole_P4"
+        ]
+      },
+      "expected_anomaly": true,
+      "expected_feature_ids": [
+        "hole_H3",
+        "hole_P4"
+      ],
+      "expected_cad_revision": "R1"
+    },
+    {
+      "case_id": "e007",
+      "split": "evaluation",
+      "group_id": "uniform_noise",
+      "operation": "noise",
+      "parameters": {
+        "seed": 41021,
+        "distribution": "uniform",
+        "amplitude": 8
+      },
+      "expected_anomaly": false,
+      "expected_feature_ids": [],
+      "expected_cad_revision": "R1"
+    },
+    {
+      "case_id": "e008",
+      "split": "evaluation",
+      "group_id": "global_translation",
+      "operation": "translate",
+      "parameters": {
+        "dx_px": 7,
+        "dy_px": -4
+      },
+      "expected_anomaly": false,
+      "expected_feature_ids": [],
+      "expected_cad_revision": "R1"
+    },
+    {
+      "case_id": "e009",
+      "split": "evaluation",
+      "group_id": "P3_local",
+      "operation": "enlarge_hole",
+      "parameters": {
+        "feature": "hole_P3",
+        "extra_radius_px": 8
+      },
+      "expected_anomaly": true,
+      "expected_feature_ids": [
+        "hole_P3"
+      ],
+      "expected_cad_revision": "R1"
+    },
+    {
+      "case_id": "e010",
+      "split": "evaluation",
+      "group_id": "outside_hole_scope",
+      "operation": "patch",
+      "parameters": {
+        "box_px": [
+          650,
+          380,
+          750,
+          430
+        ],
+        "value": 0
+      },
+      "expected_anomaly": true,
+      "expected_feature_ids": [],
+      "expected_cad_revision": "R1"
+    }
+  ]
+}
